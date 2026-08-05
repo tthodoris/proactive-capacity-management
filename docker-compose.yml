@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pcm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pcm
+      POSTGRES_PASSWORD: pcm
+      POSTGRES_DB: pcm
+    ports:
+      - "5432:5432"
+    volumes:
+      - pcm_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pcm -d pcm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pcm_pg_data:
