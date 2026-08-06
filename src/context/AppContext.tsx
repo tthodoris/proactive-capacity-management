@@ -119,7 +119,8 @@ interface ImportInventoryInput {
   items: Array<{
     id: string
     name: string
-    resourceType: InventoryItem['resourceType']
+    /** Live Azure labels may be wider than the UI ResourceType union. */
+    resourceType: string
     sku: string
     size?: string
     region: string
@@ -608,7 +609,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         id: `inv-live-${item.id}`,
         customerId: input.customerId,
         subscriptionId: localSub.id,
-        resourceType: item.resourceType,
+        resourceType: item.resourceType as InventoryItem['resourceType'],
         sku: item.sku,
         size: toSkuFamily(item.sku, item.size) || item.size,
         region: item.region,
