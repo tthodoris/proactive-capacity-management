@@ -13,6 +13,15 @@ param webMemory string = '1Gi'
 param minReplicas int = 1
 param maxReplicas int = 3
 
+@description('Deploy VNet + Windows jumphost with this stack')
+param deployPlatform bool = true
+param jumpHostAdminUsername string = 'pcmadmin'
+@secure()
+param jumpHostAdminPassword string
+@description('CIDR allowed to RDP to the jumphost, e.g. 203.0.113.10/32')
+param jumpHostRdpSourceCidr string
+param jumpHostVmSize string = 'Standard_B2s'
+
 var envName = '${namePrefix}-env'
 var apiAppName = '${namePrefix}-api'
 var webAppName = '${namePrefix}-web'
@@ -24,6 +33,18 @@ var acrPullRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 )
+
+module platform 'platform.bicep' = if (deployPlatform) {
+  name: 'pcm-platform'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    jumpHostAdminUsername: jumpHostAdminUsername
+    jumpHostAdminPassword: jumpHostAdminPassword
+    jumpHostRdpSourceCidr: jumpHostRdpSourceCidr
+    jumpHostVmSize: jumpHostVmSize
+  }
+}
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
   name: logAnalyticsName
@@ -243,3 +264,7 @@ output apiAppNameOut string = apiApp.name
 output webAppNameOut string = webApp.name
 output acrLoginServer string = acr.properties.loginServer
 output pullIdentityId string = pullIdentity.id
+output vnetId string = deployPlatform ? platform!.outputs.vnetId : ''
+output dataSubnetId string = deployPlatform ? platform!.outputs.dataSubnetId : ''
+output jumpHostPublicIp string = deployPlatform ? platform!.outputs.jumpHostPublicIp : ''
+output jumpHostRdpHint string = deployPlatform ? platform!.outputs.jumpHostRdpHint : ''
