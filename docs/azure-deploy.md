@@ -134,20 +134,12 @@ In the repo → **Settings → Secrets and variables → Actions**, add:
 | `ACR_NAME` | ACR name (not login server) |
 | `ACR_LOGIN_SERVER` | e.g. `pcmacr123.azurecr.io` |
 | `DATABASE_URL` | Flexible Server connection string (`sslmode=require`) |
-| `JUMPHOST_ADMIN_PASSWORD` | Strong password for the Windows jumphost local admin |
-| `JUMPHOST_RDP_CIDR` | Your public IP as CIDR, e.g. `203.0.113.10/32` |
-| `JUMPHOST_ADMIN_USERNAME` | Optional (default `pcmadmin`) |
 
 ### 5. Push and deploy
 
 Push to `main` (or run **Actions → Deploy to Azure Container Apps → Run workflow**).
 
-The first run builds images and creates:
-- **VNet** `pcm-vnet` (`10.20.0.0/16`) with subnets `snet-jumphost`, `snet-data` (Postgres delegation), `snet-aca` (reserved)
-- **Windows jumphost** `pcm-jump` (RDP from `JUMPHOST_RDP_CIDR` only)
-- **Container Apps** `pcm-api` + `pcm-web`
-
-Later runs update images; the jumphost is created once if missing.
+The first run builds images and creates `pcm-api` + `pcm-web` via `infra/main.bicep`. Later runs only update images.
 
 ```bash
 git remote add origin https://github.com/tthodoris/proactive-capacity-management.git
@@ -185,43 +177,6 @@ az deployment group create \
 - Browser traffic hits **pcm-web** only. nginx proxies `/api/*` to **pcm-api** inside the environment (`http://pcm-api:80`).
 - **pcm-api** is not exposed publicly.
 - Flexible Server must accept connections from the Container Apps environment (public firewall rules or private networking / VNet integration).
-
-## Windows jumphost
-
-Deployed by `infra/platform.bicep` (also referenced from `infra/main.bicep`):
-
-| Resource | Name / value |
-|----------|----------------|
-| VNet | `pcm-vnet` — `10.20.0.0/16` |
-| Jumphost subnet | `snet-jumphost` — `10.20.1.0/24` |
-| Data subnet | `snet-data` — `10.20.2.0/24` (delegated to PostgreSQL Flexible Server) |
-| ACA subnet | `snet-aca` — `10.20.4.0/23` (reserved for future VNet integration) |
-| VM | `pcm-jump` — Windows Server 2022, `Standard_B2s`, public IP |
-| RDP | Port **3389** allowed only from `JUMPHOST_RDP_CIDR` |
-
-**Use it for:** Azure Data Studio / `psql` against Flexible Server (place the server in `snet-data` with private access, or allow the jumphost public IP on the server firewall), portal management, troubleshooting.
-
-Connect:
-
-```bash
-JUMP_IP=$(az vm list-ip-addresses -g "$RG" -n pcm-jump \
-  --query "[0].virtualMachine.network.publicIpAddresses[0].ipAddress" -o tsv)
-mstsc /v:$JUMP_IP
-# username: pcmadmin (or JUMPHOST_ADMIN_USERNAME)
-```
-
-Manual platform-only deploy:
-
-```bash
-az deployment group create \
-  --resource-group "$RG" \
-  --template-file infra/platform.bicep \
-  --parameters \
-    location="$LOC" \
-    jumpHostAdminUsername=pcmadmin \
-    jumpHostAdminPassword="$JUMPHOST_ADMIN_PASSWORD" \
-    jumpHostRdpSourceCidr="$JUMPHOST_RDP_CIDR"
-```
 
 ## Azure CLI inside pcm-api
 

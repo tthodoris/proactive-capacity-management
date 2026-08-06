@@ -17,9 +17,6 @@ dist-ssr
 .env.*
 !.env.example
 
-# Compiled Bicep artifacts
-infra/*.json
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

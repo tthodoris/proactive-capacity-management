@@ -35,8 +35,7 @@ Production layout:
 
 - **pcm-web** — Container App (public HTTPS), nginx UI + `/api` proxy  
 - **pcm-api** — Container App (internal), Express + Azure CLI  
-- **pcm-jump** — Windows Server jumphost in `pcm-vnet` for DB/management RDP  
-- **Azure Database for PostgreSQL Flexible Server** — `DATABASE_URL` (use `snet-data` for private access)  
+- **Azure Database for PostgreSQL Flexible Server** — `DATABASE_URL`  
 - **GitHub Actions** — build/push images to ACR and deploy on every push to `main`
 - **ACR pull** — Container Apps use a **user-assigned managed identity** with `AcrPull` (ACR admin user is **not** required)
 

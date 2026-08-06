@@ -59,12 +59,9 @@ jobs:
           docker push "${{ steps.meta.outputs.web_image }}"
           docker push "${{ steps.meta.outputs.web_latest }}"
 
-      - name: Ensure platform + Container Apps
+      - name: Ensure Container Apps exist (first deploy)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          JUMPHOST_ADMIN_PASSWORD: ${{ secrets.JUMPHOST_ADMIN_PASSWORD }}
-          JUMPHOST_RDP_CIDR: ${{ secrets.JUMPHOST_RDP_CIDR }}
-          JUMPHOST_ADMIN_USERNAME: ${{ secrets.JUMPHOST_ADMIN_USERNAME }}
         run: |
           set -euo pipefail
           RG="${{ secrets.AZURE_RESOURCE_GROUP }}"
@@ -72,54 +69,16 @@ jobs:
           LOC="${{ secrets.AZURE_LOCATION }}"
           API_IMG="${{ steps.meta.outputs.api_image }}"
           WEB_IMG="${{ steps.meta.outputs.web_image }}"
-          JUMP_USER="${JUMPHOST_ADMIN_USERNAME:-pcmadmin}"
-
-          if [[ -z "${JUMPHOST_ADMIN_PASSWORD:-}" || -z "${JUMPHOST_RDP_CIDR:-}" ]]; then
-            echo "JUMPHOST_ADMIN_PASSWORD and JUMPHOST_RDP_CIDR secrets are required for VNet/jumphost."
-            exit 1
-          fi
-
-          write_platform_params() {
-            jq -n \
-              --arg loc "$LOC" \
-              --arg user "$JUMP_USER" \
-              --arg pass "$JUMPHOST_ADMIN_PASSWORD" \
-              --arg cidr "$JUMPHOST_RDP_CIDR" \
-              '{
-                "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
-                "contentVersion": "1.0.0.0",
-                "parameters": {
-                  "location": { "value": $loc },
-                  "jumpHostAdminUsername": { "value": $user },
-                  "jumpHostAdminPassword": { "value": $pass },
-                  "jumpHostRdpSourceCidr": { "value": $cidr }
-                }
-              }' > /tmp/pcm-platform.parameters.json
-          }
-
-          # Idempotent: create/update VNet + Windows jumphost
-          if ! az vm show --name pcm-jump --resource-group "$RG" &>/dev/null; then
-            echo "Deploying VNet + Windows jumphost..."
-            write_platform_params
-            az deployment group create \
-              --resource-group "$RG" \
-              --template-file infra/platform.bicep \
-              --parameters /tmp/pcm-platform.parameters.json
-          else
-            echo "Jumphost pcm-jump already exists — skipping platform create."
-          fi
 
           if ! az containerapp show --name pcm-api --resource-group "$RG" &>/dev/null; then
             echo "First-time deploy: creating Container Apps via Bicep..."
+            # Pass secret via parameters file to avoid shell-escaping issues
             jq -n \
               --arg acr "$ACR" \
               --arg loc "$LOC" \
               --arg api "$API_IMG" \
               --arg web "$WEB_IMG" \
               --arg db "$DATABASE_URL" \
-              --arg user "$JUMP_USER" \
-              --arg pass "$JUMPHOST_ADMIN_PASSWORD" \
-              --arg cidr "$JUMPHOST_RDP_CIDR" \
               '{
                 "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
                 "contentVersion": "1.0.0.0",
@@ -128,11 +87,7 @@ jobs:
                   "location": { "value": $loc },
                   "apiImage": { "value": $api },
                   "webImage": { "value": $web },
-                  "databaseUrl": { "value": $db },
-                  "deployPlatform": { "value": false },
-                  "jumpHostAdminUsername": { "value": $user },
-                  "jumpHostAdminPassword": { "value": $pass },
-                  "jumpHostRdpSourceCidr": { "value": $cidr }
+                  "databaseUrl": { "value": $db }
                 }
               }' > /tmp/pcm.parameters.json
 
@@ -150,12 +105,6 @@ jobs:
               --name pcm-web \
               --resource-group "$RG" \
               --image "$WEB_IMG"
-          fi
-
-          if az vm show --name pcm-jump --resource-group "$RG" &>/dev/null; then
-            JUMP_IP=$(az vm list-ip-addresses -g "$RG" -n pcm-jump \
-              --query "[0].virtualMachine.network.publicIpAddresses[0].ipAddress" -o tsv)
-            echo "Jumphost RDP: mstsc /v:${JUMP_IP} (user ${JUMP_USER})"
           fi
 
       - name: Print web URL
