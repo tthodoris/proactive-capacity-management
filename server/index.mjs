@@ -3,6 +3,7 @@ import cors from 'cors'
 import express from 'express'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -2066,10 +2067,20 @@ app.post('/api/azure/quota-groups/collect', async (req, res) => {
   }
 })
 
-app.get('/api/data/bootstrap', async (_req, res) => {
+app.get('/api/data/bootstrap', async (req, res) => {
   try {
     const data = await getBootstrap()
-    res.json(data)
+    const raw = JSON.stringify(data)
+    const acceptGzip = String(req.headers['accept-encoding'] || '').includes('gzip')
+    // Inventory-heavy payloads can be several MB; gzip avoids proxy/client cutoffs.
+    if (acceptGzip && raw.length > 2048) {
+      const compressed = gzipSync(Buffer.from(raw, 'utf8'))
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.setHeader('Content-Encoding', 'gzip')
+      res.setHeader('Vary', 'Accept-Encoding')
+      return res.status(200).send(compressed)
+    }
+    res.type('json').send(raw)
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
