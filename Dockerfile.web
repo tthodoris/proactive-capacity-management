@@ -1,10 +1,11 @@
 # Frontend build
+# Uses package.json only (no npm ci) so CI is not blocked by a corporate-mirror lockfile.
 FROM node:22-alpine AS build
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json ./
+RUN npm install
 
 COPY index.html vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.json ./
 COPY public ./public
@@ -18,7 +19,6 @@ FROM nginx:1.27-alpine
 COPY deploy/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Overridden at runtime by Container App env (same ACA environment DNS name)
 # ACA same-environment DNS: ingress on port 80 maps to API container 8080
 ENV API_HOST=pcm-api
 ENV API_PORT=80

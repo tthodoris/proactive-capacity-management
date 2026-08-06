@@ -68,21 +68,23 @@ APP_NAME="pcm-github-oidc"
 APP_ID=$(az ad app create --display-name "$APP_NAME" --query appId -o tsv)
 az ad sp create --id "$APP_ID"
 
-# Federated credential for this repo + branch
-PROJECT_NUMBER=$(az ad app show --id "$APP_ID" --query id -o tsv)
+# Federated credential for this repo + branch.
+# Prefer the ID-based subject GitHub currently issues for this account/repo:
+#   repo:<owner>@<ownerId>/<repo>@<repoId>:ref:refs/heads/main
+# Classic form (repo:owner/repo:ref:...) may fail with AADSTS700213.
 cat > /tmp/pcm-github-fed.json <<EOF
 {
   "name": "pcm-github-main",
   "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:tthodoris/proactive-capacity-management:ref:refs/heads/main",
+  "subject": "repo:tthodoris@1280109/proactive-capacity-management@1324159423:ref:refs/heads/main",
   "audiences": ["api://AzureADTokenExchange"],
-  "description": "GitHub Actions main branch"
+  "description": "GitHub Actions main branch (owner/repo IDs)"
 }
 EOF
 az ad app federated-credential create --id "$APP_ID" --parameters @/tmp/pcm-github-fed.json
 
-# Also allow workflow_dispatch / master if needed:
-# subject: repo:tthodoris/proactive-capacity-management:ref:refs/heads/master
+# If login still fails, copy the exact "presented assertion subject" from the
+# workflow AADSTS700213 error and update the federated credential to match.
 
 SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
 az role assignment create \
