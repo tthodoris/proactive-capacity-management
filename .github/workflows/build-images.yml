@@ -1,0 +1,68 @@
+name: Build and push container images
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  API_IMAGE_NAME: pcm-api
+  WEB_IMAGE_NAME: pcm-web
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set image tags
+        id: meta
+        run: |
+          SHORT_SHA="${GITHUB_SHA::12}"
+          LOGIN_SERVER="${{ secrets.ACR_LOGIN_SERVER }}"
+          echo "tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "api_image=${LOGIN_SERVER}/${API_IMAGE_NAME}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "web_image=${LOGIN_SERVER}/${WEB_IMAGE_NAME}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "api_latest=${LOGIN_SERVER}/${API_IMAGE_NAME}:latest" >> "$GITHUB_OUTPUT"
+          echo "web_latest=${LOGIN_SERVER}/${WEB_IMAGE_NAME}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Login to ACR
+        run: az acr login --name "${{ secrets.ACR_NAME }}"
+
+      - name: Build and push API image
+        run: |
+          docker build -f Dockerfile.api \
+            -t "${{ steps.meta.outputs.api_image }}" \
+            -t "${{ steps.meta.outputs.api_latest }}" \
+            .
+          docker push "${{ steps.meta.outputs.api_image }}"
+          docker push "${{ steps.meta.outputs.api_latest }}"
+
+      - name: Build and push Web image
+        run: |
+          docker build -f Dockerfile.web \
+            -t "${{ steps.meta.outputs.web_image }}" \
+            -t "${{ steps.meta.outputs.web_latest }}" \
+            .
+          docker push "${{ steps.meta.outputs.web_image }}"
+          docker push "${{ steps.meta.outputs.web_latest }}"
+
+      - name: Summary
+        run: |
+          echo "Pushed:"
+          echo "  ${{ steps.meta.outputs.api_image }}"
+          echo "  ${{ steps.meta.outputs.api_latest }}"
+          echo "  ${{ steps.meta.outputs.web_image }}"
+          echo "  ${{ steps.meta.outputs.web_latest }}"
