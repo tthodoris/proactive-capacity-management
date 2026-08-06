@@ -17,6 +17,13 @@ var envName = '${namePrefix}-env'
 var apiAppName = '${namePrefix}-api'
 var webAppName = '${namePrefix}-web'
 var logAnalyticsName = '${namePrefix}-logs'
+var pullIdentityName = '${namePrefix}-acr-pull'
+
+// AcrPull role
+var acrPullRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+)
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
   name: logAnalyticsName
@@ -33,7 +40,21 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: acrName
 }
 
-var acrCreds = acr.listCredentials()
+// User-assigned identity for ACR pull (no ACR admin user required)
+resource pullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: pullIdentityName
+  location: location
+}
+
+resource acrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, pullIdentity.id, acrPullRoleId)
+  scope: acr
+  properties: {
+    roleDefinitionId: acrPullRoleId
+    principalId: pullIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
 
 resource managedEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: envName
@@ -52,6 +73,15 @@ resource managedEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
 resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: apiAppName
   location: location
+  dependsOn: [
+    acrPullAssignment
+  ]
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${pullIdentity.id}': {}
+    }
+  }
   properties: {
     managedEnvironmentId: managedEnv.id
     configuration: {
@@ -65,18 +95,13 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
       registries: [
         {
           server: acr.properties.loginServer
-          username: acrCreds.username
-          passwordSecretRef: 'acr-password'
+          identity: pullIdentity.id
         }
       ]
       secrets: [
         {
           name: 'database-url'
           value: databaseUrl
-        }
-        {
-          name: 'acr-password'
-          value: acrCreds.passwords[0].value
         }
       ]
     }
@@ -144,6 +169,15 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
 resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: webAppName
   location: location
+  dependsOn: [
+    acrPullAssignment
+  ]
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${pullIdentity.id}': {}
+    }
+  }
   properties: {
     managedEnvironmentId: managedEnv.id
     configuration: {
@@ -157,14 +191,7 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
       registries: [
         {
           server: acr.properties.loginServer
-          username: acrCreds.username
-          passwordSecretRef: 'acr-password'
-        }
-      ]
-      secrets: [
-        {
-          name: 'acr-password'
-          value: acrCreds.passwords[0].value
+          identity: pullIdentity.id
         }
       ]
     }
@@ -215,3 +242,4 @@ output webUrl string = 'https://${webApp.properties.configuration.ingress.fqdn}'
 output apiAppNameOut string = apiApp.name
 output webAppNameOut string = webApp.name
 output acrLoginServer string = acr.properties.loginServer
+output pullIdentityId string = pullIdentity.id

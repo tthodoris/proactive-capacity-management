@@ -57,6 +57,9 @@ az deployment group create \
 
 ACR_LOGIN_SERVER=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
 echo "ACR: $ACR_LOGIN_SERVER"
+
+# Container Apps pull via managed identity (AcrPull) — do NOT require ACR admin user.
+# GitHub Actions pushes with the OIDC principal's AcrPush role (step 3).
 ```
 
 ### 3. GitHub OIDC (federated credential)
@@ -91,6 +94,13 @@ az role assignment create \
   --assignee-object-id "$SP_OBJECT_ID" \
   --assignee-principal-type ServicePrincipal \
   --role Contributor \
+  --scope "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RG"
+
+# Needed so Bicep can grant AcrPull to the Container Apps pull identity
+az role assignment create \
+  --assignee-object-id "$SP_OBJECT_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "User Access Administrator" \
   --scope "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RG"
 
 # AcrPush on the registry

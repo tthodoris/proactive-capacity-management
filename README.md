@@ -37,6 +37,7 @@ Production layout:
 - **pcm-api** — Container App (internal), Express + Azure CLI  
 - **Azure Database for PostgreSQL Flexible Server** — `DATABASE_URL`  
 - **GitHub Actions** — build/push images to ACR and deploy on every push to `main`
+- **ACR pull** — Container Apps use a **user-assigned managed identity** with `AcrPull` (ACR admin user is **not** required)
 
 Step-by-step (OIDC, secrets, Bicep): see [docs/azure-deploy.md](docs/azure-deploy.md).
 
