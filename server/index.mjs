@@ -1200,6 +1200,10 @@ const RESOURCE_TYPE_PROVIDERS = {
     namespace: 'Microsoft.App',
     typeName: 'containerApps',
   },
+  'Azure Container Apps Environment': {
+    namespace: 'Microsoft.App',
+    typeName: 'managedEnvironments',
+  },
   'Azure Databricks': {
     namespace: 'Microsoft.Databricks',
     typeName: 'workspaces',
@@ -1648,7 +1652,7 @@ const COMPUTE_TYPE_MAP = {
   'microsoft.containerservice/managedclusters': 'Azure Kubernetes Service',
   'microsoft.containerinstance/containergroups': 'Container Instances',
   'microsoft.app/containerapps': 'Azure Container Apps',
-  'microsoft.app/managedenvironments': 'Azure Container Apps',
+  'microsoft.app/managedenvironments': 'Azure Container Apps Environment',
   'microsoft.databricks/workspaces': 'Azure Databricks',
   'microsoft.kusto/clusters': 'Azure Data Explorer',
   'microsoft.cache/redis': 'Azure Cache for Redis',
@@ -1666,6 +1670,9 @@ function resolveInventoryResourceType(typeKey) {
   if (typeKey.includes('virtualmachine')) return 'Virtual Machine'
   if (typeKey.includes('databricks')) return 'Azure Databricks'
   if (typeKey.includes('kusto')) return 'Azure Data Explorer'
+  if (typeKey.includes('managedenvironment')) {
+    return 'Azure Container Apps Environment'
+  }
   if (typeKey.includes('containerapp') || typeKey.includes('microsoft.app/')) {
     return 'Azure Container Apps'
   }
@@ -1692,6 +1699,57 @@ function resolveInventoryResourceType(typeKey) {
     return 'Container Instances'
   }
   return typeKey.split('/').pop() || 'Unknown'
+}
+
+/**
+ * Parse workloadProfiles JSON from a managed environment ARG row.
+ * @param {unknown} raw
+ * @returns {Array<{ name: string, type: string, min?: number, max?: number }>}
+ */
+function parseWorkloadProfiles(raw) {
+  if (raw == null || raw === '') return []
+  let parsed = raw
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return []
+    }
+  }
+  if (!Array.isArray(parsed)) return []
+  return parsed
+    .map((p) => {
+      if (!p || typeof p !== 'object') return null
+      const name = String(p.name || '').trim()
+      const type = String(p.workloadProfileType || p.workloadProfileTypeName || '').trim()
+      const min =
+        p.minimumCount != null && Number.isFinite(Number(p.minimumCount))
+          ? Number(p.minimumCount)
+          : undefined
+      const max =
+        p.maximumCount != null && Number.isFinite(Number(p.maximumCount))
+          ? Number(p.maximumCount)
+          : undefined
+      if (!name && !type) return null
+      return { name: name || type, type: type || name, min, max }
+    })
+    .filter(Boolean)
+}
+
+/**
+ * Human-readable workload profile size, e.g. "D4 (1-10)" or "Consumption".
+ * @param {{ name: string, type: string, min?: number, max?: number }} profile
+ */
+function formatWorkloadProfileSize(profile) {
+  const type = String(profile?.type || profile?.name || '').trim()
+  if (!type) return ''
+  if (/^consumption$/i.test(type)) return 'Consumption'
+  const min = profile?.min
+  const max = profile?.max
+  if (min != null || max != null) {
+    return `${type} (${min ?? 0}-${max ?? '?'})`
+  }
+  return type
 }
 
 app.get('/api/azure/inventory', async (req, res) => {
@@ -1729,6 +1787,7 @@ app.get('/api/azure/inventory', async (req, res) => {
           'microsoft.containerservice/managedclusters',
           'microsoft.containerinstance/containergroups',
           'microsoft.app/containerapps',
+          'microsoft.app/managedenvironments',
           'microsoft.databricks/workspaces',
           'microsoft.kusto/clusters',
           'microsoft.cache/redis',
@@ -1757,6 +1816,13 @@ app.get('/api/azure/inventory', async (req, res) => {
           tostring(properties.sku.tier),
           ''
         )
+      | extend managedEnvironmentId = tostring(properties.managedEnvironmentId)
+      | extend workloadProfileName = tostring(properties.workloadProfileName)
+      | extend workloadProfilesJson = iff(
+          type =~ 'microsoft.app/managedenvironments',
+          tostring(properties.workloadProfiles),
+          ''
+        )
       | project
           id,
           name,
@@ -1765,15 +1831,117 @@ app.get('/api/azure/inventory', async (req, res) => {
           resourceGroup,
           subscriptionId,
           skuName,
-          sizeHint
+          sizeHint,
+          managedEnvironmentId,
+          workloadProfileName,
+          workloadProfilesJson
       | order by type asc, name asc
     `
 
     const rows = await resourceGraphQuery(query, [subscriptionId], 1000)
 
+    /** @type {Map<string, { name: string, profiles: Array<{ name: string, type: string, min?: number, max?: number }> }>} */
+    const environmentById = new Map()
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const typeKey = String(row.type || '').toLowerCase()
+      if (typeKey !== 'microsoft.app/managedenvironments') continue
+      const profiles = parseWorkloadProfiles(row.workloadProfilesJson)
+      environmentById.set(String(row.id || '').toLowerCase(), {
+        name: String(row.name || ''),
+        profiles,
+      })
+    }
+
+    // Resolve environments referenced by apps but not returned in this subscription query
+    // (e.g. cross-RG already covered; cross-sub is rare — still try ARM GET).
+    const missingEnvIds = [
+      ...new Set(
+        (Array.isArray(rows) ? rows : [])
+          .filter((row) => String(row.type || '').toLowerCase() === 'microsoft.app/containerapps')
+          .map((row) => String(row.managedEnvironmentId || '').trim())
+          .filter((id) => id && !environmentById.has(id.toLowerCase())),
+      ),
+    ].slice(0, 25)
+
+    for (const envId of missingEnvIds) {
+      try {
+        const { stdout } = await runAz(
+          [
+            'rest',
+            '--method',
+            'get',
+            '--url',
+            `https://management.azure.com${envId}?api-version=2024-03-01`,
+            '-o',
+            'json',
+          ],
+          { timeoutMs: 60_000 },
+        )
+        const env = JSON.parse(stdout)
+        environmentById.set(envId.toLowerCase(), {
+          name: String(env.name || envId.split('/').pop() || ''),
+          profiles: parseWorkloadProfiles(env.properties?.workloadProfiles),
+        })
+      } catch {
+        // Keep app row with profile name only when environment lookup fails.
+      }
+    }
+
     const resources = (Array.isArray(rows) ? rows : []).map((row) => {
       const typeKey = String(row.type || '').toLowerCase()
       const resourceType = resolveInventoryResourceType(typeKey)
+
+      if (typeKey === 'microsoft.app/managedenvironments') {
+        const profiles = parseWorkloadProfiles(row.workloadProfilesJson)
+        const profileSummary =
+          profiles.length > 0
+            ? profiles
+                .map((p) => formatWorkloadProfileSize(p))
+                .filter(Boolean)
+                .join(', ')
+            : 'Consumption'
+        return {
+          id: row.id || randomUUID(),
+          name: row.name,
+          type: row.type,
+          resourceType,
+          sku: profiles.some((p) => !/^consumption$/i.test(p.type || p.name || ''))
+            ? 'Workload profiles'
+            : 'Consumption',
+          size: profileSummary || undefined,
+          region: row.location,
+          resourceGroup: row.resourceGroup,
+          subscriptionId: row.subscriptionId || subscriptionId,
+          source: 'Customer tenant',
+        }
+      }
+
+      if (typeKey === 'microsoft.app/containerapps') {
+        const envId = String(row.managedEnvironmentId || '').trim()
+        const env = environmentById.get(envId.toLowerCase())
+        const profileName = String(row.workloadProfileName || '').trim() || 'Consumption'
+        const matched = env?.profiles?.find(
+          (p) => p.name.toLowerCase() === profileName.toLowerCase(),
+        )
+        const profileType = matched?.type || (/^consumption$/i.test(profileName) ? 'Consumption' : '')
+        const sizeLabel = matched
+          ? formatWorkloadProfileSize(matched)
+          : profileType || profileName
+        const envLabel = env?.name || (envId ? envId.split('/').pop() : '')
+        return {
+          id: row.id || randomUUID(),
+          name: row.name,
+          type: row.type,
+          resourceType,
+          // Profile name as SKU; size carries the profile hardware size (e.g. D4).
+          sku: envLabel ? `${profileName} @ ${envLabel}` : profileName,
+          size: sizeLabel || undefined,
+          region: row.location,
+          resourceGroup: row.resourceGroup,
+          subscriptionId: row.subscriptionId || subscriptionId,
+          source: 'Customer tenant',
+        }
+      }
 
       return {
         id: row.id || randomUUID(),
@@ -1797,7 +1965,7 @@ app.get('/api/azure/inventory', async (req, res) => {
       count: resources.length,
       resources,
       query:
-        'Azure Resource Graph — VMs, SQL, MySQL, PostgreSQL, Cosmos DB, AKS, containers, Redis, Key Vault, Storage, App Gateway, APIM, VPN Gateway, Databricks, ADX',
+        'Azure Resource Graph — VMs, SQL, MySQL, PostgreSQL, Cosmos DB, AKS, containers, Container Apps (+ environments/workload profiles), Redis, Key Vault, Storage, App Gateway, APIM, VPN Gateway, Databricks, ADX',
     })
   } catch (err) {
     sendRouteError(

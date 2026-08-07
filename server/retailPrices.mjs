@@ -33,6 +33,7 @@ const RESOURCE_TYPE_SERVICE_NAME = {
   'VPN Gateway': 'VPN Gateway',
   'Container Instances': 'Container Instances',
   'Azure Container Apps': 'Azure Container Apps',
+  'Azure Container Apps Environment': 'Azure Container Apps',
   'Azure Kubernetes Service': 'Azure Kubernetes Service',
   // Legacy
   'Azure SQL': 'SQL Database',

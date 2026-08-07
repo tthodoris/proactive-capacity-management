@@ -15,6 +15,7 @@ export type ResourceType =
   | 'Azure Kubernetes Service'
   | 'Container Instances'
   | 'Azure Container Apps'
+  | 'Azure Container Apps Environment'
   | 'Azure Databricks'
   | 'Azure Data Explorer'
   | 'Azure Cache for Redis'
