@@ -33,7 +33,15 @@ const nav: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/connect', label: 'Azure Connect', icon: PlugZap },
   { to: '/constraints', label: 'Constraints', icon: ShieldAlert },
-  { to: '/customers', label: 'Customers', icon: Users },
+  {
+    to: '/customers',
+    label: 'Customers',
+    icon: Users,
+    children: [
+      { to: '/customers', label: 'Portfolio', icon: Users },
+      { to: '/customers/risk', label: 'Risk scores', icon: ShieldAlert },
+    ],
+  },
   { to: '/inventory', label: 'Inventory', icon: Boxes },
   { to: '/quotas', label: 'Quotas', icon: Gauge },
   { to: '/quota-groups', label: 'Quota groups', icon: Layers },
@@ -73,6 +81,11 @@ const titles: Record<string, { title: string; subtitle: string }> = {
   '/customers': {
     title: 'Customers',
     subtitle: 'Managed customer portfolio with CSA ownership and sync freshness.',
+  },
+  '/customers/risk': {
+    title: 'Customer capacity risk',
+    subtitle:
+      'Red / Amber / Green triage from open constraints, quota headroom, and concentration.',
   },
   '/inventory': {
     title: 'Resource inventory',
@@ -126,6 +139,9 @@ function resolveTitle(pathname: string) {
       subtitle: 'Impact analysis, status history, and customer exposure.',
     }
   }
+  if (pathname === '/customers/risk') {
+    return titles['/customers/risk']
+  }
   if (pathname.startsWith('/customers/')) {
     return {
       title: 'Customer detail',
@@ -139,16 +155,34 @@ function isRegionEvalPath(pathname: string) {
   return pathname === '/region-evaluation' || pathname.startsWith('/region-evaluation/')
 }
 
+function isCustomersPath(pathname: string) {
+  return pathname === '/customers' || pathname.startsWith('/customers/')
+}
+
+function isGroupPath(item: NavItem, pathname: string) {
+  if (item.to === '/region-evaluation') return isRegionEvalPath(pathname)
+  if (item.to === '/customers') return isCustomersPath(pathname)
+  return false
+}
+
 export function AppLayout() {
   const { user, setRole, alerts, getUserPoints } = useApp()
   const location = useLocation()
   const meta = resolveTitle(location.pathname)
   const unread = alerts.filter((a) => !a.read && a.csaOwnerId === user.id).length
   const points = getUserPoints(user.id)
-  const [regionMenuOpen, setRegionMenuOpen] = useState(isRegionEvalPath(location.pathname))
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => ({
+    '/region-evaluation': isRegionEvalPath(location.pathname),
+    '/customers': isCustomersPath(location.pathname),
+  }))
 
   useEffect(() => {
-    if (isRegionEvalPath(location.pathname)) setRegionMenuOpen(true)
+    setOpenGroups((prev) => {
+      const next = { ...prev }
+      if (isRegionEvalPath(location.pathname)) next['/region-evaluation'] = true
+      if (isCustomersPath(location.pathname)) next['/customers'] = true
+      return next
+    })
   }, [location.pathname])
 
   return (
@@ -167,20 +201,23 @@ export function AppLayout() {
           {nav.map((item) => {
             const Icon = item.icon
             if (item.children?.length) {
-              const sectionActive = isRegionEvalPath(location.pathname)
+              const sectionActive = isGroupPath(item, location.pathname)
+              const menuOpen = Boolean(openGroups[item.to])
               return (
                 <div key={item.to} className="nav-group">
                   <button
                     type="button"
                     className={`nav-link nav-group-trigger${sectionActive ? ' active' : ''}`}
-                    aria-expanded={regionMenuOpen}
-                    onClick={() => setRegionMenuOpen((open) => !open)}
+                    aria-expanded={menuOpen}
+                    onClick={() =>
+                      setOpenGroups((prev) => ({ ...prev, [item.to]: !prev[item.to] }))
+                    }
                   >
                     <Icon size={18} />
                     <span>{item.label}</span>
-                    {regionMenuOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    {menuOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                   </button>
-                  {regionMenuOpen ? (
+                  {menuOpen ? (
                     <div className="nav-sub">
                       {item.children.map((child) => {
                         const ChildIcon = child.icon
@@ -188,7 +225,9 @@ export function AppLayout() {
                           <NavLink
                             key={child.to}
                             to={child.to}
-                            end={child.to === '/region-evaluation'}
+                            end={
+                              child.to === '/region-evaluation' || child.to === '/customers'
+                            }
                             className={({ isActive }) =>
                               `nav-link nav-sub-link${isActive ? ' active' : ''}`
                             }

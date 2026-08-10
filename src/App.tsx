@@ -7,6 +7,7 @@ import { ConnectPage } from './pages/ConnectPage'
 import { ConstraintDetailPage } from './pages/ConstraintDetailPage'
 import { ConstraintsPage } from './pages/ConstraintsPage'
 import { CustomerDetailPage, CustomersPage } from './pages/CustomersPage'
+import { CustomerRiskPage } from './pages/CustomerRiskPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { InventoryPage } from './pages/InventoryPage'
 import { NewConstraintPage } from './pages/NewConstraintPage'
@@ -30,6 +31,7 @@ export default function App() {
             <Route path="constraints/new" element={<NewConstraintPage />} />
             <Route path="constraints/:id" element={<ConstraintDetailPage />} />
             <Route path="customers" element={<CustomersPage />} />
+            <Route path="customers/risk" element={<CustomerRiskPage />} />
             <Route path="customers/:id" element={<CustomerDetailPage />} />
             <Route path="inventory" element={<InventoryPage />} />
             <Route path="quotas" element={<QuotasPage />} />

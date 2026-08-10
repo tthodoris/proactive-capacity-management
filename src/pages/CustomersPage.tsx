@@ -3,6 +3,11 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ChevronDown, ChevronRight, Download, Search, X } from 'lucide-react'
 import { exportSheetsToExcel, exportToExcel } from '../lib/exportExcel'
 import { filterActiveImpacts } from '../lib/constraints'
+import {
+  computePortfolioCapacityRisks,
+  riskLevelPillClass,
+  type CapacityRiskLevel,
+} from '../lib/capacityRisk'
 import { CheckboxMultiSelect } from '../components/CheckboxMultiSelect'
 import { useApp } from '../context/AppContext'
 import { formatDate, formatRelative, usageTone } from '../lib/format'
@@ -19,11 +24,28 @@ import {
   useSortedRows,
 } from '../lib/tableSort'
 
-type CustomerSortKey = 'name' | 'segment' | 'owner' | 'inventory' | 'exposure' | 'synced'
+type CustomerSortKey =
+  | 'name'
+  | 'segment'
+  | 'owner'
+  | 'inventory'
+  | 'risk'
+  | 'exposure'
+  | 'synced'
+
+const RISK_LEVEL_ORDER: Record<CapacityRiskLevel, number> = { Red: 0, Amber: 1, Green: 2 }
 
 export function CustomersPage() {
-  const { customers, users, inventory, impactResults, constraints, portfolioCustomerIds, canSeeAllPortfolios } =
-    useApp()
+  const {
+    customers,
+    users,
+    inventory,
+    quotas,
+    impactResults,
+    constraints,
+    portfolioCustomerIds,
+    canSeeAllPortfolios,
+  } = useApp()
   const [query, setQuery] = useState('')
   const navigate = useNavigate()
   const { sortKey, sortDir, toggleSort } = useSortState<CustomerSortKey>('name')
@@ -40,6 +62,20 @@ export function CustomersPage() {
     () => filterActiveImpacts(impactResults, constraints),
     [impactResults, constraints],
   )
+
+  const riskByCustomer = useMemo(() => {
+    const visible = customers.filter(
+      (c) => canSeeAllPortfolios || portfolioCustomerIds.includes(c.id),
+    )
+    const list = computePortfolioCapacityRisks({
+      customers: visible,
+      inventory,
+      quotas,
+      impacts: impactResults,
+      constraints,
+    })
+    return new Map(list.map((r) => [r.customerId, r]))
+  }, [customers, canSeeAllPortfolios, portfolioCustomerIds, inventory, quotas, impactResults, constraints])
 
   const baseRows = useMemo(() => {
     return customers
@@ -63,6 +99,8 @@ export function CustomersPage() {
           const count = inventory.filter((i) => i.customerId === c.id).length
           return `${count} resources`
         }
+        case 'risk':
+          return riskByCustomer.get(c.id)?.level || 'Green'
         case 'exposure': {
           const count = new Set(
             activeImpacts.filter((i) => i.customerId === c.id).map((i) => i.constraintId),
@@ -77,7 +115,7 @@ export function CustomersPage() {
           return c[key as keyof typeof c]
       }
     },
-    [users, inventory, activeImpacts],
+    [users, inventory, activeImpacts, riskByCustomer],
   )
 
   const filtered = useMemo(() => {
@@ -86,13 +124,20 @@ export function CustomersPage() {
     )
   }, [baseRows, matchesColumnFilters, getValue])
 
-  const rows = useSortedRows(filtered, sortKey, sortDir, getValue)
+  const rows = useSortedRows(filtered, sortKey, sortDir, (row, key) => {
+    if (key === 'risk') {
+      const level = (riskByCustomer.get(row.id)?.level || 'Green') as CapacityRiskLevel
+      return RISK_LEVEL_ORDER[level]
+    }
+    return getValue(row, key)
+  })
 
   const columnKeys: CustomerSortKey[] = [
     'name',
     'segment',
     'owner',
     'inventory',
+    'risk',
     'exposure',
     'synced',
   ]
@@ -138,6 +183,7 @@ export function CustomersPage() {
               { key: 'segment', label: 'Segment' },
               { key: 'owner', label: 'CSA owner' },
               { key: 'inventory', label: 'Inventory' },
+              { key: 'risk', label: 'Capacity risk' },
               { key: 'exposure', label: 'Active exposure' },
               { key: 'synced', label: 'Last sync' },
             ]
@@ -163,6 +209,7 @@ export function CustomersPage() {
                     ['segment', 'Segment'],
                     ['owner', 'CSA owner'],
                     ['inventory', 'Inventory'],
+                    ['risk', 'Capacity risk'],
                     ['exposure', 'Active exposure'],
                     ['synced', 'Last sync'],
                   ] as Array<[CustomerSortKey, string]>
@@ -185,6 +232,8 @@ export function CustomersPage() {
               {rows.map((c) => {
                 const owner = users.find((u) => u.id === c.csaOwnerId)
                 const resourceCount = inventory.filter((i) => i.customerId === c.id).length
+                const risk = riskByCustomer.get(c.id)
+                const riskLevel = (risk?.level || 'Green') as CapacityRiskLevel
                 const exposure = new Set(
                   activeImpacts
                     .filter((i) => i.customerId === c.id)
@@ -201,6 +250,9 @@ export function CustomersPage() {
                     </td>
                     <td>{owner?.name}</td>
                     <td>{resourceCount} resources</td>
+                    <td title={risk?.summary || undefined}>
+                      <span className={riskLevelPillClass(riskLevel)}>{riskLevel}</span>
+                    </td>
                     <td>
                       {exposure > 0 ? (
                         <span className="pill pill-high">{exposure} constraint(s)</span>
@@ -217,7 +269,7 @@ export function CustomersPage() {
               })}
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={6}>
+                  <td colSpan={7}>
                     <div className="empty">No customers match the current filters.</div>
                   </td>
                 </tr>

@@ -487,6 +487,38 @@ a {
   color: var(--ok);
 }
 
+.risk-factor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 16rem;
+  max-width: 28rem;
+}
+
+.risk-factor-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.45rem;
+  align-items: start;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--border, rgba(15, 23, 42, 0.08));
+}
+
+.risk-factor-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.risk-factor-item strong {
+  display: block;
+  font-size: 0.82rem;
+}
+
+.risk-factor-item .muted {
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
 .pill-neutral {
   background: #edf2f7;
   color: #4a6074;
