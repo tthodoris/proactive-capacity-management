@@ -12,10 +12,34 @@ export type CapacityRiskLevel = 'Red' | 'Amber' | 'Green'
 
 export interface CapacityRiskFactor {
   id: string
-  category: 'constraints' | 'quotas' | 'sku' | 'region'
+  category: 'constraints' | 'quotas' | 'sku'
   label: string
   detail: string
   points: number
+}
+
+/** Non-scoring advisories (region always; SKU when concentrated). */
+export interface CapacityRiskWarning {
+  id: string
+  category: 'region' | 'sku'
+  label: string
+  detail: string
+}
+
+export interface ConcentrationSlice {
+  label: string
+  count: number
+  sharePct: number
+}
+
+export interface QuotaRiskAction {
+  quota: Quota
+  usagePct: number
+  /** Limit needed to bring usage to ~70% of capacity. */
+  suggestedLimit: number
+  increaseBy: number
+  rationale: string
+  priority: 'critical' | 'high' | 'medium'
 }
 
 export interface CustomerCapacityRisk {
@@ -25,6 +49,7 @@ export interface CustomerCapacityRisk {
   score: number
   summary: string
   factors: CapacityRiskFactor[]
+  warnings: CapacityRiskWarning[]
   metrics: {
     openConstraintCount: number
     criticalConstraintCount: number
@@ -61,9 +86,20 @@ function pct(part: number, whole: number) {
   return Math.round((part / whole) * 1000) / 10
 }
 
-function concentration(items: InventoryItem[], keyFn: (item: InventoryItem) => string) {
+/** Azure Network Watcher quotas are nearly always saturated and not capacity-relevant. */
+export function isNetworkWatcherQuota(q: Pick<Quota, 'name' | 'nameValue'>) {
+  const hay = `${q.name || ''} ${q.nameValue || ''}`.toLowerCase()
+  return hay.includes('network watcher') || hay.includes('networkwatcher')
+}
+
+function concentration(
+  items: InventoryItem[],
+  keyFn: (item: InventoryItem) => string,
+  /** When false, still compute share metrics but never assign score points. */
+  scorePoints = true,
+) {
   if (items.length === 0) {
-    return { label: null as string | null, sharePct: 0, points: 0 }
+    return { label: null as string | null, sharePct: 0, points: 0, elevated: false }
   }
   const counts = new Map<string, number>()
   for (const item of items) {
@@ -79,15 +115,18 @@ function concentration(items: InventoryItem[], keyFn: (item: InventoryItem) => s
     }
   }
   const sharePct = pct(topCount, items.length)
+  const elevated = sharePct >= 25
   let points = 0
-  if (sharePct >= 50) points = 15
-  else if (sharePct >= 35) points = 10
-  else if (sharePct >= 25) points = 5
-  return { label: topLabel, sharePct, points }
+  if (scorePoints) {
+    if (sharePct >= 50) points = 15
+    else if (sharePct >= 35) points = 10
+    else if (sharePct >= 25) points = 5
+  }
+  return { label: topLabel, sharePct, points, elevated }
 }
 
 function quotaHeadroom(quotas: Quota[]) {
-  const usable = quotas.filter((q) => Number(q.limit) > 0)
+  const usable = quotas.filter((q) => Number(q.limit) > 0 && !isNetworkWatcherQuota(q))
   if (usable.length === 0) {
     return { maxPct: null as number | null, above80: 0, points: 0 }
   }
@@ -164,7 +203,7 @@ function buildSummary(level: CapacityRiskLevel, factors: CapacityRiskFactor[]): 
   const top = [...factors].sort((a, b) => b.points - a.points).slice(0, 2)
   if (top.length === 0) {
     return level === 'Green'
-      ? 'No material capacity pressure from open constraints, quotas, or concentration.'
+      ? 'No material capacity pressure from open constraints, quotas, or SKU concentration.'
       : 'Elevated capacity risk.'
   }
   return top.map((f) => f.label).join(' · ')
@@ -187,9 +226,10 @@ export function computeCustomerCapacityRisk(input: {
   const constraintsPart = constraintPressure(customer.id, impacts, constraints)
   const quotasPart = quotaHeadroom(customerQuotas)
   const skuPart = concentration(customerInventory, (i) => i.sku || i.size || i.resourceType)
-  const regionPart = concentration(customerInventory, (i) => i.region)
+  const regionPart = concentration(customerInventory, (i) => i.region, false)
 
   const factors: CapacityRiskFactor[] = []
+  const warnings: CapacityRiskWarning[] = []
 
   if (constraintsPart.openConstraintCount > 0) {
     const labels = constraintsPart.constraints
@@ -211,8 +251,8 @@ export function computeCustomerCapacityRisk(input: {
       label: `Quota headroom pressure (peak ${quotasPart.maxPct}%)`,
       detail:
         quotasPart.above80 > 0
-          ? `${quotasPart.above80} quota line(s) at or above 80% used`
-          : `Highest usage/limit across collected quotas is ${quotasPart.maxPct}%`,
+          ? `${quotasPart.above80} quota line(s) at or above 80% used (Network Watchers excluded)`
+          : `Highest usage/limit across collected quotas is ${quotasPart.maxPct}% (Network Watchers excluded)`,
       points: quotasPart.points,
     })
   }
@@ -227,18 +267,29 @@ export function computeCustomerCapacityRisk(input: {
     })
   }
 
-  if (regionPart.points > 0 && regionPart.label) {
-    factors.push({
+  if (regionPart.elevated && regionPart.label) {
+    warnings.push({
       id: 'region',
       category: 'region',
-      label: `Region concentration (${regionPart.sharePct}% in ${regionPart.label})`,
-      detail: `${regionPart.sharePct}% of inventory is in “${regionPart.label}”`,
-      points: regionPart.points,
+      label: `Region concentration warning (${regionPart.sharePct}% in ${regionPart.label})`,
+      detail: `${regionPart.sharePct}% of inventory is in “${regionPart.label}” — advisory only, not scored`,
+    })
+  }
+
+  if (skuPart.elevated && skuPart.label) {
+    warnings.push({
+      id: 'sku-warning',
+      category: 'sku',
+      label: `SKU concentration warning (${skuPart.sharePct}% on ${skuPart.label})`,
+      detail:
+        skuPart.points > 0
+          ? `${skuPart.sharePct}% of inventory shares “${skuPart.label}” — diversify SKUs to reduce scored risk`
+          : `${skuPart.sharePct}% of inventory shares “${skuPart.label}” — watch concentration even though score impact is low`,
     })
   }
 
   const score = clamp(
-    constraintsPart.points + quotasPart.points + skuPart.points + regionPart.points,
+    constraintsPart.points + quotasPart.points + skuPart.points,
     0,
     100,
   )
@@ -255,6 +306,7 @@ export function computeCustomerCapacityRisk(input: {
     score,
     summary: buildSummary(level, factors),
     factors: factors.sort((a, b) => b.points - a.points),
+    warnings,
     metrics: {
       openConstraintCount: constraintsPart.openConstraintCount,
       criticalConstraintCount: constraintsPart.criticalConstraintCount,
@@ -305,4 +357,122 @@ export function riskLevelPillClass(level: CapacityRiskLevel) {
     default:
       return 'pill pill-ok'
   }
+}
+
+function concentrationSlices(
+  items: InventoryItem[],
+  keyFn: (item: InventoryItem) => string,
+  limit = 8,
+): ConcentrationSlice[] {
+  if (items.length === 0) return []
+  const counts = new Map<string, number>()
+  for (const item of items) {
+    const key = keyFn(item).trim() || 'Unknown'
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([label, count]) => ({
+      label,
+      count,
+      sharePct: pct(count, items.length),
+    }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    .slice(0, limit)
+}
+
+/** Inventory share by SKU / size / type for charts. */
+export function getSkuConcentrationSlices(inventory: InventoryItem[], customerId: string) {
+  return concentrationSlices(
+    inventory.filter((i) => i.customerId === customerId),
+    (i) => i.sku || i.size || i.resourceType,
+  )
+}
+
+/** Inventory share by region for charts. */
+export function getRegionConcentrationSlices(inventory: InventoryItem[], customerId: string) {
+  return concentrationSlices(
+    inventory.filter((i) => i.customerId === customerId),
+    (i) => i.region,
+  )
+}
+
+/**
+ * Quotas that should be increased to reduce headroom pressure.
+ * Excludes Network Watchers. Target: bring usage to ~70% of limit.
+ */
+export function getQuotaActionsToReduceRisk(
+  quotas: Quota[],
+  customerId: string,
+  options?: { minUsagePct?: number; targetUsagePct?: number; limit?: number },
+): QuotaRiskAction[] {
+  const minUsagePct = options?.minUsagePct ?? 60
+  const targetUsagePct = options?.targetUsagePct ?? 70
+  const maxRows = options?.limit ?? 25
+  const targetRatio = targetUsagePct / 100
+
+  const actions: QuotaRiskAction[] = []
+  for (const quota of quotas) {
+    if (quota.customerId !== customerId) continue
+    if (isNetworkWatcherQuota(quota)) continue
+    const limit = Number(quota.limit)
+    const usage = Number(quota.usage)
+    if (!(limit > 0) || !(usage >= 0)) continue
+    const usagePct = Math.round((usage / limit) * 1000) / 10
+    if (usagePct < minUsagePct) continue
+
+    const suggestedLimit = Math.max(limit, Math.ceil(usage / targetRatio))
+    const increaseBy = suggestedLimit - limit
+    let priority: QuotaRiskAction['priority'] = 'medium'
+    if (usagePct >= 95) priority = 'critical'
+    else if (usagePct >= 80) priority = 'high'
+
+    actions.push({
+      quota,
+      usagePct,
+      suggestedLimit,
+      increaseBy,
+      priority,
+      rationale:
+        increaseBy > 0
+          ? `Raise limit from ${limit} to at least ${suggestedLimit} ${quota.unit || ''} so current usage (${usage}) sits near ${targetUsagePct}% of capacity.`
+              .replace(/\s+/g, ' ')
+              .trim()
+          : `Usage is already near the ${targetUsagePct}% target; keep monitoring.`,
+    })
+  }
+
+  return actions
+    .sort((a, b) => {
+      const p = { critical: 0, high: 1, medium: 2 }
+      const pd = p[a.priority] - p[b.priority]
+      if (pd !== 0) return pd
+      return b.usagePct - a.usagePct
+    })
+    .slice(0, maxRows)
+}
+
+/** Open constraints contributing to the customer's scored risk. */
+export function getOpenConstraintsForCustomer(
+  customerId: string,
+  impacts: ImpactResult[],
+  constraints: CapacityConstraint[],
+) {
+  const activeImpacts = filterActiveImpacts(impacts, constraints).filter(
+    (i) => i.customerId === customerId,
+  )
+  const constraintById = new Map(constraints.map((c) => [c.id, c]))
+  const touched = new Map<string, CapacityConstraint>()
+  for (const impact of activeImpacts) {
+    const c = constraintById.get(impact.constraintId)
+    if (c && c.status !== 'Resolved') touched.set(c.id, c)
+  }
+  return [...touched.values()].sort((a, b) => {
+    const order: Record<ConstraintSeverity, number> = {
+      Critical: 0,
+      High: 1,
+      Medium: 2,
+      Low: 3,
+    }
+    return order[a.severity] - order[b.severity] || a.sku.localeCompare(b.sku)
+  })
 }

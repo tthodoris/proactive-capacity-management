@@ -85,7 +85,7 @@ const titles: Record<string, { title: string; subtitle: string }> = {
   '/customers/risk': {
     title: 'Customer capacity risk',
     subtitle:
-      'Red / Amber / Green triage from open constraints, quota headroom, and concentration.',
+      'Red / Amber / Green triage from open constraints, quota headroom (excl. Network Watchers), and SKU concentration; region concentration is advisory only.',
   },
   '/inventory': {
     title: 'Resource inventory',
@@ -141,6 +141,13 @@ function resolveTitle(pathname: string) {
   }
   if (pathname === '/customers/risk') {
     return titles['/customers/risk']
+  }
+  if (pathname.startsWith('/customers/risk/')) {
+    return {
+      title: 'Capacity risk detail',
+      subtitle:
+        'Drivers, concentration warnings, charts, and quotas to raise to reduce risk.',
+    }
   }
   if (pathname.startsWith('/customers/')) {
     return {

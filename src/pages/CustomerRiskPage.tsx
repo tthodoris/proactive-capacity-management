@@ -148,13 +148,14 @@ export function CustomerRiskPage() {
         <div>
           <h3>Customer capacity risk</h3>
           <p>
-            Red / Amber / Green posture from open constraints, quota headroom, SKU concentration,
-            and region concentration — sorted for who to call first.
+            Red / Amber / Green posture from open constraints, quota headroom (excluding Network
+            Watchers), and SKU concentration — sorted for who to call first. Region concentration is
+            shown as a warning only.
           </p>
         </div>
       </div>
 
-      <div className="metric-grid">
+      <div className="metrics">
         <div className="metric-card">
           <div className="label">Red</div>
           <div className="value">{counts.red}</div>
@@ -198,6 +199,7 @@ export function CustomerRiskPage() {
               { key: 'score', label: 'Score' },
               { key: 'why', label: 'Why' },
               { key: 'factors', label: 'Factor details' },
+              { key: 'warnings', label: 'Warnings' },
             ]
             exportToExcel(
               'customer-capacity-risk',
@@ -213,6 +215,7 @@ export function CustomerRiskPage() {
                   score: risk?.score ?? 0,
                   why: risk?.summary || '',
                   factors: (risk?.factors || []).map((f) => f.detail).join(' | '),
+                  warnings: (risk?.warnings || []).map((w) => w.detail).join(' | '),
                 }
               }),
             )
@@ -260,11 +263,13 @@ export function CustomerRiskPage() {
                 const risk = riskByCustomer.get(c.id) as CustomerCapacityRisk | undefined
                 const owner = users.find((u) => u.id === c.csaOwnerId)
                 const level = risk?.level || 'Green'
+                const factors = risk?.factors || []
+                const warnings = risk?.warnings || []
                 return (
                   <tr
                     key={c.id}
                     className="clickable"
-                    onClick={() => navigate(`/customers/${c.id}`)}
+                    onClick={() => navigate(`/customers/risk/${c.id}`)}
                   >
                     <td>
                       <strong>#{triageOrder.get(c.id)}</strong>
@@ -281,20 +286,29 @@ export function CustomerRiskPage() {
                     <td>{risk?.summary || '—'}</td>
                     <td>
                       <div className="risk-factor-list">
-                        {(risk?.factors || []).length === 0 ? (
+                        {factors.length === 0 && warnings.length === 0 ? (
                           <span className="muted">No elevated factors</span>
-                        ) : (
-                          risk!.factors.map((f) => (
-                            <div key={f.id} className="risk-factor-item">
-                              <ShieldAlert size={14} />
-                              <div>
-                                <strong>{f.label}</strong>
-                                <div className="muted">{f.detail}</div>
-                              </div>
-                              <span className="muted">+{f.points}</span>
+                        ) : null}
+                        {factors.map((f) => (
+                          <div key={f.id} className="risk-factor-item">
+                            <ShieldAlert size={14} />
+                            <div>
+                              <strong>{f.label}</strong>
+                              <div className="muted">{f.detail}</div>
                             </div>
-                          ))
-                        )}
+                            <span className="muted">+{f.points}</span>
+                          </div>
+                        ))}
+                        {warnings.map((w) => (
+                          <div key={w.id} className="risk-factor-item risk-warning-item">
+                            <ShieldAlert size={14} />
+                            <div>
+                              <strong>{w.label}</strong>
+                              <div className="muted">{w.detail}</div>
+                            </div>
+                            <span className="pill pill-high">Warning</span>
+                          </div>
+                        ))}
                       </div>
                     </td>
                   </tr>

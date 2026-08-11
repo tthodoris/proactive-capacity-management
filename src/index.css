@@ -519,6 +519,136 @@ a {
   line-height: 1.35;
 }
 
+.risk-warning-item {
+  opacity: 0.95;
+}
+
+.risk-hero-badge {
+  text-align: right;
+  min-width: 7rem;
+}
+
+.risk-hero-badge .value {
+  margin-top: 0.35rem;
+  font-family: var(--font-display);
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.risk-detail-grid {
+  align-items: stretch;
+}
+
+.risk-chart-panel h4 {
+  margin: 0 0 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.risk-chart-panel > .muted {
+  margin: 0 0 1rem;
+}
+
+.risk-share-chart,
+.risk-driver-chart,
+.risk-quota-chart {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.risk-share-row,
+.risk-driver-row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 12rem) 1fr auto;
+  gap: 0.55rem 0.75rem;
+  align-items: center;
+}
+
+.risk-share-label,
+.risk-driver-label {
+  font-size: 0.86rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.risk-share-label .muted {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.risk-share-track {
+  height: 0.7rem;
+  border-radius: 999px;
+  background: #e8eef4;
+  overflow: hidden;
+}
+
+.risk-share-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #0f766e;
+  min-width: 0;
+}
+
+.risk-share-fill.tone-0,
+.risk-share-fill.tone-critical {
+  background: #be123c;
+}
+
+.risk-share-fill.tone-1,
+.risk-share-fill.tone-high {
+  background: #b45309;
+}
+
+.risk-share-fill.tone-2,
+.risk-share-fill.tone-medium {
+  background: #1d4ed8;
+}
+
+.risk-share-fill.tone-3 {
+  background: #0f766e;
+}
+
+.risk-share-fill.tone-4 {
+  background: #7c3aed;
+}
+
+.risk-share-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+  text-align: right;
+  min-width: 4.5rem;
+}
+
+.panel-header h4 {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+@media (max-width: 900px) {
+  .risk-share-row,
+  .risk-driver-row {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+  }
+
+  .risk-share-meta {
+    text-align: left;
+  }
+
+  .risk-hero-badge {
+    text-align: left;
+  }
+}
+
 .pill-neutral {
   background: #edf2f7;
   color: #4a6074;
