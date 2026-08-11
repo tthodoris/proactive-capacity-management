@@ -288,14 +288,22 @@ function levelFromScore(
   criticalConstraintCount: number,
   highConstraintCount: number,
   maxQuotaUsagePct: number | null,
+  weights: CapacityRiskWeights,
 ): CapacityRiskLevel {
-  if (criticalConstraintCount > 0 || (maxQuotaUsagePct != null && maxQuotaUsagePct >= 95) || score >= 60) {
+  const constraintWeightActive = weights.constraints >= 10
+  const quotaWeightActive = weights.quotas >= 10
+
+  if (
+    score >= 60 ||
+    (constraintWeightActive && criticalConstraintCount > 0) ||
+    (quotaWeightActive && maxQuotaUsagePct != null && maxQuotaUsagePct >= 95)
+  ) {
     return 'Red'
   }
   if (
-    highConstraintCount > 0 ||
-    (maxQuotaUsagePct != null && maxQuotaUsagePct >= 80) ||
-    score >= 30
+    score >= 30 ||
+    (constraintWeightActive && highConstraintCount > 0) ||
+    (quotaWeightActive && maxQuotaUsagePct != null && maxQuotaUsagePct >= 80)
   ) {
     return 'Amber'
   }
@@ -414,6 +422,7 @@ export function computeCustomerCapacityRisk(input: {
     constraintsPart.criticalConstraintCount,
     constraintsPart.highConstraintCount,
     quotasPart.maxPct,
+    weights,
   )
 
   return {
