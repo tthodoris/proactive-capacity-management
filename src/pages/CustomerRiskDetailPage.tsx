@@ -8,6 +8,7 @@ import {
   getQuotaActionsToReduceRisk,
   getRegionConcentrationSlices,
   getSkuConcentrationSlices,
+  loadCapacityRiskWeights,
   riskLevelPillClass,
   type ConcentrationSlice,
   type QuotaRiskAction,
@@ -180,6 +181,7 @@ export function CustomerRiskDetailPage() {
       quotas,
       impacts: impactResults,
       constraints,
+      weights: loadCapacityRiskWeights(),
     })
   }, [customer, allowed, inventory, quotas, impactResults, constraints])
 

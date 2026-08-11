@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Download, Search, ShieldAlert, X } from 'lucide-react'
+import { Download, RefreshCw, RotateCcw, Search, ShieldAlert, X } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import {
+  CAPACITY_RISK_WEIGHT_META,
+  DEFAULT_CAPACITY_RISK_WEIGHTS,
+  capacityRiskWeightsEqual,
   computePortfolioCapacityRisks,
+  loadCapacityRiskWeights,
+  normalizeCapacityRiskWeights,
   riskLevelPillClass,
+  saveCapacityRiskWeights,
   sortRisksForTriage,
   type CapacityRiskLevel,
+  type CapacityRiskWeightKey,
+  type CapacityRiskWeights,
   type CustomerCapacityRisk,
 } from '../lib/capacityRisk'
 import { exportToExcel } from '../lib/exportExcel'
@@ -22,6 +30,135 @@ type RiskSortKey = 'name' | 'owner' | 'level' | 'score' | 'why' | 'callFirst'
 
 const LEVEL_ORDER: Record<CapacityRiskLevel, number> = { Red: 0, Amber: 1, Green: 2 }
 
+function clampWeightInput(value: number) {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, value))
+}
+
+function RiskWeightPanel({
+  draft,
+  applied,
+  onChange,
+  onRecalculate,
+  onReset,
+}: {
+  draft: CapacityRiskWeights
+  applied: CapacityRiskWeights
+  onChange: (key: CapacityRiskWeightKey, value: number) => void
+  onRecalculate: () => void
+  onReset: () => void
+}) {
+  const normalizedDraft = normalizeCapacityRiskWeights(draft)
+  const dirty = !capacityRiskWeightsEqual(normalizeCapacityRiskWeights(draft), applied)
+  const total = draft.constraints + draft.quotas + draft.sku
+
+  return (
+    <section className="panel risk-weight-panel">
+      <div className="panel-header">
+        <div>
+          <h4>
+            <ShieldAlert size={18} /> Scoring factor weights
+          </h4>
+          <p>
+            Adjust how much each scored factor contributes to the 0–100 risk score, then recalculate
+            the portfolio. Region concentration stays advisory-only.
+          </p>
+        </div>
+        <div className="risk-weight-actions">
+          <button className="btn btn-ghost" type="button" onClick={onReset}>
+            <RotateCcw size={16} /> Reset defaults
+          </button>
+          <button
+            className="btn btn-primary"
+            type="button"
+            onClick={onRecalculate}
+            disabled={!dirty}
+            title={dirty ? 'Apply weights and recalculate' : 'Weights already applied'}
+          >
+            <RefreshCw size={16} /> Recalculate risk
+          </button>
+        </div>
+      </div>
+      <div className="panel-body">
+        <div
+          className="risk-weight-stack"
+          role="img"
+          aria-label="Relative weight of each scoring factor"
+        >
+          {CAPACITY_RISK_WEIGHT_META.map((meta) => {
+            const share = total > 0 ? (draft[meta.key] / total) * 100 : 0
+            return (
+              <div
+                key={meta.key}
+                className={`risk-weight-stack-segment ${meta.toneClass}`}
+                style={{ width: `${Math.max(share, share > 0 ? 2 : 0)}%` }}
+                title={`${meta.label}: ${normalizedDraft[meta.key]}%`}
+              />
+            )
+          })}
+        </div>
+        <div className="risk-weight-legend">
+          {CAPACITY_RISK_WEIGHT_META.map((meta) => (
+            <div key={meta.key} className="risk-weight-legend-item">
+              <span className={`risk-weight-swatch ${meta.toneClass}`} />
+              <span>
+                {meta.label} · <strong>{normalizedDraft[meta.key]}%</strong>
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="risk-weight-sliders">
+          {CAPACITY_RISK_WEIGHT_META.map((meta) => (
+            <label key={meta.key} className="risk-weight-slider">
+              <div className="risk-weight-slider-head">
+                <div>
+                  <strong>{meta.label}</strong>
+                  <div className="muted">{meta.description}</div>
+                </div>
+                <div className="risk-weight-slider-value">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={Math.round(draft[meta.key])}
+                    onChange={(e) => onChange(meta.key, Number(e.target.value))}
+                  />
+                  <span>%</span>
+                </div>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={Math.round(draft[meta.key])}
+                onChange={(e) => onChange(meta.key, Number(e.target.value))}
+                aria-label={`${meta.label} weight`}
+              />
+              <div className="risk-bar-item" style={{ marginTop: '0.35rem' }}>
+                <div className="risk-share-track">
+                  <div
+                    className={`risk-share-fill ${meta.toneClass}`}
+                    style={{ width: `${normalizedDraft[meta.key]}%` }}
+                  />
+                </div>
+              </div>
+            </label>
+          ))}
+        </div>
+
+        <p className="muted risk-weight-hint">
+          {dirty
+            ? 'Weights changed — click Recalculate risk to refresh Red/Amber/Green scores.'
+            : `Applied weights: constraints ${applied.constraints}%, quotas ${applied.quotas}%, SKU ${applied.sku}%.`}
+        </p>
+      </div>
+    </section>
+  )
+}
+
 export function CustomerRiskPage() {
   const {
     customers,
@@ -35,6 +172,12 @@ export function CustomerRiskPage() {
   } = useApp()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
+  const [draftWeights, setDraftWeights] = useState<CapacityRiskWeights>(() =>
+    loadCapacityRiskWeights(),
+  )
+  const [appliedWeights, setAppliedWeights] = useState<CapacityRiskWeights>(() =>
+    loadCapacityRiskWeights(),
+  )
   const { sortKey, sortDir, toggleSort } = useSortState<RiskSortKey>('level')
   const {
     filters,
@@ -58,9 +201,10 @@ export function CustomerRiskPage() {
       quotas,
       impacts: impactResults,
       constraints,
+      weights: appliedWeights,
     })
     return new Map(list.map((r) => [r.customerId, r]))
-  }, [portfolioCustomers, inventory, quotas, impactResults, constraints])
+  }, [portfolioCustomers, inventory, quotas, impactResults, constraints, appliedWeights])
 
   const triageOrder = useMemo(() => {
     const risks = sortRisksForTriage([...riskByCustomer.values()])
@@ -142,6 +286,23 @@ export function CustomerRiskPage() {
     }
   }, [riskByCustomer])
 
+  const updateDraftWeight = (key: CapacityRiskWeightKey, value: number) => {
+    setDraftWeights((prev) => ({
+      ...prev,
+      [key]: clampWeightInput(value),
+    }))
+  }
+
+  const recalculate = () => {
+    const next = saveCapacityRiskWeights(draftWeights)
+    setDraftWeights(next)
+    setAppliedWeights(next)
+  }
+
+  const resetWeights = () => {
+    setDraftWeights({ ...DEFAULT_CAPACITY_RISK_WEIGHTS })
+  }
+
   return (
     <div className="stack">
       <div className="page-hero">
@@ -154,6 +315,14 @@ export function CustomerRiskPage() {
           </p>
         </div>
       </div>
+
+      <RiskWeightPanel
+        draft={draftWeights}
+        applied={appliedWeights}
+        onChange={updateDraftWeight}
+        onRecalculate={recalculate}
+        onReset={resetWeights}
+      />
 
       <div className="metrics">
         <div className="metric-card">

@@ -5,6 +5,7 @@ import { exportSheetsToExcel, exportToExcel } from '../lib/exportExcel'
 import { filterActiveImpacts } from '../lib/constraints'
 import {
   computePortfolioCapacityRisks,
+  loadCapacityRiskWeights,
   riskLevelPillClass,
   type CapacityRiskLevel,
 } from '../lib/capacityRisk'
@@ -73,6 +74,7 @@ export function CustomersPage() {
       quotas,
       impacts: impactResults,
       constraints,
+      weights: loadCapacityRiskWeights(),
     })
     return new Map(list.map((r) => [r.customerId, r]))
   }, [customers, canSeeAllPortfolios, portfolioCustomerIds, inventory, quotas, impactResults, constraints])

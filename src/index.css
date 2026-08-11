@@ -519,8 +519,150 @@ a {
   line-height: 1.35;
 }
 
-.risk-warning-item {
-  opacity: 0.95;
+.risk-weight-panel .panel-header {
+  align-items: flex-start;
+}
+
+.risk-weight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.risk-weight-stack {
+  display: flex;
+  width: 100%;
+  height: 1.15rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e8eef4;
+  margin-bottom: 0.75rem;
+}
+
+.risk-weight-stack-segment {
+  height: 100%;
+  min-width: 0;
+  transition: width 160ms ease;
+}
+
+.risk-weight-stack-segment.tone-critical {
+  background: #be123c;
+}
+
+.risk-weight-stack-segment.tone-high {
+  background: #b45309;
+}
+
+.risk-weight-stack-segment.tone-2 {
+  background: #1d4ed8;
+}
+
+.risk-weight-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1.1rem;
+  margin-bottom: 1.1rem;
+}
+
+.risk-weight-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.86rem;
+}
+
+.risk-weight-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.risk-weight-swatch.tone-critical {
+  background: #be123c;
+}
+
+.risk-weight-swatch.tone-high {
+  background: #b45309;
+}
+
+.risk-weight-swatch.tone-2 {
+  background: #1d4ed8;
+}
+
+.risk-weight-sliders {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.risk-weight-slider {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8fbfe;
+}
+
+.risk-weight-slider-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.risk-weight-slider-head strong {
+  font-size: 0.9rem;
+}
+
+.risk-weight-slider-head .muted {
+  font-size: 0.76rem;
+  line-height: 1.35;
+  margin-top: 0.15rem;
+}
+
+.risk-weight-slider-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.risk-weight-slider-value input[type='number'] {
+  width: 3.4rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.25rem 0.35rem;
+  font: inherit;
+  font-weight: 650;
+  text-align: right;
+  background: #fff;
+}
+
+.risk-weight-slider input[type='range'] {
+  width: 100%;
+  accent-color: #0f766e;
+}
+
+.risk-weight-hint {
+  margin: 1rem 0 0;
+  font-size: 0.84rem;
+}
+
+@media (max-width: 1100px) {
+  .risk-weight-sliders {
+    grid-template-columns: 1fr;
+  }
+
+  .risk-weight-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 .risk-hero-badge {

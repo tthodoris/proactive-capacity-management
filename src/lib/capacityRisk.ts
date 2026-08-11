@@ -10,12 +10,60 @@ import type {
 
 export type CapacityRiskLevel = 'Red' | 'Amber' | 'Green'
 
+export type CapacityRiskWeightKey = 'constraints' | 'quotas' | 'sku'
+
+export type CapacityRiskWeights = Record<CapacityRiskWeightKey, number>
+
+/** Default share of the 0–100 score attributed to each scored factor. */
+export const DEFAULT_CAPACITY_RISK_WEIGHTS: CapacityRiskWeights = {
+  constraints: 40,
+  quotas: 35,
+  sku: 25,
+}
+
+/** Raw point caps used to normalize each factor to a 0–1 strength. */
+export const CAPACITY_RISK_FACTOR_CAPS: CapacityRiskWeights = {
+  constraints: 40,
+  quotas: 30,
+  sku: 15,
+}
+
+export const CAPACITY_RISK_WEIGHT_META: Array<{
+  key: CapacityRiskWeightKey
+  label: string
+  description: string
+  toneClass: string
+}> = [
+  {
+    key: 'constraints',
+    label: 'Open constraints',
+    description: 'Active constraint exposure by severity',
+    toneClass: 'tone-critical',
+  },
+  {
+    key: 'quotas',
+    label: 'Quota headroom',
+    description: 'Peak usage / limit (Network Watchers excluded)',
+    toneClass: 'tone-high',
+  },
+  {
+    key: 'sku',
+    label: 'SKU concentration',
+    description: 'Share of inventory on a single SKU / family',
+    toneClass: 'tone-2',
+  },
+]
+
+const RISK_WEIGHTS_STORAGE_KEY = 'pcm.capacityRiskWeights'
+
 export interface CapacityRiskFactor {
   id: string
-  category: 'constraints' | 'quotas' | 'sku'
+  category: CapacityRiskWeightKey
   label: string
   detail: string
   points: number
+  /** Unweighted raw points before weight share is applied. */
+  rawPoints: number
 }
 
 /** Non-scoring advisories (region always; SKU when concentrated). */
@@ -84,6 +132,61 @@ function clamp(n: number, min: number, max: number) {
 function pct(part: number, whole: number) {
   if (whole <= 0) return 0
   return Math.round((part / whole) * 1000) / 10
+}
+
+export function normalizeCapacityRiskWeights(
+  input?: Partial<CapacityRiskWeights> | null,
+): CapacityRiskWeights {
+  const next: CapacityRiskWeights = {
+    constraints: Number(input?.constraints),
+    quotas: Number(input?.quotas),
+    sku: Number(input?.sku),
+  }
+  for (const key of Object.keys(DEFAULT_CAPACITY_RISK_WEIGHTS) as CapacityRiskWeightKey[]) {
+    if (!Number.isFinite(next[key]) || next[key] < 0) {
+      next[key] = DEFAULT_CAPACITY_RISK_WEIGHTS[key]
+    }
+  }
+  const total = next.constraints + next.quotas + next.sku
+  if (total <= 0) return { ...DEFAULT_CAPACITY_RISK_WEIGHTS }
+  return {
+    constraints: Math.round((next.constraints / total) * 1000) / 10,
+    quotas: Math.round((next.quotas / total) * 1000) / 10,
+    sku: Math.round((next.sku / total) * 1000) / 10,
+  }
+}
+
+export function capacityRiskWeightsEqual(a: CapacityRiskWeights, b: CapacityRiskWeights) {
+  return (
+    Math.abs(a.constraints - b.constraints) < 0.05 &&
+    Math.abs(a.quotas - b.quotas) < 0.05 &&
+    Math.abs(a.sku - b.sku) < 0.05
+  )
+}
+
+export function loadCapacityRiskWeights(): CapacityRiskWeights {
+  try {
+    const raw = localStorage.getItem(RISK_WEIGHTS_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_CAPACITY_RISK_WEIGHTS }
+    return normalizeCapacityRiskWeights(JSON.parse(raw) as Partial<CapacityRiskWeights>)
+  } catch {
+    return { ...DEFAULT_CAPACITY_RISK_WEIGHTS }
+  }
+}
+
+export function saveCapacityRiskWeights(weights: CapacityRiskWeights) {
+  const normalized = normalizeCapacityRiskWeights(weights)
+  try {
+    localStorage.setItem(RISK_WEIGHTS_STORAGE_KEY, JSON.stringify(normalized))
+  } catch {
+    // Ignore quota / private-mode failures; in-memory weights still apply for the session.
+  }
+  return normalized
+}
+
+function weightedContribution(rawPoints: number, key: CapacityRiskWeightKey, weights: CapacityRiskWeights) {
+  const strength = clamp(rawPoints / CAPACITY_RISK_FACTOR_CAPS[key], 0, 1)
+  return Math.round(strength * weights[key] * 10) / 10
 }
 
 /** Azure Network Watcher quotas are nearly always saturated and not capacity-relevant. */
@@ -218,8 +321,10 @@ export function computeCustomerCapacityRisk(input: {
   quotas: Quota[]
   impacts: ImpactResult[]
   constraints: CapacityConstraint[]
+  weights?: Partial<CapacityRiskWeights> | null
 }): CustomerCapacityRisk {
   const { customer, inventory, quotas, impacts, constraints } = input
+  const weights = normalizeCapacityRiskWeights(input.weights)
   const customerInventory = inventory.filter((i) => i.customerId === customer.id)
   const customerQuotas = quotas.filter((q) => q.customerId === customer.id)
 
@@ -227,6 +332,14 @@ export function computeCustomerCapacityRisk(input: {
   const quotasPart = quotaHeadroom(customerQuotas)
   const skuPart = concentration(customerInventory, (i) => i.sku || i.size || i.resourceType)
   const regionPart = concentration(customerInventory, (i) => i.region, false)
+
+  const constraintContribution = weightedContribution(
+    constraintsPart.points,
+    'constraints',
+    weights,
+  )
+  const quotaContribution = weightedContribution(quotasPart.points, 'quotas', weights)
+  const skuContribution = weightedContribution(skuPart.points, 'sku', weights)
 
   const factors: CapacityRiskFactor[] = []
   const warnings: CapacityRiskWarning[] = []
@@ -240,7 +353,8 @@ export function computeCustomerCapacityRisk(input: {
       category: 'constraints',
       label: `${constraintsPart.openConstraintCount} open constraint(s)`,
       detail: labels.join(', ') + (constraintsPart.constraints.length > 4 ? '…' : ''),
-      points: constraintsPart.points,
+      points: constraintContribution,
+      rawPoints: constraintsPart.points,
     })
   }
 
@@ -253,7 +367,8 @@ export function computeCustomerCapacityRisk(input: {
         quotasPart.above80 > 0
           ? `${quotasPart.above80} quota line(s) at or above 80% used (Network Watchers excluded)`
           : `Highest usage/limit across collected quotas is ${quotasPart.maxPct}% (Network Watchers excluded)`,
-      points: quotasPart.points,
+      points: quotaContribution,
+      rawPoints: quotasPart.points,
     })
   }
 
@@ -263,7 +378,8 @@ export function computeCustomerCapacityRisk(input: {
       category: 'sku',
       label: `SKU concentration (${skuPart.sharePct}% on ${skuPart.label})`,
       detail: `${skuPart.sharePct}% of inventory shares SKU/family “${skuPart.label}”`,
-      points: skuPart.points,
+      points: skuContribution,
+      rawPoints: skuPart.points,
     })
   }
 
@@ -289,7 +405,7 @@ export function computeCustomerCapacityRisk(input: {
   }
 
   const score = clamp(
-    constraintsPart.points + quotasPart.points + skuPart.points,
+    Math.round(constraintContribution + quotaContribution + skuContribution),
     0,
     100,
   )
@@ -328,6 +444,7 @@ export function computePortfolioCapacityRisks(input: {
   quotas: Quota[]
   impacts: ImpactResult[]
   constraints: CapacityConstraint[]
+  weights?: Partial<CapacityRiskWeights> | null
 }): CustomerCapacityRisk[] {
   return input.customers.map((customer) =>
     computeCustomerCapacityRisk({
@@ -336,6 +453,7 @@ export function computePortfolioCapacityRisks(input: {
       quotas: input.quotas,
       impacts: input.impacts,
       constraints: input.constraints,
+      weights: input.weights,
     }),
   )
 }
