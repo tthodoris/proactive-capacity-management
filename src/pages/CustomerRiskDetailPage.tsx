@@ -28,33 +28,49 @@ function ShareBarChart({
   if (slices.length === 0) {
     return (
       <div className="panel risk-chart-panel">
-        <h4>{title}</h4>
-        <p className="muted">{caption}</p>
-        <div className="empty">No inventory to chart.</div>
+        <div className="panel-header">
+          <div>
+            <h4>{title}</h4>
+            <p>{caption}</p>
+          </div>
+        </div>
+        <div className="panel-body">
+          <div className="empty">No inventory to chart.</div>
+        </div>
       </div>
     )
   }
   return (
     <div className="panel risk-chart-panel">
-      <h4>{title}</h4>
-      <p className="muted">{caption}</p>
-      <div className="risk-share-chart" role="img" aria-label={title}>
-        {slices.map((slice) => (
-          <div key={slice.label} className="risk-share-row">
-            <div className="risk-share-label" title={slice.label}>
-              {slice.label}
+      <div className="panel-header">
+        <div>
+          <h4>{title}</h4>
+          <p>{caption}</p>
+        </div>
+      </div>
+      <div className="panel-body">
+        <div className="risk-share-chart" role="img" aria-label={title}>
+          {slices.map((slice) => (
+            <div key={slice.label} className="risk-bar-item">
+              <div className="risk-bar-heading">
+                <span className="risk-bar-title" title={slice.label}>
+                  {slice.label}
+                </span>
+                <span className="risk-bar-value">
+                  {slice.sharePct}% · {slice.count}
+                </span>
+              </div>
+              <div className="risk-share-track">
+                <div
+                  className={`risk-share-fill ${accentClass || ''}`.trim()}
+                  style={{
+                    width: `${Math.max((slice.sharePct / max) * 100, slice.sharePct > 0 ? 3 : 0)}%`,
+                  }}
+                />
+              </div>
             </div>
-            <div className="risk-share-track">
-              <div
-                className={`risk-share-fill ${accentClass || ''}`.trim()}
-                style={{ width: `${Math.max((slice.sharePct / max) * 100, slice.sharePct > 0 ? 3 : 0)}%` }}
-              />
-            </div>
-            <div className="risk-share-meta">
-              {slice.sharePct}% · {slice.count}
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   )
@@ -75,15 +91,19 @@ function DriverScoreChart({
   return (
     <div className="risk-driver-chart" role="img" aria-label="Score contribution by driver">
       {factors.map((f, index) => (
-        <div key={f.id} className="risk-driver-row">
-          <div className="risk-driver-label">{f.label}</div>
+        <div key={f.id} className="risk-bar-item">
+          <div className="risk-bar-heading">
+            <span className="risk-bar-title" title={f.label}>
+              {f.label}
+            </span>
+            <span className="risk-bar-value">+{f.points} pts</span>
+          </div>
           <div className="risk-share-track">
             <div
               className={`risk-share-fill tone-${index % 5}`}
               style={{ width: `${Math.max((f.points / total) * 100, f.points > 0 ? 4 : 0)}%` }}
             />
           </div>
-          <div className="risk-share-meta">+{f.points} pts</div>
         </div>
       ))}
     </div>
@@ -104,22 +124,29 @@ function QuotaUsageChart({ actions }: { actions: QuotaRiskAction[] }) {
             : action.priority === 'high'
               ? 'tone-high'
               : 'tone-medium'
+        const subtitle = [
+          action.quota.region,
+          action.quota.subscriptionName || action.quota.azureSubscriptionId,
+        ]
+          .filter(Boolean)
+          .join(' · ')
         return (
-          <div key={action.quota.id} className="risk-share-row">
-            <div className="risk-share-label" title={action.quota.name}>
-              {action.quota.name}
-              <div className="muted">
-                {action.quota.region}
-                {action.quota.subscriptionName ? ` · ${action.quota.subscriptionName}` : ''}
+          <div key={action.quota.id} className="risk-bar-item">
+            <div className="risk-bar-heading">
+              <div className="risk-bar-title-block">
+                <span className="risk-bar-title" title={action.quota.name}>
+                  {action.quota.name}
+                </span>
+                {subtitle ? <span className="muted risk-bar-subtitle">{subtitle}</span> : null}
               </div>
+              <span className="risk-bar-value">{action.usagePct}%</span>
             </div>
             <div className="risk-share-track">
               <div
                 className={`risk-share-fill ${tone}`}
-                style={{ width: `${Math.min(action.usagePct, 100)}%` }}
+                style={{ width: `${Math.min(Math.max(action.usagePct, 0), 100)}%` }}
               />
             </div>
-            <div className="risk-share-meta">{action.usagePct}%</div>
           </div>
         )
       })}
@@ -220,12 +247,10 @@ export function CustomerRiskDetailPage() {
         </div>
       </div>
 
-      <div className="metrics">
-        <div className="metric-card">
+      <div className="metrics risk-detail-metrics">
+        <div className="metric-card risk-why-card">
           <div className="label">Why</div>
-          <div className="value" style={{ fontSize: '1.05rem', lineHeight: 1.35 }}>
-            {risk.summary}
-          </div>
+          <p className="risk-why-text">{risk.summary}</p>
           <div className="hint">{owner?.name || 'Unassigned'} · {customer.segment}</div>
         </div>
         <div className="metric-card">
@@ -249,70 +274,72 @@ export function CustomerRiskDetailPage() {
         </div>
       </div>
 
-      <section className="panel">
+      <section className="panel risk-detail-panel">
         <div className="panel-header">
           <div>
             <h4>
               <ShieldAlert size={18} /> Score drivers
             </h4>
-            <p className="muted">
+            <p>
               Points from open constraints, quota headroom, and SKU concentration. Region
               concentration does not add to the score.
             </p>
           </div>
         </div>
-        <DriverScoreChart factors={risk.factors} />
-        {risk.factors.length > 0 ? (
-          <div className="risk-factor-list" style={{ marginTop: '1rem' }}>
-            {risk.factors.map((f) => (
-              <div key={f.id} className="risk-factor-item">
-                <ShieldAlert size={14} />
-                <div>
-                  <strong>{f.label}</strong>
-                  <div className="muted">{f.detail}</div>
+        <div className="panel-body">
+          <DriverScoreChart factors={risk.factors} />
+          {risk.factors.length > 0 ? (
+            <div className="risk-factor-list risk-detail-factors">
+              {risk.factors.map((f) => (
+                <div key={f.id} className="risk-factor-item">
+                  <ShieldAlert size={14} />
+                  <div>
+                    <strong>{f.label}</strong>
+                    <div className="muted">{f.detail}</div>
+                  </div>
+                  <span className="muted">+{f.points}</span>
                 </div>
-                <span className="muted">+{f.points}</span>
-              </div>
-            ))}
-          </div>
-        ) : null}
-        {openConstraints.length > 0 ? (
-          <div className="table-wrap" style={{ marginTop: '1rem' }}>
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Open constraint</th>
-                  <th>Severity</th>
-                  <th>Status</th>
-                  <th>Regions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {openConstraints.map((c) => (
-                  <tr
-                    key={c.id}
-                    className="clickable"
-                    onClick={() => navigate(`/constraints/${c.id}`)}
-                  >
-                    <td>
-                      <strong>{c.sku}</strong>
-                      <div className="muted">{c.resourceType}</div>
-                    </td>
-                    <td>
-                      <span
-                        className={`pill pill-${c.severity === 'Critical' ? 'critical' : c.severity === 'High' ? 'high' : 'medium'}`}
-                      >
-                        {c.severity}
-                      </span>
-                    </td>
-                    <td>{c.status}</td>
-                    <td>{c.regions.join(', ') || '—'}</td>
+              ))}
+            </div>
+          ) : null}
+          {openConstraints.length > 0 ? (
+            <div className="table-wrap risk-detail-table">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Open constraint</th>
+                    <th>Severity</th>
+                    <th>Status</th>
+                    <th>Regions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
+                </thead>
+                <tbody>
+                  {openConstraints.map((c) => (
+                    <tr
+                      key={c.id}
+                      className="clickable"
+                      onClick={() => navigate(`/constraints/${c.id}`)}
+                    >
+                      <td>
+                        <strong>{c.sku}</strong>
+                        <div className="muted">{c.resourceType}</div>
+                      </td>
+                      <td>
+                        <span
+                          className={`pill pill-${c.severity === 'Critical' ? 'critical' : c.severity === 'High' ? 'high' : 'medium'}`}
+                        >
+                          {c.severity}
+                        </span>
+                      </td>
+                      <td>{c.status}</td>
+                      <td>{c.regions.join(', ') || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
       </section>
 
       <div className="grid-2 risk-detail-grid">
@@ -330,100 +357,104 @@ export function CustomerRiskDetailPage() {
         />
       </div>
 
-      <section className="panel">
+      <section className="panel risk-detail-panel">
         <div className="panel-header">
           <div>
             <h4>
               <Package size={18} /> Concentration warnings
             </h4>
-            <p className="muted">
+            <p>
               Region warnings never affect the score. SKU warnings flag diversification risk and may
               also appear in scored drivers when concentration is high enough.
             </p>
           </div>
         </div>
-        {regionWarnings.length === 0 && skuWarnings.length === 0 ? (
-          <div className="empty">No elevated region or SKU concentration warnings.</div>
-        ) : (
-          <div className="risk-factor-list">
-            {[...skuWarnings, ...regionWarnings].map((w) => (
-              <div key={w.id} className="risk-factor-item risk-warning-item">
-                {w.category === 'region' ? <MapPinned size={14} /> : <Package size={14} />}
-                <div>
-                  <strong>{w.label}</strong>
-                  <div className="muted">{w.detail}</div>
+        <div className="panel-body">
+          {regionWarnings.length === 0 && skuWarnings.length === 0 ? (
+            <div className="empty">No elevated region or SKU concentration warnings.</div>
+          ) : (
+            <div className="risk-factor-list risk-detail-factors">
+              {[...skuWarnings, ...regionWarnings].map((w) => (
+                <div key={w.id} className="risk-factor-item risk-warning-item">
+                  {w.category === 'region' ? <MapPinned size={14} /> : <Package size={14} />}
+                  <div>
+                    <strong>{w.label}</strong>
+                    <div className="muted">{w.detail}</div>
+                  </div>
+                  <span className="pill pill-high">Warning</span>
                 </div>
-                <span className="pill pill-high">Warning</span>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
       </section>
 
-      <section className="panel">
+      <section className="panel risk-detail-panel">
         <div className="panel-header">
           <div>
             <h4>
               <Gauge size={18} /> Quotas to modify
             </h4>
-            <p className="muted">
+            <p>
               Raise these limits so current usage sits near 70% of capacity. Network Watcher quotas
               are excluded. Chart shows today&apos;s usage %.
             </p>
           </div>
         </div>
-        <QuotaUsageChart actions={quotaActions} />
-        {quotaActions.length > 0 ? (
-          <div className="table-wrap" style={{ marginTop: '1rem' }}>
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Quota</th>
-                  <th>Region</th>
-                  <th>Usage / limit</th>
-                  <th>Usage %</th>
-                  <th>Suggested limit</th>
-                  <th>Increase by</th>
-                  <th>Why</th>
-                </tr>
-              </thead>
-              <tbody>
-                {quotaActions.map((action) => (
-                  <tr key={action.quota.id}>
-                    <td>
-                      <strong>{action.quota.name}</strong>
-                      <div className="muted">
-                        {action.quota.subscriptionName || action.quota.azureSubscriptionId || '—'}
-                      </div>
-                    </td>
-                    <td>{action.quota.region}</td>
-                    <td>
-                      {action.quota.usage} / {action.quota.limit} {action.quota.unit}
-                    </td>
-                    <td>
-                      <span
-                        className={`pill ${
-                          action.priority === 'critical'
-                            ? 'pill-critical'
-                            : action.priority === 'high'
-                              ? 'pill-high'
-                              : 'pill-medium'
-                        }`}
-                      >
-                        {action.usagePct}%
-                      </span>
-                    </td>
-                    <td>
-                      <strong>{action.suggestedLimit}</strong> {action.quota.unit}
-                    </td>
-                    <td>{action.increaseBy > 0 ? `+${action.increaseBy}` : '—'}</td>
-                    <td className="muted">{action.rationale}</td>
+        <div className="panel-body">
+          <QuotaUsageChart actions={quotaActions} />
+          {quotaActions.length > 0 ? (
+            <div className="table-wrap risk-detail-table">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Quota</th>
+                    <th>Region</th>
+                    <th>Usage / limit</th>
+                    <th>Usage %</th>
+                    <th>Suggested limit</th>
+                    <th>Increase by</th>
+                    <th>Why</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
+                </thead>
+                <tbody>
+                  {quotaActions.map((action) => (
+                    <tr key={action.quota.id}>
+                      <td>
+                        <strong>{action.quota.name}</strong>
+                        <div className="muted">
+                          {action.quota.subscriptionName || action.quota.azureSubscriptionId || '—'}
+                        </div>
+                      </td>
+                      <td>{action.quota.region}</td>
+                      <td>
+                        {action.quota.usage} / {action.quota.limit} {action.quota.unit}
+                      </td>
+                      <td>
+                        <span
+                          className={`pill ${
+                            action.priority === 'critical'
+                              ? 'pill-critical'
+                              : action.priority === 'high'
+                                ? 'pill-high'
+                                : 'pill-medium'
+                          }`}
+                        >
+                          {action.usagePct}%
+                        </span>
+                      </td>
+                      <td>
+                        <strong>{action.suggestedLimit}</strong> {action.quota.unit}
+                      </td>
+                      <td>{action.increaseBy > 0 ? `+${action.increaseBy}` : '—'}</td>
+                      <td className="muted">{action.rationale}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
       </section>
     </div>
   )
