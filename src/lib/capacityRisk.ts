@@ -79,6 +79,10 @@ export interface ConcentrationSlice {
   label: string
   count: number
   sharePct: number
+  /** Total capacity weight (e.g. sum of vCPUs). */
+  capacityWeight: number
+  /** Share of total capacity weight as %. */
+  capacitySharePct: number
 }
 
 export interface QuotaRiskAction {
@@ -230,6 +234,30 @@ export function isNetworkWatcherQuota(q: Pick<Quota, 'name' | 'nameValue'>) {
   return hay.includes('network watcher') || hay.includes('networkwatcher')
 }
 
+/**
+ * Extract an approximate vCPU count from a VM SKU string.
+ * Examples: Standard_D8s_v5 → 8, Standard_E64as_v5 → 64, GP_Gen5_8 → 8
+ * Non-VM resources or unparseable SKUs return 1 (each resource counts equally).
+ */
+export function estimateVcpuFromSku(sku: string | undefined | null, size: string | undefined | null): number {
+  const raw = String(sku || size || '').trim()
+  if (!raw) return 1
+
+  // Standard_D8s_v5, Standard_E64as_v5, Standard_NC24rs_v3, Standard_D2-1s_v5 etc.
+  const vm = raw.match(/^Standard_[A-Za-z]+?(\d+)/i)
+  if (vm) return Math.max(Number(vm[1]), 1)
+
+  // GP_Gen5_8, BC_Gen5_4
+  const gen = raw.match(/_Gen\d+_(\d+)$/i)
+  if (gen) return Math.max(Number(gen[1]), 1)
+
+  // Burstable4, GeneralPurpose8 etc.
+  const tier = raw.match(/(?:Burstable|GeneralPurpose|MemoryOptimized|Premium)(\d+)/i)
+  if (tier) return Math.max(Number(tier[1]), 1)
+
+  return 1
+}
+
 function concentration(
   items: InventoryItem[],
   keyFn: (item: InventoryItem) => string,
@@ -239,20 +267,29 @@ function concentration(
   if (items.length === 0) {
     return { label: null as string | null, sharePct: 0, points: 0, elevated: false }
   }
-  const counts = new Map<string, number>()
+
+  const buckets = new Map<string, { count: number; weight: number }>()
+  let totalWeight = 0
   for (const item of items) {
     const key = keyFn(item).trim() || 'Unknown'
-    counts.set(key, (counts.get(key) || 0) + 1)
+    const w = estimateVcpuFromSku(item.sku, item.size)
+    const existing = buckets.get(key) || { count: 0, weight: 0 }
+    existing.count += 1
+    existing.weight += w
+    buckets.set(key, existing)
+    totalWeight += w
   }
+
   let topLabel = 'Unknown'
-  let topCount = 0
-  for (const [label, count] of counts) {
-    if (count > topCount) {
+  let topWeight = 0
+  for (const [label, data] of buckets) {
+    if (data.weight > topWeight) {
       topLabel = label
-      topCount = count
+      topWeight = data.weight
     }
   }
-  const sharePct = pct(topCount, items.length)
+
+  const sharePct = pct(topWeight, totalWeight)
   const elevated = sharePct >= 25
   let points = 0
   if (scorePoints) {
@@ -647,18 +684,26 @@ function concentrationSlices(
   limit = 8,
 ): ConcentrationSlice[] {
   if (items.length === 0) return []
-  const counts = new Map<string, number>()
+  const buckets = new Map<string, { count: number; weight: number }>()
+  let totalWeight = 0
   for (const item of items) {
     const key = keyFn(item).trim() || 'Unknown'
-    counts.set(key, (counts.get(key) || 0) + 1)
+    const w = estimateVcpuFromSku(item.sku, item.size)
+    const existing = buckets.get(key) || { count: 0, weight: 0 }
+    existing.count += 1
+    existing.weight += w
+    buckets.set(key, existing)
+    totalWeight += w
   }
-  return [...counts.entries()]
-    .map(([label, count]) => ({
+  return [...buckets.entries()]
+    .map(([label, data]) => ({
       label,
-      count,
-      sharePct: pct(count, items.length),
+      count: data.count,
+      sharePct: pct(data.count, items.length),
+      capacityWeight: data.weight,
+      capacitySharePct: pct(data.weight, totalWeight),
     }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    .sort((a, b) => b.capacityWeight - a.capacityWeight || a.label.localeCompare(b.label))
     .slice(0, limit)
 }
 

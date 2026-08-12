@@ -23,13 +23,16 @@ function ShareBarChart({
   caption,
   slices,
   accentClass,
+  useCapacityWeight,
 }: {
   title: string
   caption: string
   slices: ConcentrationSlice[]
   accentClass?: string
+  useCapacityWeight?: boolean
 }) {
-  const max = Math.max(...slices.map((s) => s.sharePct), 1)
+  const valueKey = useCapacityWeight ? 'capacitySharePct' : 'sharePct'
+  const max = Math.max(...slices.map((s) => s[valueKey]), 1)
   if (slices.length === 0) {
     return (
       <div className="panel risk-chart-panel">
@@ -62,14 +65,14 @@ function ShareBarChart({
                   {slice.label}
                 </span>
                 <span className="risk-bar-value">
-                  {slice.sharePct}% · {slice.count}
+                  {slice[valueKey]}%{useCapacityWeight ? ` (${slice.capacityWeight} vCPU)` : ''} · {slice.count}
                 </span>
               </div>
               <div className="risk-share-track">
                 <div
                   className={`risk-share-fill ${accentClass || ''}`.trim()}
                   style={{
-                    width: `${Math.max((slice.sharePct / max) * 100, slice.sharePct > 0 ? 3 : 0)}%`,
+                    width: `${Math.max((slice[valueKey] / max) * 100, slice[valueKey] > 0 ? 3 : 0)}%`,
                   }}
                 />
               </div>
@@ -506,9 +509,10 @@ export function CustomerRiskDetailPage() {
       <div className="grid-2 risk-detail-grid">
         <ShareBarChart
           title="SKU concentration"
-          caption="Share of inventory by SKU / size / type. High concentration raises scored risk and is also surfaced as a warning."
+          caption="Share of capacity by SKU (weighted by vCPU). High concentration raises scored risk."
           slices={skuSlices}
           accentClass="tone-1"
+          useCapacityWeight
         />
         <ShareBarChart
           title="Region concentration"
