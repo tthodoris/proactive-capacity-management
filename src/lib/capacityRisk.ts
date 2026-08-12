@@ -144,21 +144,26 @@ export const CAPACITY_RISK_RAG_THRESHOLDS = {
 } as const
 
 export function adjustCapacityRiskWeight(
-  weights: CapacityRiskWeights,
+  _weights: CapacityRiskWeights,
   changed: CapacityRiskWeightKey,
   newValue: number,
 ): CapacityRiskWeights {
-  const keys: CapacityRiskWeightKey[] = ['constraints', 'quotas', 'sku']
   const clamped = Math.max(0, Math.min(100, Math.round(Number(newValue) || 0)))
-  const others = keys.filter((k) => k !== changed)
+  const others = (['constraints', 'quotas', 'sku'] as CapacityRiskWeightKey[]).filter(
+    (k) => k !== changed,
+  )
   const remaining = 100 - clamped
   const first = Math.floor(remaining / 2)
   const second = remaining - first
-  return {
-    [changed]: clamped,
-    [others[0]]: first,
-    [others[1]]: second,
+  const result: CapacityRiskWeights = {
+    constraints: 0,
+    quotas: 0,
+    sku: 0,
   }
+  result[changed] = clamped
+  result[others[0]] = first
+  result[others[1]] = second
+  return result
 }
 
 export function normalizeCapacityRiskWeights(
