@@ -85,7 +85,7 @@ const titles: Record<string, { title: string; subtitle: string }> = {
   '/customers/risk': {
     title: 'Customer capacity risk',
     subtitle:
-      'Red / Amber / Green triage from open constraints, quota headroom (excl. Network Watchers), and SKU concentration; region concentration is advisory only.',
+      'Red / Amber / Green triage per customer and subscription from constraints, quotas, and SKU concentration.',
   },
   '/inventory': {
     title: 'Resource inventory',

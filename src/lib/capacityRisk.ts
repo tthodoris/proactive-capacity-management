@@ -6,6 +6,7 @@ import type {
   ImpactResult,
   InventoryItem,
   Quota,
+  Subscription,
 } from '../types'
 
 export type CapacityRiskLevel = 'Red' | 'Amber' | 'Green'
@@ -92,6 +93,9 @@ export interface QuotaRiskAction {
 
 export interface CustomerCapacityRisk {
   customerId: string
+  /** Set when this score is scoped to a single subscription; null/omitted = customer rollup. */
+  subscriptionId?: string | null
+  subscriptionName?: string | null
   level: CapacityRiskLevel
   /** 0–100 composite score used for ranking within a RAG band. */
   score: number
@@ -134,6 +138,29 @@ function pct(part: number, whole: number) {
   return Math.round((part / whole) * 1000) / 10
 }
 
+export const CAPACITY_RISK_RAG_THRESHOLDS = {
+  red: 50,
+  amber: 25,
+} as const
+
+export function adjustCapacityRiskWeight(
+  weights: CapacityRiskWeights,
+  changed: CapacityRiskWeightKey,
+  newValue: number,
+): CapacityRiskWeights {
+  const keys: CapacityRiskWeightKey[] = ['constraints', 'quotas', 'sku']
+  const clamped = Math.max(0, Math.min(100, Math.round(Number(newValue) || 0)))
+  const others = keys.filter((k) => k !== changed)
+  const remaining = 100 - clamped
+  const first = Math.floor(remaining / 2)
+  const second = remaining - first
+  return {
+    [changed]: clamped,
+    [others[0]]: first,
+    [others[1]]: second,
+  }
+}
+
 export function normalizeCapacityRiskWeights(
   input?: Partial<CapacityRiskWeights> | null,
 ): CapacityRiskWeights {
@@ -149,11 +176,14 @@ export function normalizeCapacityRiskWeights(
   }
   const total = next.constraints + next.quotas + next.sku
   if (total <= 0) return { ...DEFAULT_CAPACITY_RISK_WEIGHTS }
-  return {
-    constraints: Math.round((next.constraints / total) * 1000) / 10,
-    quotas: Math.round((next.quotas / total) * 1000) / 10,
-    sku: Math.round((next.sku / total) * 1000) / 10,
+  const scaled = {
+    constraints: Math.round((next.constraints / total) * 100),
+    quotas: Math.round((next.quotas / total) * 100),
+    sku: Math.round((next.sku / total) * 100),
   }
+  const drift = 100 - (scaled.constraints + scaled.quotas + scaled.sku)
+  scaled.constraints += drift
+  return scaled
 }
 
 export function capacityRiskWeightsEqual(a: CapacityRiskWeights, b: CapacityRiskWeights) {
@@ -250,14 +280,18 @@ function quotaHeadroom(quotas: Quota[]) {
   return { maxPct, above80, points }
 }
 
-function constraintPressure(
+function constraintPressureForScope(
   customerId: string,
+  subscriptionId: string | null,
   impacts: ImpactResult[],
   constraints: CapacityConstraint[],
 ) {
-  const activeImpacts = filterActiveImpacts(impacts, constraints).filter(
+  let activeImpacts = filterActiveImpacts(impacts, constraints).filter(
     (i) => i.customerId === customerId,
   )
+  if (subscriptionId) {
+    activeImpacts = activeImpacts.filter((i) => i.subscriptionId === subscriptionId)
+  }
   const constraintById = new Map(constraints.map((c) => [c.id, c]))
   const touched = new Map<string, CapacityConstraint>()
   for (const impact of activeImpacts) {
@@ -283,30 +317,9 @@ function constraintPressure(
   }
 }
 
-function levelFromScore(
-  score: number,
-  criticalConstraintCount: number,
-  highConstraintCount: number,
-  maxQuotaUsagePct: number | null,
-  weights: CapacityRiskWeights,
-): CapacityRiskLevel {
-  const constraintWeightActive = weights.constraints >= 10
-  const quotaWeightActive = weights.quotas >= 10
-
-  if (
-    score >= 60 ||
-    (constraintWeightActive && criticalConstraintCount > 0) ||
-    (quotaWeightActive && maxQuotaUsagePct != null && maxQuotaUsagePct >= 95)
-  ) {
-    return 'Red'
-  }
-  if (
-    score >= 30 ||
-    (constraintWeightActive && highConstraintCount > 0) ||
-    (quotaWeightActive && maxQuotaUsagePct != null && maxQuotaUsagePct >= 80)
-  ) {
-    return 'Amber'
-  }
+function levelFromScore(score: number): CapacityRiskLevel {
+  if (score >= CAPACITY_RISK_RAG_THRESHOLDS.red) return 'Red'
+  if (score >= CAPACITY_RISK_RAG_THRESHOLDS.amber) return 'Amber'
   return 'Green'
 }
 
@@ -320,26 +333,62 @@ function buildSummary(level: CapacityRiskLevel, factors: CapacityRiskFactor[]): 
   return top.map((f) => f.label).join(' · ')
 }
 
-/**
- * Compute a RAG capacity risk score for one customer.
- */
-export function computeCustomerCapacityRisk(input: {
-  customer: Customer
+function filterInventoryForScope(
+  inventory: InventoryItem[],
+  customerId: string,
+  subscriptionId: string | null,
+) {
+  return inventory.filter(
+    (i) =>
+      i.customerId === customerId &&
+      (!subscriptionId || i.subscriptionId === subscriptionId),
+  )
+}
+
+function filterQuotasForScope(
+  quotas: Quota[],
+  customerId: string,
+  subscriptionId: string | null,
+) {
+  return quotas.filter(
+    (q) =>
+      q.customerId === customerId &&
+      (!subscriptionId || q.subscriptionId === subscriptionId),
+  )
+}
+
+function computeScopedCapacityRisk(input: {
+  customerId: string
+  subscriptionId?: string | null
+  subscriptionName?: string | null
   inventory: InventoryItem[]
   quotas: Quota[]
   impacts: ImpactResult[]
   constraints: CapacityConstraint[]
   weights?: Partial<CapacityRiskWeights> | null
 }): CustomerCapacityRisk {
-  const { customer, inventory, quotas, impacts, constraints } = input
+  const {
+    customerId,
+    subscriptionId = null,
+    subscriptionName = null,
+    inventory,
+    quotas,
+    impacts,
+    constraints,
+  } = input
   const weights = normalizeCapacityRiskWeights(input.weights)
-  const customerInventory = inventory.filter((i) => i.customerId === customer.id)
-  const customerQuotas = quotas.filter((q) => q.customerId === customer.id)
+  const scopedInventory = filterInventoryForScope(inventory, customerId, subscriptionId)
+  const scopedQuotas = filterQuotasForScope(quotas, customerId, subscriptionId)
 
-  const constraintsPart = constraintPressure(customer.id, impacts, constraints)
-  const quotasPart = quotaHeadroom(customerQuotas)
-  const skuPart = concentration(customerInventory, (i) => i.sku || i.size || i.resourceType)
-  const regionPart = concentration(customerInventory, (i) => i.region, false)
+  const constraintsPart = constraintPressureForScope(
+    customerId,
+    subscriptionId,
+    impacts,
+    constraints,
+  )
+  const quotasPart = quotaHeadroom(scopedQuotas)
+  const skuPart = concentration(scopedInventory, (i) => i.sku || i.size || i.resourceType)
+  const regionPart = concentration(scopedInventory, (i) => i.region, false)
 
   const constraintContribution = weightedContribution(
     constraintsPart.points,
@@ -417,16 +466,12 @@ export function computeCustomerCapacityRisk(input: {
     0,
     100,
   )
-  const level = levelFromScore(
-    score,
-    constraintsPart.criticalConstraintCount,
-    constraintsPart.highConstraintCount,
-    quotasPart.maxPct,
-    weights,
-  )
+  const level = levelFromScore(score)
 
   return {
-    customerId: customer.id,
+    customerId,
+    subscriptionId: subscriptionId ?? null,
+    subscriptionName: subscriptionName ?? null,
     level,
     score,
     summary: buildSummary(level, factors),
@@ -442,9 +487,78 @@ export function computeCustomerCapacityRisk(input: {
       topSkuLabel: skuPart.label,
       topRegionSharePct: regionPart.sharePct,
       topRegionLabel: regionPart.label,
-      inventoryCount: customerInventory.length,
+      inventoryCount: scopedInventory.length,
     },
   }
+}
+
+/**
+ * Compute a RAG capacity risk score for one customer (rollup across subscriptions).
+ */
+export function computeCustomerCapacityRisk(input: {
+  customer: Customer
+  inventory: InventoryItem[]
+  quotas: Quota[]
+  impacts: ImpactResult[]
+  constraints: CapacityConstraint[]
+  weights?: Partial<CapacityRiskWeights> | null
+}): CustomerCapacityRisk {
+  return computeScopedCapacityRisk({
+    customerId: input.customer.id,
+    subscriptionId: null,
+    subscriptionName: null,
+    inventory: input.inventory,
+    quotas: input.quotas,
+    impacts: input.impacts,
+    constraints: input.constraints,
+    weights: input.weights,
+  })
+}
+
+/** Compute risk for a single subscription under a customer. */
+export function computeSubscriptionCapacityRisk(input: {
+  customer: Customer
+  subscription: Subscription
+  inventory: InventoryItem[]
+  quotas: Quota[]
+  impacts: ImpactResult[]
+  constraints: CapacityConstraint[]
+  weights?: Partial<CapacityRiskWeights> | null
+}): CustomerCapacityRisk {
+  return computeScopedCapacityRisk({
+    customerId: input.customer.id,
+    subscriptionId: input.subscription.id,
+    subscriptionName: input.subscription.name,
+    inventory: input.inventory,
+    quotas: input.quotas,
+    impacts: input.impacts,
+    constraints: input.constraints,
+    weights: input.weights,
+  })
+}
+
+/** All subscription-level risks for one customer. */
+export function computeCustomerSubscriptionRisks(input: {
+  customer: Customer
+  subscriptions: Subscription[]
+  inventory: InventoryItem[]
+  quotas: Quota[]
+  impacts: ImpactResult[]
+  constraints: CapacityConstraint[]
+  weights?: Partial<CapacityRiskWeights> | null
+}): CustomerCapacityRisk[] {
+  const subs = input.subscriptions.filter((s) => s.customerId === input.customer.id)
+  return subs.map((subscription) =>
+    computeSubscriptionCapacityRisk({
+      customer: input.customer,
+      subscription,
+      inventory: input.inventory,
+      quotas: input.quotas,
+      impacts: input.impacts,
+      constraints: input.constraints,
+      weights: input.weights,
+    }),
+  )
 }
 
 export function computePortfolioCapacityRisks(input: {
@@ -465,6 +579,42 @@ export function computePortfolioCapacityRisks(input: {
       weights: input.weights,
     }),
   )
+}
+
+export function computePortfolioSubscriptionRisks(input: {
+  customers: Customer[]
+  subscriptions: Subscription[]
+  inventory: InventoryItem[]
+  quotas: Quota[]
+  impacts: ImpactResult[]
+  constraints: CapacityConstraint[]
+  weights?: Partial<CapacityRiskWeights> | null
+}): CustomerCapacityRisk[] {
+  const customerById = new Map(input.customers.map((c) => [c.id, c]))
+  return input.subscriptions
+    .filter((s) => customerById.has(s.customerId))
+    .map((subscription) => {
+      const customer = customerById.get(subscription.customerId)!
+      return computeSubscriptionCapacityRisk({
+        customer,
+        subscription,
+        inventory: input.inventory,
+        quotas: input.quotas,
+        impacts: input.impacts,
+        constraints: input.constraints,
+        weights: input.weights,
+      })
+    })
+}
+
+export function riskScopeKey(risk: Pick<CustomerCapacityRisk, 'customerId' | 'subscriptionId'>) {
+  return risk.subscriptionId
+    ? `${risk.customerId}:${risk.subscriptionId}`
+    : risk.customerId
+}
+
+export function isSubscriptionRisk(risk: CustomerCapacityRisk) {
+  return Boolean(risk.subscriptionId)
 }
 
 export function sortRisksForTriage(risks: CustomerCapacityRisk[]) {
@@ -508,17 +658,25 @@ function concentrationSlices(
 }
 
 /** Inventory share by SKU / size / type for charts. */
-export function getSkuConcentrationSlices(inventory: InventoryItem[], customerId: string) {
+export function getSkuConcentrationSlices(
+  inventory: InventoryItem[],
+  customerId: string,
+  subscriptionId?: string | null,
+) {
   return concentrationSlices(
-    inventory.filter((i) => i.customerId === customerId),
+    filterInventoryForScope(inventory, customerId, subscriptionId ?? null),
     (i) => i.sku || i.size || i.resourceType,
   )
 }
 
 /** Inventory share by region for charts. */
-export function getRegionConcentrationSlices(inventory: InventoryItem[], customerId: string) {
+export function getRegionConcentrationSlices(
+  inventory: InventoryItem[],
+  customerId: string,
+  subscriptionId?: string | null,
+) {
   return concentrationSlices(
-    inventory.filter((i) => i.customerId === customerId),
+    filterInventoryForScope(inventory, customerId, subscriptionId ?? null),
     (i) => i.region,
   )
 }
@@ -530,16 +688,23 @@ export function getRegionConcentrationSlices(inventory: InventoryItem[], custome
 export function getQuotaActionsToReduceRisk(
   quotas: Quota[],
   customerId: string,
-  options?: { minUsagePct?: number; targetUsagePct?: number; limit?: number },
+  options?: {
+    subscriptionId?: string | null
+    minUsagePct?: number
+    targetUsagePct?: number
+    limit?: number
+  },
 ): QuotaRiskAction[] {
   const minUsagePct = options?.minUsagePct ?? 60
   const targetUsagePct = options?.targetUsagePct ?? 70
   const maxRows = options?.limit ?? 25
+  const subscriptionId = options?.subscriptionId ?? null
   const targetRatio = targetUsagePct / 100
 
   const actions: QuotaRiskAction[] = []
   for (const quota of quotas) {
     if (quota.customerId !== customerId) continue
+    if (subscriptionId && quota.subscriptionId !== subscriptionId) continue
     if (isNetworkWatcherQuota(quota)) continue
     const limit = Number(quota.limit)
     const usage = Number(quota.usage)
@@ -578,28 +743,31 @@ export function getQuotaActionsToReduceRisk(
     .slice(0, maxRows)
 }
 
+/** Open constraints contributing to scoped risk. */
+export function getOpenConstraintsForScope(
+  customerId: string,
+  subscriptionId: string | null,
+  impacts: ImpactResult[],
+  constraints: CapacityConstraint[],
+) {
+  return constraintPressureForScope(customerId, subscriptionId, impacts, constraints).constraints.sort(
+    (a, b) => {
+      const order: Record<ConstraintSeverity, number> = {
+        Critical: 0,
+        High: 1,
+        Medium: 2,
+        Low: 3,
+      }
+      return order[a.severity] - order[b.severity] || a.sku.localeCompare(b.sku)
+    },
+  )
+}
+
 /** Open constraints contributing to the customer's scored risk. */
 export function getOpenConstraintsForCustomer(
   customerId: string,
   impacts: ImpactResult[],
   constraints: CapacityConstraint[],
 ) {
-  const activeImpacts = filterActiveImpacts(impacts, constraints).filter(
-    (i) => i.customerId === customerId,
-  )
-  const constraintById = new Map(constraints.map((c) => [c.id, c]))
-  const touched = new Map<string, CapacityConstraint>()
-  for (const impact of activeImpacts) {
-    const c = constraintById.get(impact.constraintId)
-    if (c && c.status !== 'Resolved') touched.set(c.id, c)
-  }
-  return [...touched.values()].sort((a, b) => {
-    const order: Record<ConstraintSeverity, number> = {
-      Critical: 0,
-      High: 1,
-      Medium: 2,
-      Low: 3,
-    }
-    return order[a.severity] - order[b.severity] || a.sku.localeCompare(b.sku)
-  })
+  return getOpenConstraintsForScope(customerId, null, impacts, constraints)
 }

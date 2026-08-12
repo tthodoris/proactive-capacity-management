@@ -654,6 +654,53 @@ a {
   font-size: 0.84rem;
 }
 
+.risk-view-toggle {
+  display: inline-flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.risk-name-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+.risk-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.1rem;
+  margin-top: 0.1rem;
+  flex-shrink: 0;
+}
+
+.risk-sub-row td {
+  background: #f8fbfe;
+}
+
+.risk-sub-row .risk-sub-name {
+  display: block;
+  padding-left: 1.25rem;
+  font-weight: 600;
+}
+
+.risk-scope-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 1rem;
+}
+
+.risk-scope-toggle .btn {
+  display: inline-flex;
+  align-items: center;
+}
+
 @media (max-width: 1100px) {
   .risk-weight-sliders {
     grid-template-columns: 1fr;

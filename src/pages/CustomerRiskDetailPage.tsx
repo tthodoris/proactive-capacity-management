@@ -1,16 +1,20 @@
 import { useMemo } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Gauge, MapPinned, Package, ShieldAlert } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import {
   computeCustomerCapacityRisk,
-  getOpenConstraintsForCustomer,
+  computeCustomerSubscriptionRisks,
+  computeSubscriptionCapacityRisk,
+  getOpenConstraintsForScope,
   getQuotaActionsToReduceRisk,
   getRegionConcentrationSlices,
   getSkuConcentrationSlices,
   loadCapacityRiskWeights,
   riskLevelPillClass,
+  sortRisksForTriage,
   type ConcentrationSlice,
+  type CustomerCapacityRisk,
   type QuotaRiskAction,
 } from '../lib/capacityRisk'
 
@@ -158,9 +162,12 @@ function QuotaUsageChart({ actions }: { actions: QuotaRiskAction[] }) {
 export function CustomerRiskDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedSubscriptionId = searchParams.get('subscription')
   const {
     customers,
     users,
+    subscriptions,
     inventory,
     quotas,
     impactResults,
@@ -172,8 +179,13 @@ export function CustomerRiskDetailPage() {
   const customer = customers.find((c) => c.id === id)
   const allowed =
     customer && (canSeeAllPortfolios || portfolioCustomerIds.includes(customer.id))
+  const customerSubscriptions = useMemo(
+    () => (customer ? subscriptions.filter((s) => s.customerId === customer.id) : []),
+    [customer, subscriptions],
+  )
+  const selectedSubscription = customerSubscriptions.find((s) => s.id === selectedSubscriptionId)
 
-  const risk = useMemo(() => {
+  const customerRisk = useMemo(() => {
     if (!customer || !allowed) return null
     return computeCustomerCapacityRisk({
       customer,
@@ -185,24 +197,90 @@ export function CustomerRiskDetailPage() {
     })
   }, [customer, allowed, inventory, quotas, impactResults, constraints])
 
+  const subscriptionRisks = useMemo(() => {
+    if (!customer || !allowed) return []
+    return sortRisksForTriage(
+      computeCustomerSubscriptionRisks({
+        customer,
+        subscriptions: customerSubscriptions,
+        inventory,
+        quotas,
+        impacts: impactResults,
+        constraints,
+        weights: loadCapacityRiskWeights(),
+      }),
+    )
+  }, [
+    customer,
+    allowed,
+    customerSubscriptions,
+    inventory,
+    quotas,
+    impactResults,
+    constraints,
+  ])
+
+  const risk = useMemo(() => {
+    if (!customer || !allowed) return null
+    if (selectedSubscription) {
+      return computeSubscriptionCapacityRisk({
+        customer,
+        subscription: selectedSubscription,
+        inventory,
+        quotas,
+        impacts: impactResults,
+        constraints,
+        weights: loadCapacityRiskWeights(),
+      })
+    }
+    return customerRisk
+  }, [
+    customer,
+    allowed,
+    selectedSubscription,
+    customerRisk,
+    inventory,
+    quotas,
+    impactResults,
+    constraints,
+  ])
+
+  const scopeSubscriptionId = selectedSubscription?.id ?? null
+
   const skuSlices = useMemo(
-    () => (customer && allowed ? getSkuConcentrationSlices(inventory, customer.id) : []),
-    [customer, allowed, inventory],
+    () =>
+      customer && allowed
+        ? getSkuConcentrationSlices(inventory, customer.id, scopeSubscriptionId)
+        : [],
+    [customer, allowed, inventory, scopeSubscriptionId],
   )
   const regionSlices = useMemo(
-    () => (customer && allowed ? getRegionConcentrationSlices(inventory, customer.id) : []),
-    [customer, allowed, inventory],
+    () =>
+      customer && allowed
+        ? getRegionConcentrationSlices(inventory, customer.id, scopeSubscriptionId)
+        : [],
+    [customer, allowed, inventory, scopeSubscriptionId],
   )
   const quotaActions = useMemo(
-    () => (customer && allowed ? getQuotaActionsToReduceRisk(quotas, customer.id) : []),
-    [customer, allowed, quotas],
+    () =>
+      customer && allowed
+        ? getQuotaActionsToReduceRisk(quotas, customer.id, {
+            subscriptionId: scopeSubscriptionId,
+          })
+        : [],
+    [customer, allowed, quotas, scopeSubscriptionId],
   )
   const openConstraints = useMemo(
     () =>
       customer && allowed
-        ? getOpenConstraintsForCustomer(customer.id, impactResults, constraints)
+        ? getOpenConstraintsForScope(
+            customer.id,
+            scopeSubscriptionId,
+            impactResults,
+            constraints,
+          )
         : [],
-    [customer, allowed, impactResults, constraints],
+    [customer, allowed, scopeSubscriptionId, impactResults, constraints],
   )
 
   if (!customer || !allowed || !risk) {
@@ -238,16 +316,97 @@ export function CustomerRiskDetailPage() {
           </div>
           <h3>{customer.name}</h3>
           <p>
-            How the capacity risk decision was formed, concentration warnings, and quota changes that
-            reduce headroom pressure.
+            {selectedSubscription
+              ? `Subscription risk for “${selectedSubscription.name}”.`
+              : 'Customer rollup across all subscriptions.'}{' '}
+            Drivers, concentration warnings, and quotas to raise.
           </p>
         </div>
         <div className="risk-hero-badge">
           <span className={riskLevelPillClass(risk.level)}>{risk.level}</span>
           <div className="value">{risk.score}</div>
-          <div className="muted">composite score</div>
+          <div className="muted">
+            {selectedSubscription ? 'subscription score' : 'customer score'}
+          </div>
         </div>
       </div>
+
+      <section className="panel risk-detail-panel">
+        <div className="panel-header">
+          <div>
+            <h4>Scope</h4>
+            <p>Switch between customer rollup and per-subscription risk.</p>
+          </div>
+        </div>
+        <div className="panel-body">
+          <div className="risk-scope-toggle">
+            <button
+              type="button"
+              className={`btn ${!selectedSubscriptionId ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setSearchParams({})}
+            >
+              Customer rollup
+            </button>
+            {customerSubscriptions.map((sub) => {
+              const subRisk = subscriptionRisks.find((r) => r.subscriptionId === sub.id)
+              return (
+                <button
+                  key={sub.id}
+                  type="button"
+                  className={`btn ${selectedSubscriptionId === sub.id ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setSearchParams({ subscription: sub.id })}
+                >
+                  {sub.name}
+                  {subRisk ? (
+                    <span className={`pill ${riskLevelPillClass(subRisk.level)}`} style={{ marginLeft: '0.35rem' }}>
+                      {subRisk.level} · {subRisk.score}
+                    </span>
+                  ) : null}
+                </button>
+              )
+            })}
+          </div>
+          {subscriptionRisks.length > 0 ? (
+            <div className="table-wrap risk-detail-table">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Subscription</th>
+                    <th>Risk</th>
+                    <th>Score</th>
+                    <th>Why</th>
+                    <th>Inventory</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {subscriptionRisks.map((subRisk: CustomerCapacityRisk) => (
+                    <tr
+                      key={subRisk.subscriptionId}
+                      className="clickable"
+                      onClick={() =>
+                        subRisk.subscriptionId &&
+                        setSearchParams({ subscription: subRisk.subscriptionId })
+                      }
+                    >
+                      <td>
+                        <strong>{subRisk.subscriptionName}</strong>
+                      </td>
+                      <td>
+                        <span className={riskLevelPillClass(subRisk.level)}>{subRisk.level}</span>
+                      </td>
+                      <td>{subRisk.score}</td>
+                      <td>{subRisk.summary}</td>
+                      <td>{subRisk.metrics.inventoryCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="empty">No subscriptions on file for this customer.</div>
+          )}
+        </div>
+      </section>
 
       <div className="metrics risk-detail-metrics">
         <div className="metric-card risk-why-card">

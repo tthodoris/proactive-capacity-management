@@ -1,15 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Download, RefreshCw, RotateCcw, Search, ShieldAlert, X } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  ShieldAlert,
+  X,
+} from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import {
+  CAPACITY_RISK_RAG_THRESHOLDS,
   CAPACITY_RISK_WEIGHT_META,
   DEFAULT_CAPACITY_RISK_WEIGHTS,
+  adjustCapacityRiskWeight,
   capacityRiskWeightsEqual,
+  computeCustomerSubscriptionRisks,
   computePortfolioCapacityRisks,
+  computePortfolioSubscriptionRisks,
   loadCapacityRiskWeights,
-  normalizeCapacityRiskWeights,
   riskLevelPillClass,
+  riskScopeKey,
   saveCapacityRiskWeights,
   sortRisksForTriage,
   type CapacityRiskLevel,
@@ -26,13 +39,61 @@ import {
   useSortedRows,
 } from '../lib/tableSort'
 
-type RiskSortKey = 'name' | 'owner' | 'level' | 'score' | 'why' | 'callFirst'
+type RiskSortKey = 'name' | 'owner' | 'level' | 'score' | 'why' | 'callFirst' | 'scope'
 
 const LEVEL_ORDER: Record<CapacityRiskLevel, number> = { Red: 0, Amber: 1, Green: 2 }
 
+type RiskViewMode = 'customer' | 'subscription'
+
+type RiskTableRow = {
+  id: string
+  customerId: string
+  customerName: string
+  segment: string
+  ownerName: string
+  scopeLabel: string
+  isSubscription: boolean
+  subscriptionId?: string | null
+  risk: CustomerCapacityRisk
+  callFirst: number
+  childRisks?: CustomerCapacityRisk[]
+}
+
+function RiskDriversCell({ risk }: { risk: CustomerCapacityRisk }) {
+  const factors = risk.factors || []
+  const warnings = risk.warnings || []
+  return (
+    <div className="risk-factor-list">
+      {factors.length === 0 && warnings.length === 0 ? (
+        <span className="muted">No elevated factors</span>
+      ) : null}
+      {factors.map((f) => (
+        <div key={f.id} className="risk-factor-item">
+          <ShieldAlert size={14} />
+          <div>
+            <strong>{f.label}</strong>
+            <div className="muted">{f.detail}</div>
+          </div>
+          <span className="muted">+{f.points}</span>
+        </div>
+      ))}
+      {warnings.map((w) => (
+        <div key={w.id} className="risk-factor-item risk-warning-item">
+          <ShieldAlert size={14} />
+          <div>
+            <strong>{w.label}</strong>
+            <div className="muted">{w.detail}</div>
+          </div>
+          <span className="pill pill-high">Warning</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function clampWeightInput(value: number) {
   if (!Number.isFinite(value)) return 0
-  return Math.max(0, Math.min(100, value))
+  return Math.max(0, Math.min(100, Math.round(value)))
 }
 
 function RiskWeightPanel({
@@ -48,9 +109,7 @@ function RiskWeightPanel({
   onRecalculate: () => void
   onReset: () => void
 }) {
-  const normalizedDraft = normalizeCapacityRiskWeights(draft)
-  const dirty = !capacityRiskWeightsEqual(normalizeCapacityRiskWeights(draft), applied)
-  const total = draft.constraints + draft.quotas + draft.sku
+  const dirty = !capacityRiskWeightsEqual(draft, applied)
 
   return (
     <section className="panel risk-weight-panel">
@@ -60,8 +119,9 @@ function RiskWeightPanel({
             <ShieldAlert size={18} /> Scoring factor weights
           </h4>
           <p>
-            Adjust how much each scored factor contributes to the 0–100 risk score, then recalculate
-            the portfolio. Region concentration stays advisory-only.
+            Adjust how much each scored factor contributes to the 0–100 risk score (weights always
+            total 100%). Red / Amber / Green follows the score: ≥{CAPACITY_RISK_RAG_THRESHOLDS.red}{' '}
+            Red, ≥{CAPACITY_RISK_RAG_THRESHOLDS.amber} Amber.
           </p>
         </div>
         <div className="risk-weight-actions">
@@ -86,13 +146,13 @@ function RiskWeightPanel({
           aria-label="Relative weight of each scoring factor"
         >
           {CAPACITY_RISK_WEIGHT_META.map((meta) => {
-            const share = total > 0 ? (draft[meta.key] / total) * 100 : 0
+            const share = draft[meta.key]
             return (
               <div
                 key={meta.key}
                 className={`risk-weight-stack-segment ${meta.toneClass}`}
                 style={{ width: `${Math.max(share, share > 0 ? 2 : 0)}%` }}
-                title={`${meta.label}: ${normalizedDraft[meta.key]}%`}
+                title={`${meta.label}: ${share}%`}
               />
             )
           })}
@@ -102,7 +162,7 @@ function RiskWeightPanel({
             <div key={meta.key} className="risk-weight-legend-item">
               <span className={`risk-weight-swatch ${meta.toneClass}`} />
               <span>
-                {meta.label} · <strong>{normalizedDraft[meta.key]}%</strong>
+                {meta.label} · <strong>{draft[meta.key]}%</strong>
               </span>
             </div>
           ))}
@@ -122,7 +182,7 @@ function RiskWeightPanel({
                     min={0}
                     max={100}
                     step={1}
-                    value={Math.round(draft[meta.key])}
+                    value={draft[meta.key]}
                     onChange={(e) => onChange(meta.key, Number(e.target.value))}
                   />
                   <span>%</span>
@@ -133,7 +193,7 @@ function RiskWeightPanel({
                 min={0}
                 max={100}
                 step={1}
-                value={Math.round(draft[meta.key])}
+                value={draft[meta.key]}
                 onChange={(e) => onChange(meta.key, Number(e.target.value))}
                 aria-label={`${meta.label} weight`}
               />
@@ -141,7 +201,7 @@ function RiskWeightPanel({
                 <div className="risk-share-track">
                   <div
                     className={`risk-share-fill ${meta.toneClass}`}
-                    style={{ width: `${normalizedDraft[meta.key]}%` }}
+                    style={{ width: `${draft[meta.key]}%` }}
                   />
                 </div>
               </div>
@@ -151,8 +211,8 @@ function RiskWeightPanel({
 
         <p className="muted risk-weight-hint">
           {dirty
-            ? 'Weights changed — click Recalculate risk to refresh Red/Amber/Green scores.'
-            : `Applied weights: constraints ${applied.constraints}%, quotas ${applied.quotas}%, SKU ${applied.sku}%.`}
+            ? 'Weights changed — click Recalculate risk to refresh scores and colors.'
+            : `Applied: constraints ${applied.constraints}%, quotas ${applied.quotas}%, SKU ${applied.sku}%. Moving one slider redistributes the rest equally.`}
         </p>
       </div>
     </section>
@@ -163,6 +223,7 @@ export function CustomerRiskPage() {
   const {
     customers,
     users,
+    subscriptions,
     inventory,
     quotas,
     impactResults,
@@ -172,6 +233,8 @@ export function CustomerRiskPage() {
   } = useApp()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
+  const [viewMode, setViewMode] = useState<RiskViewMode>('customer')
+  const [expandedCustomers, setExpandedCustomers] = useState<Set<string>>(() => new Set())
   const [draftWeights, setDraftWeights] = useState<CapacityRiskWeights>(() =>
     loadCapacityRiskWeights(),
   )
@@ -206,68 +269,177 @@ export function CustomerRiskPage() {
     return new Map(list.map((r) => [r.customerId, r]))
   }, [portfolioCustomers, inventory, quotas, impactResults, constraints, appliedWeights])
 
-  const triageOrder = useMemo(() => {
+  const subscriptionRisksByCustomer = useMemo(() => {
+    const map = new Map<string, CustomerCapacityRisk[]>()
+    for (const customer of portfolioCustomers) {
+      const subs = subscriptions.filter((s) => s.customerId === customer.id)
+      const risks = computeCustomerSubscriptionRisks({
+        customer,
+        subscriptions: subs,
+        inventory,
+        quotas,
+        impacts: impactResults,
+        constraints,
+        weights: appliedWeights,
+      })
+      map.set(customer.id, sortRisksForTriage(risks))
+    }
+    return map
+  }, [
+    portfolioCustomers,
+    subscriptions,
+    inventory,
+    quotas,
+    impactResults,
+    constraints,
+    appliedWeights,
+  ])
+
+  const allSubscriptionRisks = useMemo(
+    () =>
+      sortRisksForTriage(
+        computePortfolioSubscriptionRisks({
+          customers: portfolioCustomers,
+          subscriptions: subscriptions.filter((s) =>
+            portfolioCustomers.some((c) => c.id === s.customerId),
+          ),
+          inventory,
+          quotas,
+          impacts: impactResults,
+          constraints,
+          weights: appliedWeights,
+        }),
+      ),
+    [
+      portfolioCustomers,
+      subscriptions,
+      inventory,
+      quotas,
+      impactResults,
+      constraints,
+      appliedWeights,
+    ],
+  )
+
+  const customerTriageOrder = useMemo(() => {
     const risks = sortRisksForTriage([...riskByCustomer.values()])
     const order = new Map<string, number>()
     risks.forEach((r, index) => order.set(r.customerId, index + 1))
     return order
   }, [riskByCustomer])
 
+  const subscriptionTriageOrder = useMemo(() => {
+    const order = new Map<string, number>()
+    allSubscriptionRisks.forEach((r, index) => {
+      if (r.subscriptionId) order.set(riskScopeKey(r), index + 1)
+    })
+    return order
+  }, [allSubscriptionRisks])
+
+  const tableRows = useMemo((): RiskTableRow[] => {
+    if (viewMode === 'subscription') {
+      return allSubscriptionRisks.map((risk) => {
+        const customer = portfolioCustomers.find((c) => c.id === risk.customerId)!
+        const owner = users.find((u) => u.id === customer.csaOwnerId)
+        return {
+          id: riskScopeKey(risk),
+          customerId: risk.customerId,
+          customerName: customer.name,
+          segment: customer.segment,
+          ownerName: owner?.name || '',
+          scopeLabel: risk.subscriptionName || 'Subscription',
+          isSubscription: true,
+          subscriptionId: risk.subscriptionId,
+          risk,
+          callFirst: subscriptionTriageOrder.get(riskScopeKey(risk)) ?? 9999,
+        }
+      })
+    }
+
+    return portfolioCustomers.map((customer) => {
+      const owner = users.find((u) => u.id === customer.csaOwnerId)
+      const risk = riskByCustomer.get(customer.id)!
+      const childRisks = subscriptionRisksByCustomer.get(customer.id) || []
+      return {
+        id: customer.id,
+        customerId: customer.id,
+        customerName: customer.name,
+        segment: customer.segment,
+        ownerName: owner?.name || '',
+        scopeLabel: 'Customer rollup',
+        isSubscription: false,
+        risk,
+        callFirst: customerTriageOrder.get(customer.id) ?? 9999,
+        childRisks,
+      }
+    })
+  }, [
+    viewMode,
+    allSubscriptionRisks,
+    portfolioCustomers,
+    users,
+    riskByCustomer,
+    subscriptionRisksByCustomer,
+    customerTriageOrder,
+    subscriptionTriageOrder,
+  ])
+
   const baseRows = useMemo(() => {
-    return portfolioCustomers.filter((c) => {
+    return tableRows.filter((row) => {
       if (!query) return true
       const q = query.toLowerCase()
-      const owner = users.find((u) => u.id === c.csaOwnerId)
-      const risk = riskByCustomer.get(c.id)
       return (
-        c.name.toLowerCase().includes(q) ||
-        c.segment.toLowerCase().includes(q) ||
-        (owner?.name || '').toLowerCase().includes(q) ||
-        (risk?.level || '').toLowerCase().includes(q) ||
-        (risk?.summary || '').toLowerCase().includes(q)
+        row.customerName.toLowerCase().includes(q) ||
+        row.segment.toLowerCase().includes(q) ||
+        row.ownerName.toLowerCase().includes(q) ||
+        row.scopeLabel.toLowerCase().includes(q) ||
+        row.risk.level.toLowerCase().includes(q) ||
+        row.risk.summary.toLowerCase().includes(q)
       )
     })
-  }, [portfolioCustomers, query, users, riskByCustomer])
+  }, [tableRows, query])
 
-  const getValue = useCallback(
-    (c: (typeof baseRows)[number], key: string) => {
-      const risk = riskByCustomer.get(c.id)
-      const owner = users.find((u) => u.id === c.csaOwnerId)
-      switch (key) {
-        case 'owner':
-          return owner?.name || ''
-        case 'level':
-          return risk?.level || 'Green'
-        case 'score':
-          return risk?.score ?? 0
-        case 'why':
-          return risk?.summary || ''
-        case 'callFirst':
-          return triageOrder.get(c.id) ?? 9999
-        case 'name':
-          return c.name
-        default:
-          return ''
-      }
-    },
-    [riskByCustomer, users, triageOrder],
-  )
+  const getValue = useCallback((row: RiskTableRow, key: string) => {
+    switch (key) {
+      case 'owner':
+        return row.ownerName
+      case 'level':
+        return row.risk.level
+      case 'score':
+        return row.risk.score
+      case 'why':
+        return row.risk.summary
+      case 'callFirst':
+        return row.callFirst
+      case 'scope':
+        return row.scopeLabel
+      case 'name':
+        return row.customerName
+      default:
+        return ''
+    }
+  }, [])
 
   const filtered = useMemo(() => {
-    return baseRows.filter((c) =>
-      matchesColumnFilters((column) => String(getValue(c, column) ?? '')),
+    return baseRows.filter((row) =>
+      matchesColumnFilters((column) => String(getValue(row, column) ?? '')),
     )
   }, [baseRows, matchesColumnFilters, getValue])
 
   const rows = useSortedRows(filtered, sortKey, sortDir, (row, key) => {
-    if (key === 'level') {
-      const level = (riskByCustomer.get(row.id)?.level || 'Green') as CapacityRiskLevel
-      return LEVEL_ORDER[level]
-    }
+    if (key === 'level') return LEVEL_ORDER[row.risk.level]
     return getValue(row, key)
   })
 
-  const columnKeys: RiskSortKey[] = ['name', 'owner', 'level', 'score', 'why', 'callFirst']
+  const columnKeys: RiskSortKey[] = [
+    'name',
+    'scope',
+    'owner',
+    'level',
+    'score',
+    'why',
+    'callFirst',
+  ]
   const columnOptions = useMemo(
     () => collectCascadingOptions(baseRows, columnKeys, filters, getValue),
     [baseRows, filters, getValue],
@@ -278,19 +450,25 @@ export function CustomerRiskPage() {
   }, [columnOptions, pruneFiltersToOptions])
 
   const counts = useMemo(() => {
-    const all = [...riskByCustomer.values()]
+    const source = viewMode === 'subscription' ? allSubscriptionRisks : [...riskByCustomer.values()]
     return {
-      red: all.filter((r) => r.level === 'Red').length,
-      amber: all.filter((r) => r.level === 'Amber').length,
-      green: all.filter((r) => r.level === 'Green').length,
+      red: source.filter((r) => r.level === 'Red').length,
+      amber: source.filter((r) => r.level === 'Amber').length,
+      green: source.filter((r) => r.level === 'Green').length,
     }
-  }, [riskByCustomer])
+  }, [viewMode, allSubscriptionRisks, riskByCustomer])
+
+  const toggleExpanded = (customerId: string) => {
+    setExpandedCustomers((prev) => {
+      const next = new Set(prev)
+      if (next.has(customerId)) next.delete(customerId)
+      else next.add(customerId)
+      return next
+    })
+  }
 
   const updateDraftWeight = (key: CapacityRiskWeightKey, value: number) => {
-    setDraftWeights((prev) => ({
-      ...prev,
-      [key]: clampWeightInput(value),
-    }))
+    setDraftWeights((prev) => adjustCapacityRiskWeight(prev, key, clampWeightInput(value)))
   }
 
   const recalculate = () => {
@@ -309,9 +487,9 @@ export function CustomerRiskPage() {
         <div>
           <h3>Customer capacity risk</h3>
           <p>
-            Red / Amber / Green posture from open constraints, quota headroom (excluding Network
-            Watchers), and SKU concentration — sorted for who to call first. Region concentration is
-            shown as a warning only.
+            Red / Amber / Green posture per customer and per subscription from open constraints,
+            quota headroom (excluding Network Watchers), and SKU concentration. Region concentration
+            is shown as a warning only.
           </p>
         </div>
       </div>
@@ -328,7 +506,9 @@ export function CustomerRiskPage() {
         <div className="metric-card">
           <div className="label">Red</div>
           <div className="value">{counts.red}</div>
-          <div className="hint">Call first</div>
+          <div className="hint">
+            {viewMode === 'subscription' ? 'Subscriptions' : 'Customers'} · call first
+          </div>
         </div>
         <div className="metric-card">
           <div className="label">Amber</div>
@@ -348,8 +528,24 @@ export function CustomerRiskPage() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search customer, owner, level, or why"
+            placeholder="Search customer, subscription, owner, level, or why"
           />
+        </div>
+        <div className="risk-view-toggle" role="tablist" aria-label="Risk view">
+          <button
+            type="button"
+            className={`btn ${viewMode === 'customer' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setViewMode('customer')}
+          >
+            By customer
+          </button>
+          <button
+            type="button"
+            className={`btn ${viewMode === 'subscription' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setViewMode('subscription')}
+          >
+            By subscription
+          </button>
         </div>
         {activeFilterCount > 0 ? (
           <button className="btn btn-ghost" type="button" onClick={clearAllFilters}>
@@ -362,6 +558,7 @@ export function CustomerRiskPage() {
           onClick={() => {
             const columns = [
               { key: 'callFirst', label: 'Call-first rank' },
+              { key: 'scope', label: 'Scope' },
               { key: 'name', label: 'Customer' },
               { key: 'owner', label: 'CSA owner' },
               { key: 'level', label: 'Risk' },
@@ -370,23 +567,39 @@ export function CustomerRiskPage() {
               { key: 'factors', label: 'Factor details' },
               { key: 'warnings', label: 'Warnings' },
             ]
+            const exportRows =
+              viewMode === 'subscription'
+                ? rows
+                : rows.flatMap((row) => [
+                    row,
+                    ...(row.childRisks || []).map((risk) => ({
+                      id: riskScopeKey(risk),
+                      customerId: row.customerId,
+                      customerName: row.customerName,
+                      segment: row.segment,
+                      ownerName: row.ownerName,
+                      scopeLabel: risk.subscriptionName || 'Subscription',
+                      isSubscription: true,
+                      subscriptionId: risk.subscriptionId,
+                      risk,
+                      callFirst: subscriptionTriageOrder.get(riskScopeKey(risk)) ?? 9999,
+                    })),
+                  ])
             exportToExcel(
               'customer-capacity-risk',
               'Capacity risk',
               columns,
-              rows.map((c) => {
-                const risk = riskByCustomer.get(c.id)
-                return {
-                  callFirst: triageOrder.get(c.id) ?? '',
-                  name: c.name,
-                  owner: users.find((u) => u.id === c.csaOwnerId)?.name || '',
-                  level: risk?.level || 'Green',
-                  score: risk?.score ?? 0,
-                  why: risk?.summary || '',
-                  factors: (risk?.factors || []).map((f) => f.detail).join(' | '),
-                  warnings: (risk?.warnings || []).map((w) => w.detail).join(' | '),
-                }
-              }),
+              exportRows.map((row) => ({
+                callFirst: row.callFirst,
+                scope: row.scopeLabel,
+                name: row.customerName,
+                owner: row.ownerName,
+                level: row.risk.level,
+                score: row.risk.score,
+                why: row.risk.summary,
+                factors: row.risk.factors.map((f) => f.detail).join(' | '),
+                warnings: row.risk.warnings.map((w) => w.detail).join(' | '),
+              })),
             )
           }}
         >
@@ -405,6 +618,7 @@ export function CustomerRiskPage() {
                 {(
                   [
                     ['callFirst', 'Call first'],
+                    ['scope', 'Scope'],
                     ['name', 'Customer'],
                     ['owner', 'CSA owner'],
                     ['level', 'Risk'],
@@ -428,65 +642,98 @@ export function CustomerRiskPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((c) => {
-                const risk = riskByCustomer.get(c.id) as CustomerCapacityRisk | undefined
-                const owner = users.find((u) => u.id === c.csaOwnerId)
-                const level = risk?.level || 'Green'
-                const factors = risk?.factors || []
-                const warnings = risk?.warnings || []
-                return (
+              {rows.flatMap((row) => {
+                const expanded =
+                  viewMode === 'customer' &&
+                  !row.isSubscription &&
+                  expandedCustomers.has(row.customerId)
+                const childRows =
+                  viewMode === 'customer' && !row.isSubscription
+                    ? (row.childRisks || []).map((subRisk) => ({
+                        id: riskScopeKey(subRisk),
+                        customerId: row.customerId,
+                        customerName: row.customerName,
+                        segment: row.segment,
+                        ownerName: row.ownerName,
+                        scopeLabel: subRisk.subscriptionName || 'Subscription',
+                        isSubscription: true,
+                        subscriptionId: subRisk.subscriptionId,
+                        risk: subRisk,
+                        callFirst: subscriptionTriageOrder.get(riskScopeKey(subRisk)) ?? 9999,
+                      }))
+                    : []
+
+                const renderRow = (entry: RiskTableRow, nested = false) => (
                   <tr
-                    key={c.id}
-                    className="clickable"
-                    onClick={() => navigate(`/customers/risk/${c.id}`)}
+                    key={entry.id}
+                    className={`clickable${nested ? ' risk-sub-row' : ''}`}
+                    onClick={() =>
+                      navigate(
+                        entry.subscriptionId
+                          ? `/customers/risk/${entry.customerId}?subscription=${entry.subscriptionId}`
+                          : `/customers/risk/${entry.customerId}`,
+                      )
+                    }
                   >
                     <td>
-                      <strong>#{triageOrder.get(c.id)}</strong>
+                      <strong>#{entry.callFirst}</strong>
                     </td>
                     <td>
-                      <strong>{c.name}</strong>
-                      <div className="muted">{c.segment}</div>
+                      <span className={entry.isSubscription ? 'pill pill-neutral' : 'pill pill-ok'}>
+                        {entry.scopeLabel}
+                      </span>
                     </td>
-                    <td>{owner?.name}</td>
                     <td>
-                      <span className={riskLevelPillClass(level)}>{level}</span>
-                    </td>
-                    <td>{risk?.score ?? 0}</td>
-                    <td>{risk?.summary || '—'}</td>
-                    <td>
-                      <div className="risk-factor-list">
-                        {factors.length === 0 && warnings.length === 0 ? (
-                          <span className="muted">No elevated factors</span>
+                      <div className="risk-name-cell">
+                        {!entry.isSubscription &&
+                        viewMode === 'customer' &&
+                        (row.childRisks?.length || 0) > 0 ? (
+                          <button
+                            type="button"
+                            className="risk-expand-btn"
+                            aria-label={expanded ? 'Collapse subscriptions' : 'Expand subscriptions'}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              toggleExpanded(row.customerId)
+                            }}
+                          >
+                            {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                          </button>
                         ) : null}
-                        {factors.map((f) => (
-                          <div key={f.id} className="risk-factor-item">
-                            <ShieldAlert size={14} />
-                            <div>
-                              <strong>{f.label}</strong>
-                              <div className="muted">{f.detail}</div>
-                            </div>
-                            <span className="muted">+{f.points}</span>
-                          </div>
-                        ))}
-                        {warnings.map((w) => (
-                          <div key={w.id} className="risk-factor-item risk-warning-item">
-                            <ShieldAlert size={14} />
-                            <div>
-                              <strong>{w.label}</strong>
-                              <div className="muted">{w.detail}</div>
-                            </div>
-                            <span className="pill pill-high">Warning</span>
-                          </div>
-                        ))}
+                        {nested ? (
+                          <span className="risk-sub-name">{entry.scopeLabel}</span>
+                        ) : (
+                          <>
+                            <strong>{entry.customerName}</strong>
+                            <div className="muted">{entry.segment}</div>
+                          </>
+                        )}
                       </div>
+                    </td>
+                    <td>{entry.ownerName}</td>
+                    <td>
+                      <span className={riskLevelPillClass(entry.risk.level)}>
+                        {entry.risk.level}
+                      </span>
+                    </td>
+                    <td>{entry.risk.score}</td>
+                    <td>{entry.risk.summary || '—'}</td>
+                    <td>
+                      <RiskDriversCell risk={entry.risk} />
                     </td>
                   </tr>
                 )
+
+                if (viewMode === 'subscription') {
+                  return [renderRow(row)]
+                }
+
+                return [renderRow(row), ...(expanded ? childRows.map((child) => renderRow(child, true)) : [])]
               })}
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={7}>
-                    <div className="empty">No customers match the current filters.</div>
+                  <td colSpan={8}>
+                    <div className="empty">No rows match the current filters.</div>
                   </td>
                 </tr>
               ) : null}
