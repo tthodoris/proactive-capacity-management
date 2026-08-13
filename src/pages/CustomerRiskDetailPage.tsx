@@ -509,16 +509,17 @@ export function CustomerRiskDetailPage() {
       <div className="grid-2 risk-detail-grid">
         <ShareBarChart
           title="SKU concentration"
-          caption="Share of capacity by SKU (weighted by vCPU). Score uses SUMSQ(shares)×√(total vCPUs)."
+          caption="Top 10 SKUs by capacity share (weighted by vCPU)."
           slices={skuSlices}
           accentClass="tone-1"
           useCapacityWeight
         />
         <ShareBarChart
           title="Region concentration"
-          caption="Share of inventory by region. Advisory only — does not change the Red/Amber/Green score."
+          caption="Share of capacity by region (weighted by vCPU). Advisory only — does not change the Red/Amber/Green score."
           slices={regionSlices}
           accentClass="tone-2"
+          useCapacityWeight
         />
       </div>
 

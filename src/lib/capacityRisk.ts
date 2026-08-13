@@ -536,7 +536,7 @@ function computeScopedCapacityRisk(input: {
       id: 'region',
       category: 'region',
       label: `Region concentration warning (${regionPart.sharePct}% in ${regionPart.label})`,
-      detail: `${regionPart.sharePct}% of inventory is in “${regionPart.label}” — advisory only, not scored`,
+      detail: `${regionPart.sharePct}% of capacity (vCPU-weighted) is in “${regionPart.label}” — advisory only, not scored`,
     })
   }
 
@@ -756,7 +756,7 @@ function concentrationSlices(
     .slice(0, limit)
 }
 
-/** Inventory share by SKU / size / type for charts. */
+/** Inventory share by SKU / size / type for charts (top 10 by capacity). */
 export function getSkuConcentrationSlices(
   inventory: InventoryItem[],
   customerId: string,
@@ -765,6 +765,7 @@ export function getSkuConcentrationSlices(
   return concentrationSlices(
     filterInventoryForScope(inventory, customerId, subscriptionId ?? null),
     (i) => i.sku || i.size || i.resourceType,
+    10,
   )
 }
 
