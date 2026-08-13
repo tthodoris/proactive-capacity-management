@@ -26,7 +26,8 @@ export const DEFAULT_CAPACITY_RISK_WEIGHTS: CapacityRiskWeights = {
 export const CAPACITY_RISK_FACTOR_CAPS: CapacityRiskWeights = {
   constraints: 40,
   quotas: 30,
-  sku: 15,
+  /** Cap for SUMSQ(shares)×√(total vCPUs); full SKU weight at this raw score. */
+  sku: 25,
 }
 
 export const CAPACITY_RISK_WEIGHT_META: Array<{
@@ -50,7 +51,7 @@ export const CAPACITY_RISK_WEIGHT_META: Array<{
   {
     key: 'sku',
     label: 'SKU concentration',
-    description: 'Share of inventory on a single SKU / family',
+    description: 'SUMSQ(vCPU shares) × √(total vCPUs)',
     toneClass: 'tone-2',
   },
 ]
@@ -258,46 +259,94 @@ export function estimateVcpuFromSku(sku: string | undefined | null, size: string
   return 1
 }
 
+/**
+ * Region (and generic) concentration metrics by capacity-weighted share.
+ * Does not assign score points — region is advisory only.
+ */
 function concentration(
   items: InventoryItem[],
   keyFn: (item: InventoryItem) => string,
-  /** When false, still compute share metrics but never assign score points. */
-  scorePoints = true,
 ) {
   if (items.length === 0) {
-    return { label: null as string | null, sharePct: 0, points: 0, elevated: false }
+    return { label: null as string | null, sharePct: 0, elevated: false }
   }
 
-  const buckets = new Map<string, { count: number; weight: number }>()
+  const buckets = new Map<string, number>()
   let totalWeight = 0
   for (const item of items) {
     const key = keyFn(item).trim() || 'Unknown'
     const w = estimateVcpuFromSku(item.sku, item.size)
-    const existing = buckets.get(key) || { count: 0, weight: 0 }
-    existing.count += 1
-    existing.weight += w
-    buckets.set(key, existing)
+    buckets.set(key, (buckets.get(key) || 0) + w)
     totalWeight += w
   }
 
   let topLabel = 'Unknown'
   let topWeight = 0
-  for (const [label, data] of buckets) {
-    if (data.weight > topWeight) {
+  for (const [label, weight] of buckets) {
+    if (weight > topWeight) {
       topLabel = label
-      topWeight = data.weight
+      topWeight = weight
     }
   }
 
   const sharePct = pct(topWeight, totalWeight)
-  const elevated = sharePct >= 25
-  let points = 0
-  if (scorePoints) {
-    if (sharePct >= 50) points = 15
-    else if (sharePct >= 35) points = 10
-    else if (sharePct >= 25) points = 5
+  return { label: topLabel, sharePct, elevated: sharePct >= 25 }
+}
+
+/**
+ * SKU concentration score (Excel column L):
+ *   SUMSQ(skuShare_i) × √(total_vCPUs)
+ * where skuShare_i = sku_vCPUs_i / total_vCPUs
+ *
+ * Combines HHI-style concentration with a volume (√vCPU) factor so tiny
+ * fleets score low even when share looks concentrated.
+ */
+export function computeSkuConcentrationScore(items: InventoryItem[]) {
+  if (items.length === 0) {
+    return {
+      label: null as string | null,
+      sharePct: 0,
+      sumSqShares: 0,
+      totalVcpus: 0,
+      points: 0,
+      elevated: false,
+    }
   }
-  return { label: topLabel, sharePct, points, elevated }
+
+  const buckets = new Map<string, number>()
+  let totalVcpus = 0
+  for (const item of items) {
+    const key = (item.sku || item.size || item.resourceType || 'Unknown').trim() || 'Unknown'
+    const w = estimateVcpuFromSku(item.sku, item.size)
+    buckets.set(key, (buckets.get(key) || 0) + w)
+    totalVcpus += w
+  }
+
+  let topLabel = 'Unknown'
+  let topWeight = 0
+  let sumSqShares = 0
+  for (const [label, weight] of buckets) {
+    if (weight > topWeight) {
+      topLabel = label
+      topWeight = weight
+    }
+    const share = totalVcpus > 0 ? weight / totalVcpus : 0
+    sumSqShares += share * share
+  }
+
+  const sharePct = pct(topWeight, totalVcpus)
+  // Column L: SUMSQ(shares) * SQRT(total vCPUs)
+  const points = Math.round(sumSqShares * Math.sqrt(totalVcpus) * 1000) / 1000
+  const elevated = sharePct >= 25 || points >= 5
+
+  return {
+    label: topLabel,
+    sharePct,
+    sumSqShares: Math.round(sumSqShares * 1e9) / 1e9,
+    totalVcpus,
+    points,
+    elevated,
+  }
 }
 
 function quotaHeadroom(quotas: Quota[]) {
@@ -429,8 +478,8 @@ function computeScopedCapacityRisk(input: {
     constraints,
   )
   const quotasPart = quotaHeadroom(scopedQuotas)
-  const skuPart = concentration(scopedInventory, (i) => i.sku || i.size || i.resourceType)
-  const regionPart = concentration(scopedInventory, (i) => i.region, false)
+  const skuPart = computeSkuConcentrationScore(scopedInventory)
+  const regionPart = concentration(scopedInventory, (i) => i.region)
 
   const constraintContribution = weightedContribution(
     constraintsPart.points,
@@ -475,8 +524,8 @@ function computeScopedCapacityRisk(input: {
     factors.push({
       id: 'sku',
       category: 'sku',
-      label: `SKU concentration (${skuPart.sharePct}% on ${skuPart.label})`,
-      detail: `${skuPart.sharePct}% of inventory shares SKU/family “${skuPart.label}”`,
+      label: `SKU concentration (score ${skuPart.points})`,
+      detail: `SUMSQ(shares)×√vCPUs = ${skuPart.points} · top ${skuPart.sharePct}% on “${skuPart.label}” · ${skuPart.totalVcpus} vCPU total`,
       points: skuContribution,
       rawPoints: skuPart.points,
     })
@@ -498,8 +547,8 @@ function computeScopedCapacityRisk(input: {
       label: `SKU concentration warning (${skuPart.sharePct}% on ${skuPart.label})`,
       detail:
         skuPart.points > 0
-          ? `${skuPart.sharePct}% of inventory shares “${skuPart.label}” — diversify SKUs to reduce scored risk`
-          : `${skuPart.sharePct}% of inventory shares “${skuPart.label}” — watch concentration even though score impact is low`,
+          ? `Score ${skuPart.points} from SUMSQ(shares)×√vCPUs — top share ${skuPart.sharePct}% on “${skuPart.label}” (${skuPart.totalVcpus} vCPU)`
+          : `${skuPart.sharePct}% of capacity is on “${skuPart.label}” — watch concentration even though score impact is low`,
     })
   }
 
