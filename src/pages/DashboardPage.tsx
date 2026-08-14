@@ -4,6 +4,7 @@ import { ArrowRight, Boxes, ChevronDown, ChevronRight, Gauge, Plus } from 'lucid
 import { MetricCard, SeverityBadge, StatusBadge } from '../components/Badges'
 import { RetrievalLogEntryView } from '../components/RetrievalLogEntryView'
 import { useApp } from '../context/AppContext'
+import { filterListableConstraints, sortConstraintsForDashboard } from '../lib/constraints'
 import { formatRelative } from '../lib/format'
 
 export function DashboardPage() {
@@ -25,7 +26,7 @@ export function DashboardPage() {
 
   const [activityExpanded, setActivityExpanded] = useState(false)
 
-  const active = constraints.filter((c) => c.status !== 'Resolved')
+  const active = sortConstraintsForDashboard(filterListableConstraints(constraints))
   const portfolioImpacts = impactResults.filter((i) => portfolioCustomerIds.includes(i.customerId))
   const affectedCustomers = new Set(portfolioImpacts.map((i) => i.customerId)).size
   const unread = alerts.filter((a) => !a.read && (canSeeAllPortfolios || a.csaOwnerId === user.id)).length

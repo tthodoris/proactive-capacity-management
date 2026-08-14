@@ -82,6 +82,7 @@ function RiskDriversCell({ risk }: { risk: CustomerCapacityRisk }) {
           <ShieldAlert size={14} />
           <div>
             <strong>{w.label}</strong>
+            {w.subscriptionName ? <div className="muted">{w.subscriptionName}</div> : null}
             <div className="muted">{w.detail}</div>
           </div>
           <span className="pill pill-high">Warning</span>
@@ -265,9 +266,10 @@ export function CustomerRiskPage() {
       impacts: impactResults,
       constraints,
       weights: appliedWeights,
+      subscriptions,
     })
     return new Map(list.map((r) => [r.customerId, r]))
-  }, [portfolioCustomers, inventory, quotas, impactResults, constraints, appliedWeights])
+  }, [portfolioCustomers, inventory, quotas, impactResults, constraints, appliedWeights, subscriptions])
 
   const subscriptionRisksByCustomer = useMemo(() => {
     const map = new Map<string, CustomerCapacityRisk[]>()

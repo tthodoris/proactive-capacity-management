@@ -197,8 +197,9 @@ export function CustomerRiskDetailPage() {
       impacts: impactResults,
       constraints,
       weights: loadCapacityRiskWeights(),
+      subscriptions: customerSubscriptions,
     })
-  }, [customer, allowed, inventory, quotas, impactResults, constraints])
+  }, [customer, allowed, inventory, quotas, impactResults, constraints, customerSubscriptions])
 
   const subscriptionRisks = useMemo(() => {
     if (!customer || !allowed) return []
@@ -552,6 +553,7 @@ export function CustomerRiskDetailPage() {
                   )}
                   <div>
                     <strong>{w.label}</strong>
+                    {w.subscriptionName ? <div className="muted">{w.subscriptionName}</div> : null}
                     <div className="muted">{w.detail}</div>
                   </div>
                   <span className="pill pill-high">Warning</span>

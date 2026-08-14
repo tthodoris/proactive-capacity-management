@@ -4,7 +4,7 @@ import { Plus, Search, X } from 'lucide-react'
 import { SeverityBadge, StatusBadge } from '../components/Badges'
 import { useApp } from '../context/AppContext'
 import { formatRelative } from '../lib/format'
-import { filterActiveImpacts } from '../lib/constraints'
+import { filterActiveImpacts, filterListableConstraints } from '../lib/constraints'
 import {
   FilterableTh,
   collectCascadingOptions,
@@ -24,7 +24,7 @@ type ConstraintSortKey =
   | 'updated'
 
 export function ConstraintsPage() {
-  const { constraints, impactResults, portfolioCustomerIds, canSeeAllPortfolios, user } = useApp()
+  const { constraints, impactResults } = useApp()
   const [query, setQuery] = useState('')
   const [showResolved, setShowResolved] = useState(false)
   const navigate = useNavigate()
@@ -79,32 +79,16 @@ export function ConstraintsPage() {
   )
 
   const baseRows = useMemo(() => {
-    return constraints.filter((c) => {
-      if (!showResolved && c.status === 'Resolved') return false
+    return filterListableConstraints(constraints, { includeResolved: showResolved }).filter((c) => {
       const matchesQuery =
         !query ||
         c.sku.toLowerCase().includes(query.toLowerCase()) ||
         c.regions.join(' ').toLowerCase().includes(query.toLowerCase()) ||
         c.source.toLowerCase().includes(query.toLowerCase()) ||
         c.resourceType.toLowerCase().includes(query.toLowerCase())
-      if (!matchesQuery) return false
-      if (!canSeeAllPortfolios) {
-        const touchesPortfolio = activeImpacts.some(
-          (i) => i.constraintId === c.id && portfolioCustomerIds.includes(i.customerId),
-        )
-        if (!touchesPortfolio && c.createdBy !== user.id) return false
-      }
-      return true
+      return matchesQuery
     })
-  }, [
-    constraints,
-    activeImpacts,
-    portfolioCustomerIds,
-    canSeeAllPortfolios,
-    query,
-    user.id,
-    showResolved,
-  ])
+  }, [constraints, query, showResolved])
 
   const filtered = useMemo(() => {
     return baseRows.filter((c) =>

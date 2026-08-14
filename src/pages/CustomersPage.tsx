@@ -40,6 +40,7 @@ export function CustomersPage() {
   const {
     customers,
     users,
+    subscriptions,
     inventory,
     quotas,
     impactResults,
@@ -75,9 +76,10 @@ export function CustomersPage() {
       impacts: impactResults,
       constraints,
       weights: loadCapacityRiskWeights(),
+      subscriptions,
     })
     return new Map(list.map((r) => [r.customerId, r]))
-  }, [customers, canSeeAllPortfolios, portfolioCustomerIds, inventory, quotas, impactResults, constraints])
+  }, [customers, canSeeAllPortfolios, portfolioCustomerIds, inventory, quotas, impactResults, constraints, subscriptions])
 
   const baseRows = useMemo(() => {
     return customers

@@ -26,7 +26,7 @@ export const DEFAULT_CAPACITY_RISK_WEIGHTS: CapacityRiskWeights = {
 export const CAPACITY_RISK_FACTOR_CAPS: CapacityRiskWeights = {
   constraints: 40,
   quotas: 30,
-  /** Cap for SUMSQ(shares)×√(total vCPUs); full SKU weight at this raw score. */
+  /** Cap for SKU concentration strength; full SKU weight at this raw score. */
   sku: 25,
 }
 
@@ -51,7 +51,7 @@ export const CAPACITY_RISK_WEIGHT_META: Array<{
   {
     key: 'sku',
     label: 'SKU concentration',
-    description: 'SUMSQ(vCPU shares) × √(total vCPUs)',
+    description: 'Capacity-weighted concentration on a single SKU',
     toneClass: 'tone-2',
   },
 ]
@@ -74,6 +74,7 @@ export interface CapacityRiskWarning {
   category: 'region' | 'sku' | 'quota'
   label: string
   detail: string
+  subscriptionName?: string | null
 }
 
 export interface ConcentrationSlice {
@@ -396,7 +397,10 @@ function quotaHeadroom(quotas: Quota[]) {
 
 const ADVISORY_QUOTA_WARN_PCT = 60
 
-function advisoryQuotaWarnings(quotas: Quota[]): CapacityRiskWarning[] {
+function advisoryQuotaWarnings(
+  quotas: Quota[],
+  subscriptions?: Subscription[],
+): CapacityRiskWarning[] {
   const warnings: CapacityRiskWarning[] = []
   for (const q of quotas) {
     if (isNetworkWatcherQuota(q)) continue
@@ -410,10 +414,13 @@ function advisoryQuotaWarnings(quotas: Quota[]): CapacityRiskWarning[] {
     if (usagePct < ADVISORY_QUOTA_WARN_PCT) continue
     const kind = isStorage ? 'Storage Accounts' : 'Total Regional vCPUs'
     const region = q.region || 'unknown region'
+    const subscriptionName = resolveSubscriptionName(q.subscriptionId, subscriptions, quotas)
+    const scope = subscriptionName ? ` · ${subscriptionName}` : ''
     warnings.push({
       id: `quota-${q.id}`,
       category: 'quota',
-      label: `${kind} warning (${usagePct}% in ${region})`,
+      subscriptionName,
+      label: `${kind} warning (${usagePct}% in ${region})${scope}`,
       detail: `${q.name || kind} is at ${usage} / ${limit} ${q.unit || ''} (${usagePct}%) — advisory only, not scored`.replace(
         /\s+/g,
         ' ',
@@ -500,10 +507,59 @@ function filterQuotasForScope(
   )
 }
 
+function resolveSubscriptionName(
+  subscriptionId: string | null | undefined,
+  subscriptions: Subscription[] | undefined,
+  quotas: Quota[],
+): string | null {
+  if (!subscriptionId) return null
+  const named = subscriptions?.find((s) => s.id === subscriptionId)
+  if (named?.name) return named.name
+  const quota = quotas.find((q) => q.subscriptionId === subscriptionId)
+  return quota?.subscriptionName || quota?.azureSubscriptionId || null
+}
+
+function pushConcentrationWarnings(input: {
+  inventory: InventoryItem[]
+  subscriptionId: string | null
+  subscriptionName: string | null
+  warnings: CapacityRiskWarning[]
+}) {
+  const skuPart = computeSkuConcentrationScore(input.inventory)
+  const regionPart = concentration(input.inventory, (i) => i.region)
+  const scope = input.subscriptionName
+  const suffix = scope ? ` · ${scope}` : ''
+  const scopeId = input.subscriptionId || 'customer'
+
+  if (regionPart.elevated && regionPart.label) {
+    input.warnings.push({
+      id: `region-${scopeId}`,
+      category: 'region',
+      subscriptionName: scope,
+      label: `Region concentration warning (${regionPart.sharePct}% in ${regionPart.label})${suffix}`,
+      detail: `${regionPart.sharePct}% of capacity (vCPU-weighted) is in “${regionPart.label}” — advisory only, not scored`,
+    })
+  }
+
+  if (skuPart.elevated && skuPart.label) {
+    input.warnings.push({
+      id: `sku-warning-${scopeId}`,
+      category: 'sku',
+      subscriptionName: scope,
+      label: `SKU concentration warning (${skuPart.sharePct}% on ${skuPart.label})${suffix}`,
+      detail:
+        skuPart.points > 0
+          ? `Top share ${skuPart.sharePct}% on “${skuPart.label}” (${skuPart.totalVcpus} vCPU)`
+          : `${skuPart.sharePct}% of capacity is on “${skuPart.label}” — watch concentration even though score impact is low`,
+    })
+  }
+}
+
 function computeScopedCapacityRisk(input: {
   customerId: string
   subscriptionId?: string | null
   subscriptionName?: string | null
+  subscriptions?: Subscription[]
   inventory: InventoryItem[]
   quotas: Quota[]
   impacts: ImpactResult[]
@@ -514,6 +570,7 @@ function computeScopedCapacityRisk(input: {
     customerId,
     subscriptionId = null,
     subscriptionName = null,
+    subscriptions,
     inventory,
     quotas,
     impacts,
@@ -577,34 +634,49 @@ function computeScopedCapacityRisk(input: {
       id: 'sku',
       category: 'sku',
       label: `SKU concentration (score ${skuPart.points})`,
-      detail: `SUMSQ(shares)×√vCPUs = ${skuPart.points} · top ${skuPart.sharePct}% on “${skuPart.label}” · ${skuPart.totalVcpus} vCPU total`,
+      detail: `Top ${skuPart.sharePct}% of capacity on “${skuPart.label}” · ${skuPart.totalVcpus} vCPU total`,
       points: skuContribution,
       rawPoints: skuPart.points,
     })
   }
 
-  if (regionPart.elevated && regionPart.label) {
-    warnings.push({
-      id: 'region',
-      category: 'region',
-      label: `Region concentration warning (${regionPart.sharePct}% in ${regionPart.label})`,
-      detail: `${regionPart.sharePct}% of capacity (vCPU-weighted) is in “${regionPart.label}” — advisory only, not scored`,
+  if (subscriptionId) {
+    pushConcentrationWarnings({
+      inventory: scopedInventory,
+      subscriptionId,
+      subscriptionName:
+        subscriptionName ||
+        resolveSubscriptionName(subscriptionId, subscriptions, scopedQuotas),
+      warnings,
     })
+  } else {
+    const subIds = [
+      ...new Set(
+        scopedInventory
+          .map((item) => item.subscriptionId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ]
+    if (subIds.length === 0) {
+      pushConcentrationWarnings({
+        inventory: scopedInventory,
+        subscriptionId: null,
+        subscriptionName: null,
+        warnings,
+      })
+    } else {
+      for (const subId of subIds) {
+        pushConcentrationWarnings({
+          inventory: scopedInventory.filter((item) => item.subscriptionId === subId),
+          subscriptionId: subId,
+          subscriptionName: resolveSubscriptionName(subId, subscriptions, scopedQuotas),
+          warnings,
+        })
+      }
+    }
   }
 
-  if (skuPart.elevated && skuPart.label) {
-    warnings.push({
-      id: 'sku-warning',
-      category: 'sku',
-      label: `SKU concentration warning (${skuPart.sharePct}% on ${skuPart.label})`,
-      detail:
-        skuPart.points > 0
-          ? `Score ${skuPart.points} from SUMSQ(shares)×√vCPUs — top share ${skuPart.sharePct}% on “${skuPart.label}” (${skuPart.totalVcpus} vCPU)`
-          : `${skuPart.sharePct}% of capacity is on “${skuPart.label}” — watch concentration even though score impact is low`,
-    })
-  }
-
-  warnings.push(...advisoryQuotaWarnings(scopedQuotas))
+  warnings.push(...advisoryQuotaWarnings(scopedQuotas, subscriptions))
 
   const score = clamp(
     Math.round(constraintContribution + quotaContribution + skuContribution),
@@ -647,11 +719,13 @@ export function computeCustomerCapacityRisk(input: {
   impacts: ImpactResult[]
   constraints: CapacityConstraint[]
   weights?: Partial<CapacityRiskWeights> | null
+  subscriptions?: Subscription[]
 }): CustomerCapacityRisk {
   return computeScopedCapacityRisk({
     customerId: input.customer.id,
     subscriptionId: null,
     subscriptionName: null,
+    subscriptions: input.subscriptions,
     inventory: input.inventory,
     quotas: input.quotas,
     impacts: input.impacts,
@@ -674,6 +748,7 @@ export function computeSubscriptionCapacityRisk(input: {
     customerId: input.customer.id,
     subscriptionId: input.subscription.id,
     subscriptionName: input.subscription.name,
+    subscriptions: [input.subscription],
     inventory: input.inventory,
     quotas: input.quotas,
     impacts: input.impacts,
@@ -713,6 +788,7 @@ export function computePortfolioCapacityRisks(input: {
   impacts: ImpactResult[]
   constraints: CapacityConstraint[]
   weights?: Partial<CapacityRiskWeights> | null
+  subscriptions?: Subscription[]
 }): CustomerCapacityRisk[] {
   return input.customers.map((customer) =>
     computeCustomerCapacityRisk({
@@ -722,6 +798,7 @@ export function computePortfolioCapacityRisks(input: {
       impacts: input.impacts,
       constraints: input.constraints,
       weights: input.weights,
+      subscriptions: input.subscriptions?.filter((s) => s.customerId === customer.id),
     }),
   )
 }
