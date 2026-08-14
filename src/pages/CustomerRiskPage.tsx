@@ -488,8 +488,9 @@ export function CustomerRiskPage() {
           <h3>Customer capacity risk</h3>
           <p>
             Red / Amber / Green posture per customer and per subscription from open constraints,
-            quota headroom (excluding Network Watchers), and SKU concentration. Region concentration
-            is shown as a warning only.
+            quota headroom (excluding Network Watchers, Storage Accounts, and Total Regional vCPUs),
+            and SKU concentration. Region concentration, Storage Accounts, and Total Regional vCPUs
+            are shown as warnings only.
           </p>
         </div>
       </div>

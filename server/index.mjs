@@ -1640,6 +1640,7 @@ app.post('/api/azure/region-evaluation', async (req, res) => {
 
 const COMPUTE_TYPE_MAP = {
   'microsoft.compute/virtualmachines': 'Virtual Machine',
+  'microsoft.compute/virtualmachinescalesets/virtualmachines': 'Virtual Machine',
   'microsoft.sql/servers/databases': 'Azure SQL Database',
   'microsoft.sql/servers': 'Azure SQL Server',
   'microsoft.sql/managedinstances': 'Azure SQL Managed Instance',
@@ -1776,6 +1777,8 @@ app.get('/api/azure/inventory', async (req, res) => {
       Resources
       | where type in~ (
           'microsoft.compute/virtualmachines',
+          'microsoft.compute/virtualmachinescalesets',
+          'microsoft.compute/virtualmachinescalesets/virtualmachines',
           'microsoft.sql/servers/databases',
           'microsoft.sql/servers',
           'microsoft.sql/managedinstances',
@@ -1816,6 +1819,9 @@ app.get('/api/azure/inventory', async (req, res) => {
           tostring(properties.sku.tier),
           ''
         )
+      | extend skuCapacity = toint(sku.capacity)
+      | extend orchestrationMode = tostring(properties.orchestrationMode)
+      | extend vmssName = extract(@'(?i)/virtualMachineScaleSets/([^/]+)', 1, id)
       | extend managedEnvironmentId = tostring(properties.managedEnvironmentId)
       | extend workloadProfileName = tostring(properties.workloadProfileName)
       | extend workloadProfilesJson = iff(
@@ -1832,6 +1838,9 @@ app.get('/api/azure/inventory', async (req, res) => {
           subscriptionId,
           skuName,
           sizeHint,
+          skuCapacity,
+          orchestrationMode,
+          vmssName,
           managedEnvironmentId,
           workloadProfileName,
           workloadProfilesJson
@@ -1887,9 +1896,51 @@ app.get('/api/azure/inventory', async (req, res) => {
       }
     }
 
-    const resources = (Array.isArray(rows) ? rows : []).map((row) => {
+    const allRows = Array.isArray(rows) ? rows : []
+    const vmssParents = new Map()
+    for (const row of allRows) {
+      if (String(row.type || '').toLowerCase() !== 'microsoft.compute/virtualmachinescalesets') {
+        continue
+      }
+      vmssParents.set(String(row.id || '').toLowerCase(), row)
+    }
+
+    const resources = []
+    const vmssInstanceCountByParent = new Map()
+
+    for (const row of allRows) {
       const typeKey = String(row.type || '').toLowerCase()
+      // Parent scale sets are expanded to instances; do not keep the scale-set resource itself.
+      if (typeKey === 'microsoft.compute/virtualmachinescalesets') continue
+
       const resourceType = resolveInventoryResourceType(typeKey)
+
+      if (typeKey === 'microsoft.compute/virtualmachinescalesets/virtualmachines') {
+        const parentId = String(row.id || '').replace(/\/virtualMachines\/[^/]+$/i, '')
+        const parentKey = parentId.toLowerCase()
+        vmssInstanceCountByParent.set(parentKey, (vmssInstanceCountByParent.get(parentKey) || 0) + 1)
+        const parent = vmssParents.get(parentKey)
+        const vmssName = String(row.vmssName || parent?.name || parentId.split('/').pop() || 'vmss')
+        const sku =
+          row.skuName ||
+          row.sizeHint ||
+          parent?.skuName ||
+          parent?.sizeHint ||
+          'unknown'
+        resources.push({
+          id: row.id || randomUUID(),
+          name: `${vmssName}/${row.name}`,
+          type: row.type,
+          resourceType: 'Virtual Machine',
+          sku,
+          size: sku,
+          region: row.location || parent?.location,
+          resourceGroup: row.resourceGroup || parent?.resourceGroup,
+          subscriptionId: row.subscriptionId || parent?.subscriptionId || subscriptionId,
+          source: 'Customer tenant',
+        })
+        continue
+      }
 
       if (typeKey === 'microsoft.app/managedenvironments') {
         const profiles = parseWorkloadProfiles(row.workloadProfilesJson)
@@ -1900,7 +1951,7 @@ app.get('/api/azure/inventory', async (req, res) => {
                 .filter(Boolean)
                 .join(', ')
             : 'Consumption'
-        return {
+        resources.push({
           id: row.id || randomUUID(),
           name: row.name,
           type: row.type,
@@ -1913,7 +1964,8 @@ app.get('/api/azure/inventory', async (req, res) => {
           resourceGroup: row.resourceGroup,
           subscriptionId: row.subscriptionId || subscriptionId,
           source: 'Customer tenant',
-        }
+        })
+        continue
       }
 
       if (typeKey === 'microsoft.app/containerapps') {
@@ -1928,22 +1980,22 @@ app.get('/api/azure/inventory', async (req, res) => {
           ? formatWorkloadProfileSize(matched)
           : profileType || profileName
         const envLabel = env?.name || (envId ? envId.split('/').pop() : '')
-        return {
+        resources.push({
           id: row.id || randomUUID(),
           name: row.name,
           type: row.type,
           resourceType,
-          // Profile name as SKU; size carries the profile hardware size (e.g. D4).
           sku: envLabel ? `${profileName} @ ${envLabel}` : profileName,
           size: sizeLabel || undefined,
           region: row.location,
           resourceGroup: row.resourceGroup,
           subscriptionId: row.subscriptionId || subscriptionId,
           source: 'Customer tenant',
-        }
+        })
+        continue
       }
 
-      return {
+      resources.push({
         id: row.id || randomUUID(),
         name: row.name,
         type: row.type,
@@ -1954,8 +2006,34 @@ app.get('/api/azure/inventory', async (req, res) => {
         resourceGroup: row.resourceGroup,
         subscriptionId: row.subscriptionId || subscriptionId,
         source: 'Customer tenant',
+      })
+    }
+
+    // Uniform VMSS instances are sometimes missing from Resource Graph. Expand from sku.capacity.
+    const MAX_SYNTHETIC_VMSS_INSTANCES = 2000
+    for (const [parentKey, parent] of vmssParents) {
+      const mode = String(parent.orchestrationMode || '')
+      if (/flexible/i.test(mode)) continue
+      if ((vmssInstanceCountByParent.get(parentKey) || 0) > 0) continue
+      const capacity = Number(parent.skuCapacity)
+      if (!Number.isFinite(capacity) || capacity <= 0) continue
+      const count = Math.min(Math.floor(capacity), MAX_SYNTHETIC_VMSS_INSTANCES)
+      const sku = parent.skuName || parent.sizeHint || 'unknown'
+      for (let i = 0; i < count; i++) {
+        resources.push({
+          id: `${parent.id}/virtualMachines/${i}`,
+          name: `${parent.name}/${i}`,
+          type: 'microsoft.compute/virtualmachinescalesets/virtualmachines',
+          resourceType: 'Virtual Machine',
+          sku,
+          size: sku,
+          region: parent.location,
+          resourceGroup: parent.resourceGroup,
+          subscriptionId: parent.subscriptionId || subscriptionId,
+          source: 'Customer tenant',
+        })
       }
-    })
+    }
 
     res.json({
       fetchedAt: new Date().toISOString(),
@@ -1965,7 +2043,7 @@ app.get('/api/azure/inventory', async (req, res) => {
       count: resources.length,
       resources,
       query:
-        'Azure Resource Graph — VMs, SQL, MySQL, PostgreSQL, Cosmos DB, AKS, containers, Container Apps (+ environments/workload profiles), Redis, Key Vault, Storage, App Gateway, APIM, VPN Gateway, Databricks, ADX',
+        'Azure Resource Graph — VMs, VMSS instances, SQL, MySQL, PostgreSQL, Cosmos DB, AKS, containers, Container Apps (+ environments/workload profiles), Redis, Key Vault, Storage, App Gateway, APIM, VPN Gateway, Databricks, ADX',
     })
   } catch (err) {
     sendRouteError(

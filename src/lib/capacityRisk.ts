@@ -45,7 +45,7 @@ export const CAPACITY_RISK_WEIGHT_META: Array<{
   {
     key: 'quotas',
     label: 'Quota headroom',
-    description: 'Peak usage / limit (Network Watchers excluded)',
+    description: 'Peak usage / limit (Network Watchers, Storage Accounts, Total Regional vCPUs excluded)',
     toneClass: 'tone-high',
   },
   {
@@ -68,10 +68,10 @@ export interface CapacityRiskFactor {
   rawPoints: number
 }
 
-/** Non-scoring advisories (region always; SKU when concentrated). */
+/** Non-scoring advisories (region always; SKU when concentrated; some quotas). */
 export interface CapacityRiskWarning {
   id: string
-  category: 'region' | 'sku'
+  category: 'region' | 'sku' | 'quota'
   label: string
   detail: string
 }
@@ -229,10 +229,33 @@ function weightedContribution(rawPoints: number, key: CapacityRiskWeightKey, wei
   return Math.round(strength * weights[key] * 10) / 10
 }
 
+function quotaHaystack(q: Pick<Quota, 'name' | 'nameValue'>) {
+  return `${q.name || ''} ${q.nameValue || ''}`.toLowerCase()
+}
+
 /** Azure Network Watcher quotas are nearly always saturated and not capacity-relevant. */
 export function isNetworkWatcherQuota(q: Pick<Quota, 'name' | 'nameValue'>) {
-  const hay = `${q.name || ''} ${q.nameValue || ''}`.toLowerCase()
+  const hay = quotaHaystack(q)
   return hay.includes('network watcher') || hay.includes('networkwatcher')
+}
+
+/** Storage account count quotas — advisory only, not scored. */
+export function isStorageAccountQuota(q: Pick<Quota, 'name' | 'nameValue'>) {
+  const hay = quotaHaystack(q)
+  return hay.includes('storage account') || hay.includes('storageaccounts')
+}
+
+/** Subscription-wide Total Regional vCPUs / cores — advisory only, not scored. */
+export function isTotalRegionalVcpuQuota(q: Pick<Quota, 'name' | 'nameValue'>) {
+  const name = String(q.name || '').toLowerCase()
+  const nameValue = String(q.nameValue || '').toLowerCase()
+  if (nameValue === 'cores') return true
+  return /total\s+regional\s+(vcpus?|cores)/i.test(name)
+}
+
+/** Quotas that must not contribute to the scored quota-headroom factor. */
+export function isQuotaExcludedFromScoring(q: Pick<Quota, 'name' | 'nameValue'>) {
+  return isNetworkWatcherQuota(q) || isStorageAccountQuota(q) || isTotalRegionalVcpuQuota(q)
 }
 
 /**
@@ -350,7 +373,7 @@ export function computeSkuConcentrationScore(items: InventoryItem[]) {
 }
 
 function quotaHeadroom(quotas: Quota[]) {
-  const usable = quotas.filter((q) => Number(q.limit) > 0 && !isNetworkWatcherQuota(q))
+  const usable = quotas.filter((q) => Number(q.limit) > 0 && !isQuotaExcludedFromScoring(q))
   if (usable.length === 0) {
     return { maxPct: null as number | null, above80: 0, points: 0 }
   }
@@ -369,6 +392,35 @@ function quotaHeadroom(quotas: Quota[]) {
   else if (maxPct >= 60) points = 8
   if (above80 >= 3) points = Math.min(30, points + 4)
   return { maxPct, above80, points }
+}
+
+const ADVISORY_QUOTA_WARN_PCT = 60
+
+function advisoryQuotaWarnings(quotas: Quota[]): CapacityRiskWarning[] {
+  const warnings: CapacityRiskWarning[] = []
+  for (const q of quotas) {
+    if (isNetworkWatcherQuota(q)) continue
+    const isStorage = isStorageAccountQuota(q)
+    const isRegional = isTotalRegionalVcpuQuota(q)
+    if (!isStorage && !isRegional) continue
+    const limit = Number(q.limit)
+    const usage = Number(q.usage)
+    if (!(limit > 0) || !(usage >= 0)) continue
+    const usagePct = pct(usage, limit)
+    if (usagePct < ADVISORY_QUOTA_WARN_PCT) continue
+    const kind = isStorage ? 'Storage Accounts' : 'Total Regional vCPUs'
+    const region = q.region || 'unknown region'
+    warnings.push({
+      id: `quota-${q.id}`,
+      category: 'quota',
+      label: `${kind} warning (${usagePct}% in ${region})`,
+      detail: `${q.name || kind} is at ${usage} / ${limit} ${q.unit || ''} (${usagePct}%) — advisory only, not scored`.replace(
+        /\s+/g,
+        ' ',
+      ).trim(),
+    })
+  }
+  return warnings.sort((a, b) => a.label.localeCompare(b.label)).slice(0, 8)
 }
 
 function constraintPressureForScope(
@@ -513,8 +565,8 @@ function computeScopedCapacityRisk(input: {
       label: `Quota headroom pressure (peak ${quotasPart.maxPct}%)`,
       detail:
         quotasPart.above80 > 0
-          ? `${quotasPart.above80} quota line(s) at or above 80% used (Network Watchers excluded)`
-          : `Highest usage/limit across collected quotas is ${quotasPart.maxPct}% (Network Watchers excluded)`,
+          ? `${quotasPart.above80} quota line(s) at or above 80% used (Network Watchers, Storage Accounts, and Total Regional vCPUs excluded)`
+          : `Highest usage/limit across collected quotas is ${quotasPart.maxPct}% (Network Watchers, Storage Accounts, and Total Regional vCPUs excluded)`,
       points: quotaContribution,
       rawPoints: quotasPart.points,
     })
@@ -551,6 +603,8 @@ function computeScopedCapacityRisk(input: {
           : `${skuPart.sharePct}% of capacity is on “${skuPart.label}” — watch concentration even though score impact is low`,
     })
   }
+
+  warnings.push(...advisoryQuotaWarnings(scopedQuotas))
 
   const score = clamp(
     Math.round(constraintContribution + quotaContribution + skuContribution),
@@ -783,7 +837,8 @@ export function getRegionConcentrationSlices(
 
 /**
  * Quotas that should be increased to reduce headroom pressure.
- * Excludes Network Watchers. Target: bring usage to ~70% of limit.
+ * Excludes Network Watchers, Storage Accounts, and Total Regional vCPUs.
+ * Target: bring usage to ~70% of limit.
  */
 export function getQuotaActionsToReduceRisk(
   quotas: Quota[],
@@ -805,7 +860,7 @@ export function getQuotaActionsToReduceRisk(
   for (const quota of quotas) {
     if (quota.customerId !== customerId) continue
     if (subscriptionId && quota.subscriptionId !== subscriptionId) continue
-    if (isNetworkWatcherQuota(quota)) continue
+    if (isQuotaExcludedFromScoring(quota)) continue
     const limit = Number(quota.limit)
     const usage = Number(quota.usage)
     if (!(limit > 0) || !(usage >= 0)) continue

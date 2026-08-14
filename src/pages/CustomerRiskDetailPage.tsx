@@ -300,6 +300,7 @@ export function CustomerRiskDetailPage() {
   const owner = users.find((u) => u.id === customer.csaOwnerId)
   const regionWarnings = risk.warnings.filter((w) => w.category === 'region')
   const skuWarnings = risk.warnings.filter((w) => w.category === 'sku')
+  const quotaWarnings = risk.warnings.filter((w) => w.category === 'quota')
 
   return (
     <div className="stack">
@@ -429,7 +430,7 @@ export function CustomerRiskDetailPage() {
           <div className="value">
             {risk.metrics.maxQuotaUsagePct != null ? `${risk.metrics.maxQuotaUsagePct}%` : '—'}
           </div>
-          <div className="hint">Network Watchers excluded</div>
+          <div className="hint">Watchers, Storage Accounts, Regional vCPUs excluded</div>
         </div>
         <div className="metric-card">
           <div className="label">Quotas to raise</div>
@@ -527,22 +528,28 @@ export function CustomerRiskDetailPage() {
         <div className="panel-header">
           <div>
             <h4>
-              <Package size={18} /> Concentration warnings
+              <Package size={18} /> Warnings
             </h4>
             <p>
-              Region warnings never affect the score. SKU warnings flag diversification risk and may
-              also appear in scored drivers when concentration is high enough.
+              Advisory only — does not change the score. Includes region concentration, SKU
+              concentration, Storage Accounts, and Total Regional vCPUs.
             </p>
           </div>
         </div>
         <div className="panel-body">
-          {regionWarnings.length === 0 && skuWarnings.length === 0 ? (
-            <div className="empty">No elevated region or SKU concentration warnings.</div>
+          {regionWarnings.length === 0 && skuWarnings.length === 0 && quotaWarnings.length === 0 ? (
+            <div className="empty">No elevated region, SKU, or quota warnings.</div>
           ) : (
             <div className="risk-factor-list risk-detail-factors">
-              {[...skuWarnings, ...regionWarnings].map((w) => (
+              {[...skuWarnings, ...regionWarnings, ...quotaWarnings].map((w) => (
                 <div key={w.id} className="risk-factor-item risk-warning-item">
-                  {w.category === 'region' ? <MapPinned size={14} /> : <Package size={14} />}
+                  {w.category === 'region' ? (
+                    <MapPinned size={14} />
+                  ) : w.category === 'quota' ? (
+                    <Gauge size={14} />
+                  ) : (
+                    <Package size={14} />
+                  )}
                   <div>
                     <strong>{w.label}</strong>
                     <div className="muted">{w.detail}</div>
@@ -562,8 +569,9 @@ export function CustomerRiskDetailPage() {
               <Gauge size={18} /> Quotas to modify
             </h4>
             <p>
-              Raise these limits so current usage sits near 70% of capacity. Network Watcher quotas
-              are excluded. Chart shows today&apos;s usage %.
+              Raise these limits so current usage sits near 70% of capacity. Network Watcher,
+              Storage Account, and Total Regional vCPU quotas are excluded. Chart shows today&apos;s
+              usage %.
             </p>
           </div>
         </div>
