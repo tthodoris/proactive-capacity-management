@@ -397,10 +397,12 @@ function quotaHeadroom(quotas: Quota[]) {
 
 const ADVISORY_QUOTA_WARN_PCT = 60
 
-function advisoryQuotaWarnings(
+function advisoryQuotaWarningDrafts(
   quotas: Quota[],
-  subscriptions?: Subscription[],
+  subscriptions: Subscription[] | undefined,
+  options?: { includePct?: boolean },
 ): CapacityRiskWarning[] {
+  const includePct = Boolean(options?.includePct)
   const warnings: CapacityRiskWarning[] = []
   for (const q of quotas) {
     if (isNetworkWatcherQuota(q)) continue
@@ -415,19 +417,31 @@ function advisoryQuotaWarnings(
     const kind = isStorage ? 'Storage Accounts' : 'Total Regional vCPUs'
     const region = q.region || 'unknown region'
     const subscriptionName = resolveSubscriptionName(q.subscriptionId, subscriptions, quotas)
-    const scope = subscriptionName ? ` · ${subscriptionName}` : ''
+    const scope = includePct && subscriptionName ? ` · ${subscriptionName}` : ''
     warnings.push({
-      id: `quota-${q.id}`,
+      id: `quota-${isStorage ? 'storage' : 'regional'}${includePct ? `-${q.id}` : ''}`,
       category: 'quota',
       subscriptionName,
-      label: `${kind} warning (${usagePct}% in ${region})${scope}`,
-      detail: `${q.name || kind} is at ${usage} / ${limit} ${q.unit || ''} (${usagePct}%) — advisory only, not scored`.replace(
-        /\s+/g,
-        ' ',
-      ).trim(),
+      label: includePct
+        ? `${kind} warning (${usagePct}% in ${region})${scope}`
+        : `${kind} warning`,
+      detail: includePct
+        ? `${q.name || kind} is at ${usage} / ${limit} ${q.unit || ''} (${usagePct}%) — advisory only, not scored`
+            .replace(/\s+/g, ' ')
+            .trim()
+        : region,
     })
   }
-  return warnings.sort((a, b) => a.label.localeCompare(b.label)).slice(0, 8)
+  return warnings
+}
+
+function advisoryQuotaWarnings(
+  quotas: Quota[],
+  subscriptions?: Subscription[],
+): CapacityRiskWarning[] {
+  return advisoryQuotaWarningDrafts(quotas, subscriptions, { includePct: true })
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .slice(0, 8)
 }
 
 function constraintPressureForScope(
@@ -524,35 +538,84 @@ function pushConcentrationWarnings(input: {
   subscriptionId: string | null
   subscriptionName: string | null
   warnings: CapacityRiskWarning[]
+  includePct?: boolean
 }) {
   const skuPart = computeSkuConcentrationScore(input.inventory)
   const regionPart = concentration(input.inventory, (i) => i.region)
+  const includePct = input.includePct !== false
   const scope = input.subscriptionName
-  const suffix = scope ? ` · ${scope}` : ''
+  const suffix = includePct && scope ? ` · ${scope}` : ''
   const scopeId = input.subscriptionId || 'customer'
 
   if (regionPart.elevated && regionPart.label) {
     input.warnings.push({
-      id: `region-${scopeId}`,
+      id: includePct ? `region-${scopeId}` : `region:${regionPart.label}`,
       category: 'region',
       subscriptionName: scope,
-      label: `Region concentration warning (${regionPart.sharePct}% in ${regionPart.label})${suffix}`,
-      detail: `${regionPart.sharePct}% of capacity (vCPU-weighted) is in “${regionPart.label}” — advisory only, not scored`,
+      label: includePct
+        ? `Region concentration warning (${regionPart.sharePct}% in ${regionPart.label})${suffix}`
+        : `Region concentration in ${regionPart.label}`,
+      detail: includePct
+        ? `${regionPart.sharePct}% of capacity (vCPU-weighted) is in “${regionPart.label}” — advisory only, not scored`
+        : 'Advisory only — does not change the score.',
     })
   }
 
   if (skuPart.elevated && skuPart.label) {
     input.warnings.push({
-      id: `sku-warning-${scopeId}`,
+      id: includePct ? `sku-warning-${scopeId}` : `sku:${skuPart.label}`,
       category: 'sku',
       subscriptionName: scope,
-      label: `SKU concentration warning (${skuPart.sharePct}% on ${skuPart.label})${suffix}`,
-      detail:
-        skuPart.points > 0
+      label: includePct
+        ? `SKU concentration warning (${skuPart.sharePct}% on ${skuPart.label})${suffix}`
+        : `SKU concentration on ${skuPart.label}`,
+      detail: includePct
+        ? skuPart.points > 0
           ? `Top share ${skuPart.sharePct}% on “${skuPart.label}” (${skuPart.totalVcpus} vCPU)`
-          : `${skuPart.sharePct}% of capacity is on “${skuPart.label}” — watch concentration even though score impact is low`,
+          : `${skuPart.sharePct}% of capacity is on “${skuPart.label}” — watch concentration even though score impact is low`
+        : 'Advisory only — does not change the score.',
     })
   }
+}
+
+function uniqueSortedNames(names: Array<string | null | undefined>) {
+  return [...new Set(names.map((name) => String(name || '').trim()).filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b),
+  )
+}
+
+function consolidateRollupWarnings(warnings: CapacityRiskWarning[]): CapacityRiskWarning[] {
+  const buckets = new Map<
+    string,
+    CapacityRiskWarning & { subscriptionNames: string[]; extra: string[] }
+  >()
+  for (const warning of warnings) {
+    const key = warning.id
+    const existing = buckets.get(key)
+    const names = uniqueSortedNames([
+      ...(existing?.subscriptionNames || []),
+      warning.subscriptionName,
+    ])
+    const extra = uniqueSortedNames([
+      ...(existing?.extra || []),
+      warning.category === 'quota' ? warning.detail : '',
+    ])
+    buckets.set(key, {
+      ...warning,
+      subscriptionName: names.join(', ') || null,
+      subscriptionNames: names,
+      extra,
+      detail:
+        warning.category === 'quota'
+          ? extra.length > 0
+            ? `Elevated in ${extra.join(', ')} — advisory only, not scored.`
+            : 'Advisory only — does not change the score.'
+          : 'Advisory only — does not change the score.',
+    })
+  }
+  return [...buckets.values()]
+    .map(({ subscriptionNames: _names, extra: _extra, ...warning }) => warning)
+    .sort((a, b) => a.label.localeCompare(b.label))
 }
 
 function computeScopedCapacityRisk(input: {
@@ -649,6 +712,7 @@ function computeScopedCapacityRisk(input: {
         resolveSubscriptionName(subscriptionId, subscriptions, scopedQuotas),
       warnings,
     })
+    warnings.push(...advisoryQuotaWarnings(scopedQuotas, subscriptions))
   } else {
     const subIds = [
       ...new Set(
@@ -663,6 +727,7 @@ function computeScopedCapacityRisk(input: {
         subscriptionId: null,
         subscriptionName: null,
         warnings,
+        includePct: false,
       })
     } else {
       for (const subId of subIds) {
@@ -671,12 +736,17 @@ function computeScopedCapacityRisk(input: {
           subscriptionId: subId,
           subscriptionName: resolveSubscriptionName(subId, subscriptions, scopedQuotas),
           warnings,
+          includePct: false,
         })
       }
     }
+    warnings.push(
+      ...advisoryQuotaWarningDrafts(scopedQuotas, subscriptions, { includePct: false }),
+    )
+    const consolidated = consolidateRollupWarnings(warnings)
+    warnings.length = 0
+    warnings.push(...consolidated)
   }
-
-  warnings.push(...advisoryQuotaWarnings(scopedQuotas, subscriptions))
 
   const score = clamp(
     Math.round(constraintContribution + quotaContribution + skuContribution),
