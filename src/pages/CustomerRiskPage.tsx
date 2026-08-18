@@ -62,34 +62,24 @@ type RiskTableRow = {
 function RiskDriversCell({ risk }: { risk: CustomerCapacityRisk }) {
   const factors = risk.factors || []
   const warnings = risk.warnings || []
-  return (
-    <div className="risk-factor-list">
-      {factors.length === 0 && warnings.length === 0 ? (
-        <span className="muted">No elevated factors</span>
-      ) : null}
-      {factors.map((f) => (
-        <div key={f.id} className="risk-factor-item">
-          <ShieldAlert size={14} />
-          <div>
-            <strong>{f.label}</strong>
-            <div className="muted">{f.detail}</div>
-          </div>
-          <span className="muted">+{f.points}</span>
-        </div>
-      ))}
-      {warnings.map((w) => (
-        <div key={w.id} className="risk-factor-item risk-warning-item">
-          <ShieldAlert size={14} />
-          <div>
-            <strong>{w.label}</strong>
-            {w.subscriptionName ? <div className="muted">{w.subscriptionName}</div> : null}
-            <div className="muted">{w.detail}</div>
-          </div>
-          <span className="pill pill-high">Warning</span>
-        </div>
-      ))}
-    </div>
-  )
+  if (factors.length === 0 && warnings.length === 0) {
+    return <span className="muted">No elevated factors</span>
+  }
+  const tags: string[] = []
+  for (const f of factors) {
+    if (f.category === 'constraints') tags.push('Open Constraints')
+    else if (f.category === 'quotas') tags.push('Quota Headroom')
+    else if (f.category === 'sku') tags.push('SKU Concentration')
+  }
+  for (const w of warnings) {
+    if (w.category === 'region' && !tags.includes('Region Concentration'))
+      tags.push('Region Concentration')
+    if (w.category === 'sku' && !tags.includes('SKU Concentration'))
+      tags.push('SKU Concentration')
+    if (w.category === 'quota' && !tags.includes('Quota Warnings'))
+      tags.push('Quota Warnings')
+  }
+  return <span className="muted">{tags.join(' · ')}</span>
 }
 
 function clampWeightInput(value: number) {

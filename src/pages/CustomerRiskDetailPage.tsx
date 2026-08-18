@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Gauge, MapPinned, Package, ShieldAlert } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ChevronRight, Gauge, MapPinned, Package, ShieldAlert } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import {
   computeCustomerCapacityRisk,
@@ -167,6 +167,7 @@ export function CustomerRiskDetailPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedSubscriptionId = searchParams.get('subscription')
+  const [warningsExpanded, setWarningsExpanded] = useState(false)
   const {
     customers,
     users,
@@ -302,6 +303,7 @@ export function CustomerRiskDetailPage() {
   const regionWarnings = risk.warnings.filter((w) => w.category === 'region')
   const skuWarnings = risk.warnings.filter((w) => w.category === 'sku')
   const quotaWarnings = risk.warnings.filter((w) => w.category === 'quota')
+  const warningCount = regionWarnings.length + skuWarnings.length + quotaWarnings.length
 
   return (
     <div className="stack">
@@ -527,18 +529,32 @@ export function CustomerRiskDetailPage() {
 
       <section className="panel risk-detail-panel">
         <div className="panel-header">
-          <div>
-            <h4>
-              <Package size={18} /> Warnings
-            </h4>
-            <p>
-              Advisory only — does not change the score. Includes region concentration, SKU
-              concentration, Storage Accounts, and Total Regional vCPUs.
-            </p>
-          </div>
+          <button
+            type="button"
+            className="collapsible-trigger panel-header-trigger"
+            aria-expanded={warningsExpanded}
+            onClick={() => setWarningsExpanded((prev) => !prev)}
+          >
+            <span className="collapsible-trigger-main">
+              {warningsExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              <span>
+                <h4>
+                  <Package size={18} /> Warnings
+                </h4>
+                <p>
+                  Advisory only — does not change the score.
+                  {warningsExpanded ? ' Click to collapse.' : ' Click to expand.'}
+                </p>
+              </span>
+            </span>
+            <span className="pill pill-high">
+              {warningCount === 0 ? 'None' : `${warningCount} warning${warningCount === 1 ? '' : 's'}`}
+            </span>
+          </button>
         </div>
+        {warningsExpanded ? (
         <div className="panel-body">
-          {regionWarnings.length === 0 && skuWarnings.length === 0 && quotaWarnings.length === 0 ? (
+          {warningCount === 0 ? (
             <div className="empty">No elevated region, SKU, or quota warnings.</div>
           ) : (
             <div className="risk-factor-list risk-detail-factors">
@@ -562,6 +578,7 @@ export function CustomerRiskDetailPage() {
             </div>
           )}
         </div>
+        ) : null}
       </section>
 
       <section className="panel risk-detail-panel">
