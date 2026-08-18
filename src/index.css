@@ -2108,8 +2108,9 @@ table.data tr.clickable {
   z-index: 1000;
 }
 .modal-content {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
   border-radius: 0.75rem;
   max-width: 680px;
   max-height: 85vh;
@@ -2122,7 +2123,7 @@ table.data tr.clickable {
   align-items: center;
   justify-content: space-between;
   padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
 }
 .modal-header h3 {
   margin: 0;
