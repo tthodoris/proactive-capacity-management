@@ -2096,3 +2096,51 @@ table.data tr.clickable {
     align-items: flex-start;
   }
 }
+
+/* ── Info modal ────────────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-content {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  max-width: 680px;
+  max-height: 85vh;
+  width: 90vw;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+.modal-body {
+  padding: 1.25rem;
+  line-height: 1.6;
+}
+.modal-body h4 {
+  margin: 1.25rem 0 0.5rem;
+}
+.modal-body h4:first-child {
+  margin-top: 0;
+}
+.modal-body ol, .modal-body ul {
+  padding-left: 1.5rem;
+}
+.modal-body li {
+  margin-bottom: 0.35rem;
+}

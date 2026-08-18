@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  Info,
   RefreshCw,
   RotateCcw,
   Search,
@@ -210,6 +211,86 @@ function RiskWeightPanel({
   )
 }
 
+function RiskInfoModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>How the Capacity Risk Score Works</h3>
+          <button type="button" className="btn btn-ghost" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <h4>What it measures</h4>
+          <p>
+            The risk score gives each customer (and each subscription) a <strong>Red / Amber / Green</strong> rating
+            based on three capacity signals:
+          </p>
+          <ol>
+            <li>
+              <strong>Open Constraints</strong> — Active SKU constraints that affect the customer's deployed resources.
+              A Critical constraint scores higher than a Medium one.
+            </li>
+            <li>
+              <strong>Quota Headroom</strong> — How close the customer's Azure quotas are to their limits.
+              Quotas near 100% mean deployments or scale-outs could fail. Network Watchers, Storage Accounts,
+              and Total Regional vCPUs are excluded from scoring (shown as warnings only).
+            </li>
+            <li>
+              <strong>SKU Concentration</strong> — How dependent the customer is on a single VM SKU family.
+              The algorithm weights each SKU by its vCPU size (a 64-vCPU VM counts more than a 2-vCPU VM)
+              and scales with fleet size, so two small VMs won't trigger a false alarm.
+            </li>
+          </ol>
+
+          <h4>How the score is calculated</h4>
+          <p>
+            Each factor produces <strong>raw points</strong> based on severity or usage thresholds.
+            These points are then combined using <strong>configurable weights</strong> that default to:
+          </p>
+          <table className="data" style={{ marginBottom: '1rem' }}>
+            <thead>
+              <tr><th>Factor</th><th>Default Weight</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Open Constraints</td><td>40%</td></tr>
+              <tr><td>Quota Headroom</td><td>35%</td></tr>
+              <tr><td>SKU Concentration</td><td>25%</td></tr>
+            </tbody>
+          </table>
+          <p>The final score is a number from <strong>0 to 100</strong>:</p>
+          <ul>
+            <li><strong>0–24</strong> → <span className="pill pill-ok">Green</span> — No material capacity pressure</li>
+            <li><strong>25–49</strong> → <span className="pill pill-high">Amber</span> — Elevated risk, worth monitoring</li>
+            <li><strong>50–100</strong> → <span className="pill pill-critical">Red</span> — Action needed</li>
+          </ul>
+
+          <h4>What is shown but not scored</h4>
+          <ul>
+            <li><strong>Region Concentration</strong> — Flagged as a warning when most capacity sits in one Azure region, but does not add to the score.</li>
+            <li><strong>Storage Accounts &amp; Total Regional vCPUs</strong> — Shown as advisory warnings when usage is elevated, but excluded from scoring.</li>
+          </ul>
+
+          <h4>Adjustable weights</h4>
+          <p>
+            Users can adjust the weight of each factor using sliders on this page. Moving one slider automatically
+            redistributes the remaining weight equally across the other two, always totalling 100%.
+            Updated weights are saved and applied immediately.
+          </p>
+
+          <h4>Customer vs. Subscription</h4>
+          <p>The score is calculated at <strong>two levels</strong>:</p>
+          <ul>
+            <li><strong>Customer rollup</strong> — All subscriptions combined. A customer can be Red even if no single subscription is, because constraints, quotas, and inventory add up across the full estate.</li>
+            <li><strong>Per subscription</strong> — Each subscription scored independently, useful for pinpointing where the pressure is.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function CustomerRiskPage() {
   const {
     customers,
@@ -226,6 +307,7 @@ export function CustomerRiskPage() {
   const [query, setQuery] = useState('')
   const [viewMode, setViewMode] = useState<RiskViewMode>('customer')
   const [expandedCustomers, setExpandedCustomers] = useState<Set<string>>(() => new Set())
+  const [showInfoModal, setShowInfoModal] = useState(false)
   const [draftWeights, setDraftWeights] = useState<CapacityRiskWeights>(() =>
     loadCapacityRiskWeights(),
   )
@@ -475,14 +557,23 @@ export function CustomerRiskPage() {
 
   return (
     <div className="stack">
+      {showInfoModal && <RiskInfoModal onClose={() => setShowInfoModal(false)} />}
       <div className="page-hero">
         <div>
-          <h3>Customer capacity risk</h3>
+          <h3>
+            Customer capacity risk{' '}
+            <button
+              type="button"
+              className="btn btn-ghost"
+              style={{ padding: '0.15rem', verticalAlign: 'middle' }}
+              title="How the risk score works"
+              onClick={() => setShowInfoModal(true)}
+            >
+              <Info size={18} />
+            </button>
+          </h3>
           <p>
-            Red / Amber / Green posture per customer and per subscription from open constraints,
-            quota headroom (excluding Network Watchers, Storage Accounts, and Total Regional vCPUs),
-            and SKU concentration. Region concentration, Storage Accounts, and Total Regional vCPUs
-            are shown as warnings only.
+            Red / Amber / Green posture per customer and per subscription.
           </p>
         </div>
       </div>
