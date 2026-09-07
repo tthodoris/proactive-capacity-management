@@ -32,11 +32,13 @@ import {
 import { toSkuFamily } from './skuFamily.mjs'
 import { enrichResultsWithRetailPrices } from './retailPrices.mjs'
 import {
+  deleteCapacityCalendarEntry,
   insertRewardEvent,
   markAlertReadDb,
   persistConstraintBundle,
   replaceImpactsForConstraint,
   seedDomainIfEmpty,
+  upsertCapacityCalendarEntry,
   upsertConstraint,
   upsertEngagement,
 } from './domain-db.mjs'
@@ -2506,6 +2508,44 @@ app.put('/api/data/constraints/:id', async (req, res) => {
     }
     const saved = await upsertConstraint(constraint)
     res.json(saved)
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+app.post('/api/data/capacity-calendar', async (req, res) => {
+  try {
+    const entry = req.body
+    if (!entry?.id || !entry?.sku || !entry?.resourceType || !entry?.expectedReliefDate) {
+      return res.status(400).json({
+        error: 'id, sku, resourceType, and expectedReliefDate are required',
+      })
+    }
+    const saved = await upsertCapacityCalendarEntry(entry)
+    res.json(saved)
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+app.put('/api/data/capacity-calendar/:id', async (req, res) => {
+  try {
+    const entry = { ...(req.body || {}), id: req.params.id }
+    if (!entry.sku || !entry.resourceType || !entry.expectedReliefDate) {
+      return res.status(400).json({ error: 'calendar entry payload is required' })
+    }
+    const saved = await upsertCapacityCalendarEntry(entry)
+    res.json(saved)
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+app.delete('/api/data/capacity-calendar/:id', async (req, res) => {
+  try {
+    const ok = await deleteCapacityCalendarEntry(req.params.id)
+    if (!ok) return res.status(404).json({ error: 'Calendar entry not found' })
+    res.json({ ok: true })
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
   }

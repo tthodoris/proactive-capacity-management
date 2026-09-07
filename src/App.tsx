@@ -3,6 +3,7 @@ import { AppLayout } from './components/AppLayout'
 import { AppProvider } from './context/AppContext'
 import { AdminPage } from './pages/AdminPage'
 import { AlertsPage } from './pages/AlertsPage'
+import { CapacityCalendarPage } from './pages/CapacityCalendarPage'
 import { ConnectPage } from './pages/ConnectPage'
 import { ConstraintDetailPage } from './pages/ConstraintDetailPage'
 import { ConstraintsPage } from './pages/ConstraintsPage'
@@ -29,6 +30,7 @@ export default function App() {
             <Route index element={<DashboardPage />} />
             <Route path="connect" element={<ConnectPage />} />
             <Route path="constraints" element={<ConstraintsPage />} />
+            <Route path="constraints/calendar" element={<CapacityCalendarPage />} />
             <Route path="constraints/new" element={<NewConstraintPage />} />
             <Route path="constraints/:id" element={<ConstraintDetailPage />} />
             <Route path="customers" element={<CustomersPage />} />

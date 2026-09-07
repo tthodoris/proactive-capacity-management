@@ -80,6 +80,29 @@ function mapReward(row) {
   }
 }
 
+function mapCalendarEntry(row) {
+  return {
+    id: row.id,
+    resourceType: row.resource_type,
+    sku: row.sku,
+    expectedReliefDate: row.expected_relief_date
+      ? new Date(row.expected_relief_date).toISOString().slice(0, 10)
+      : row.expected_relief_date,
+    notes: row.notes || '',
+    source: row.source || '',
+    linkedConstraintIds: Array.isArray(row.linked_constraint_ids)
+      ? row.linked_constraint_ids
+      : row.linked_constraint_ids || [],
+    status: row.status,
+    severityDowngradedAt: row.severity_downgraded_at
+      ? new Date(row.severity_downgraded_at).toISOString()
+      : null,
+    createdBy: row.created_by,
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : row.created_at,
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : row.updated_at,
+  }
+}
+
 export async function initDomainTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS capacity_constraints (
@@ -159,17 +182,36 @@ export async function initDomainTables() {
 
     CREATE INDEX IF NOT EXISTS idx_reward_user ON reward_events(user_id);
     CREATE INDEX IF NOT EXISTS idx_reward_created ON reward_events(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS capacity_calendar_entries (
+      id TEXT PRIMARY KEY,
+      resource_type TEXT NOT NULL,
+      sku TEXT NOT NULL,
+      expected_relief_date DATE NOT NULL,
+      notes TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT '',
+      linked_constraint_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      status TEXT NOT NULL DEFAULT 'Scheduled',
+      severity_downgraded_at TIMESTAMPTZ,
+      created_by TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_capacity_calendar_date
+      ON capacity_calendar_entries(expected_relief_date);
   `)
 }
 
 export async function listDomainBootstrap() {
-  const [constraints, history, impacts, alerts, engagements, rewards] = await Promise.all([
+  const [constraints, history, impacts, alerts, engagements, rewards, calendar] = await Promise.all([
     pool.query('SELECT * FROM capacity_constraints ORDER BY updated_at DESC'),
     pool.query('SELECT * FROM constraint_history ORDER BY at ASC'),
     pool.query('SELECT * FROM impact_results ORDER BY id ASC'),
     pool.query('SELECT * FROM alerts ORDER BY created_at DESC'),
     pool.query('SELECT * FROM engagements ORDER BY created_at DESC'),
     pool.query('SELECT * FROM reward_events ORDER BY created_at DESC'),
+    pool.query('SELECT * FROM capacity_calendar_entries ORDER BY expected_relief_date ASC'),
   ])
 
   const historyByConstraint = new Map()
@@ -187,6 +229,7 @@ export async function listDomainBootstrap() {
     alerts: alerts.rows.map(mapAlert),
     engagements: engagements.rows.map(mapEngagement),
     rewardEvents: rewards.rows.map(mapReward),
+    capacityCalendarEntries: calendar.rows.map(mapCalendarEntry),
   }
 }
 
@@ -377,6 +420,60 @@ export async function insertRewardEvent(event) {
     ],
   )
   return event
+}
+
+/**
+ * @param {object} entry
+ * @param {import('pg').PoolClient} [client]
+ */
+export async function upsertCapacityCalendarEntry(entry, client = pool) {
+  if (!entry?.id) throw new Error('entry.id is required')
+  await client.query(
+    `
+    INSERT INTO capacity_calendar_entries (
+      id, resource_type, sku, expected_relief_date, notes, source,
+      linked_constraint_ids, status, severity_downgraded_at,
+      created_by, created_at, updated_at
+    ) VALUES (
+      $1,$2,$3,$4::date,$5,$6,$7::jsonb,$8,$9,$10,$11,$12
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      resource_type = EXCLUDED.resource_type,
+      sku = EXCLUDED.sku,
+      expected_relief_date = EXCLUDED.expected_relief_date,
+      notes = EXCLUDED.notes,
+      source = EXCLUDED.source,
+      linked_constraint_ids = EXCLUDED.linked_constraint_ids,
+      status = EXCLUDED.status,
+      severity_downgraded_at = EXCLUDED.severity_downgraded_at,
+      created_by = EXCLUDED.created_by,
+      created_at = EXCLUDED.created_at,
+      updated_at = EXCLUDED.updated_at
+    `,
+    [
+      entry.id,
+      entry.resourceType,
+      entry.sku,
+      entry.expectedReliefDate,
+      entry.notes || '',
+      entry.source || '',
+      JSON.stringify(entry.linkedConstraintIds || []),
+      entry.status || 'Scheduled',
+      entry.severityDowngradedAt || null,
+      entry.createdBy,
+      entry.createdAt || new Date().toISOString(),
+      entry.updatedAt || new Date().toISOString(),
+    ],
+  )
+  return entry
+}
+
+export async function deleteCapacityCalendarEntry(id) {
+  const result = await pool.query(
+    `DELETE FROM capacity_calendar_entries WHERE id = $1 RETURNING id`,
+    [id],
+  )
+  return Boolean(result.rows[0])
 }
 
 /**

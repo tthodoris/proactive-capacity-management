@@ -7,6 +7,21 @@ const SEVERITY_RANK: Record<ConstraintSeverity, number> = {
   Low: 3,
 }
 
+const SEVERITY_DOWNGRADE: Record<ConstraintSeverity, ConstraintSeverity> = {
+  Critical: 'High',
+  High: 'Medium',
+  Medium: 'Low',
+  Low: 'Low',
+}
+
+export function downgradeConstraintSeverity(severity: ConstraintSeverity): ConstraintSeverity {
+  return SEVERITY_DOWNGRADE[severity] ?? severity
+}
+
+export function canDowngradeSeverity(severity: ConstraintSeverity) {
+  return severity !== 'Low'
+}
+
 export function getResolvedConstraintIds(constraints: CapacityConstraint[]) {
   return new Set(constraints.filter((c) => c.status === 'Resolved').map((c) => c.id))
 }

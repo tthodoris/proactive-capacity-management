@@ -4,6 +4,7 @@ import {
   BarChart3,
   Bell,
   Boxes,
+  CalendarDays,
   ChevronDown,
   ChevronRight,
   Gauge,
@@ -32,7 +33,15 @@ type NavItem = {
 const nav: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/connect', label: 'Azure Connect', icon: PlugZap },
-  { to: '/constraints', label: 'Constraints', icon: ShieldAlert },
+  {
+    to: '/constraints',
+    label: 'Capacity constraints',
+    icon: ShieldAlert,
+    children: [
+      { to: '/constraints', label: 'Constraints', icon: ShieldAlert },
+      { to: '/constraints/calendar', label: 'Capacity calendar', icon: CalendarDays },
+    ],
+  },
   {
     to: '/customers',
     label: 'Customers',
@@ -73,6 +82,11 @@ const titles: Record<string, { title: string; subtitle: string }> = {
   '/constraints': {
     title: 'Capacity constraints',
     subtitle: 'Record constrained SKUs and track investigation status.',
+  },
+  '/constraints/calendar': {
+    title: 'Capacity calendar',
+    subtitle:
+      'Expected relief dates from Capacity calls — link constraints and auto-downgrade severity when past due or resolved.',
   },
   '/constraints/new': {
     title: 'Record a constraint',
@@ -133,6 +147,9 @@ const titles: Record<string, { title: string; subtitle: string }> = {
 }
 
 function resolveTitle(pathname: string) {
+  if (pathname === '/constraints/calendar') {
+    return titles['/constraints/calendar']
+  }
   if (pathname.startsWith('/constraints/') && pathname !== '/constraints/new') {
     return {
       title: 'Constraint detail',
@@ -166,9 +183,14 @@ function isCustomersPath(pathname: string) {
   return pathname === '/customers' || pathname.startsWith('/customers/')
 }
 
+function isConstraintsPath(pathname: string) {
+  return pathname === '/constraints' || pathname.startsWith('/constraints/')
+}
+
 function isGroupPath(item: NavItem, pathname: string) {
   if (item.to === '/region-evaluation') return isRegionEvalPath(pathname)
   if (item.to === '/customers') return isCustomersPath(pathname)
+  if (item.to === '/constraints') return isConstraintsPath(pathname)
   return false
 }
 
@@ -181,6 +203,7 @@ export function AppLayout() {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => ({
     '/region-evaluation': isRegionEvalPath(location.pathname),
     '/customers': isCustomersPath(location.pathname),
+    '/constraints': isConstraintsPath(location.pathname),
   }))
 
   useEffect(() => {
@@ -188,6 +211,7 @@ export function AppLayout() {
       const next = { ...prev }
       if (isRegionEvalPath(location.pathname)) next['/region-evaluation'] = true
       if (isCustomersPath(location.pathname)) next['/customers'] = true
+      if (isConstraintsPath(location.pathname)) next['/constraints'] = true
       return next
     })
   }, [location.pathname])
@@ -233,7 +257,9 @@ export function AppLayout() {
                             key={child.to}
                             to={child.to}
                             end={
-                              child.to === '/region-evaluation' || child.to === '/customers'
+                              child.to === '/region-evaluation' ||
+                              child.to === '/customers' ||
+                              child.to === '/constraints'
                             }
                             className={({ isActive }) =>
                               `nav-link nav-sub-link${isActive ? ' active' : ''}`

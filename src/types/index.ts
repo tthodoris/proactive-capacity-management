@@ -189,6 +189,25 @@ export interface Engagement {
   createdAt: string
 }
 
+export type CapacityCalendarEntryStatus = 'Scheduled' | 'Past due' | 'Resolved'
+
+/** Expected relief / change-window entry from Capacity calls or other inputs. */
+export interface CapacityCalendarEntry {
+  id: string
+  resourceType: ResourceType | string
+  sku: string
+  expectedReliefDate: string
+  notes: string
+  source: string
+  linkedConstraintIds: string[]
+  status: CapacityCalendarEntryStatus
+  /** Set once when auto-downgrade has been applied for past-due or resolved. */
+  severityDowngradedAt?: string | null
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface SyncJob {
   id: string
   source: string

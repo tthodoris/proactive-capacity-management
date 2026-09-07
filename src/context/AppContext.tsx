@@ -18,8 +18,23 @@ import {
   users,
 } from '../data/mockData'
 import {
+  collectAndPersistQuotaGroups,
+  collectAndPersistQuotas,
+  fetchAzureLocations,
+  fetchLiveInventory,
+  getAzureStatus,
+  setSubscription,
+  type AzureConnection,
+  type AzureLocationOption,
+  type AzureRegionOption,
+  type AzureSubscriptionOption,
+} from '../lib/azureApi'
+import {
+  createCapacityCalendarEntry as persistNewCapacityCalendarEntry,
+  deleteCapacityCalendarEntry as removeCapacityCalendarEntry,
   fetchBootstrap,
   persistAlertRead,
+  persistCapacityCalendarEntry,
   persistConnection,
   persistConstraint,
   persistConstraintBundle,
@@ -34,21 +49,15 @@ import {
   type PersistedConnection,
 } from '../lib/dataApi'
 import {
-  collectAndPersistQuotaGroups,
-  collectAndPersistQuotas,
-  fetchAzureLocations,
-  fetchLiveInventory,
-  getAzureStatus,
-  setSubscription,
-  type AzureConnection,
-  type AzureLocationOption,
-  type AzureRegionOption,
-  type AzureSubscriptionOption,
-} from '../lib/azureApi'
+  calendarEntryNeedsAutoDowngrade,
+  effectiveCalendarStatus,
+} from '../lib/capacityCalendar'
+import { canDowngradeSeverity, downgradeConstraintSeverity } from '../lib/constraints'
 import { prettyRegion } from '../lib/format'
 import { toSkuFamily } from '../lib/skuFamily'
 import type {
   AlertItem,
+  CapacityCalendarEntry,
   CapacityConstraint,
   ConstraintStatus,
   Customer,
@@ -57,6 +66,7 @@ import type {
   InventoryItem,
   Quota,
   QuotaGroupLimit,
+  ResourceType,
   RewardAction,
   RewardEvent,
   Subscription,
@@ -82,6 +92,15 @@ interface CreateConstraintInput {
   source: string
   severity: CapacityConstraint['severity']
   description: string
+}
+
+export interface CreateCapacityCalendarInput {
+  resourceType: ResourceType | string
+  sku: string
+  expectedReliefDate: string
+  notes: string
+  source: string
+  linkedConstraintIds: string[]
 }
 
 interface UpsertTenantCustomerInput {
@@ -147,6 +166,7 @@ interface AppContextValue {
   users: typeof users
   syncJobs: typeof syncJobs
   constraints: CapacityConstraint[]
+  capacityCalendarEntries: CapacityCalendarEntry[]
   impactResults: ImpactResult[]
   alerts: AlertItem[]
   engagements: Engagement[]
@@ -160,6 +180,12 @@ interface AppContextValue {
     status: ConstraintStatus,
     detail: string,
   ) => Promise<void>
+  createCapacityCalendarEntry: (
+    input: CreateCapacityCalendarInput,
+  ) => Promise<CapacityCalendarEntry>
+  resolveCapacityCalendarEntry: (id: string) => Promise<void>
+  deleteCapacityCalendarEntryById: (id: string) => Promise<void>
+  applyCapacityCalendarAutoDowngrades: () => Promise<void>
   rerunImpact: (constraintId: string) => Promise<void>
   markAlertRead: (id: string) => Promise<void>
   createEngagement: (constraintId: string, customerId: string, notes: string) => Promise<void>
@@ -315,6 +341,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [quotas, setQuotas] = useState<Quota[]>([])
   const [quotaGroupLimits, setQuotaGroupLimits] = useState<QuotaGroupLimit[]>([])
   const [constraints, setConstraints] = useState<CapacityConstraint[]>([])
+  const [capacityCalendarEntries, setCapacityCalendarEntries] = useState<CapacityCalendarEntry[]>(
+    [],
+  )
   const [impactResults, setImpactResults] = useState<ImpactResult[]>([])
   const [alerts, setAlerts] = useState<AlertItem[]>([])
   const [engagements, setEngagements] = useState<Engagement[]>([])
@@ -338,6 +367,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const toastTimer = useRef<number | null>(null)
   const customersRef = useRef(customers)
   const constraintsRef = useRef(constraints)
+  const capacityCalendarEntriesRef = useRef(capacityCalendarEntries)
   const userRef = useRef(user)
   const importTenantInventoryRef = useRef<
     (input: ImportInventoryInput) => Promise<{ imported: number; customerId: string }>
@@ -371,6 +401,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     constraintsRef.current = constraints
   }, [constraints])
+
+  useEffect(() => {
+    capacityCalendarEntriesRef.current = capacityCalendarEntries
+  }, [capacityCalendarEntries])
 
   useEffect(() => {
     userRef.current = user
@@ -419,6 +453,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setQuotaGroupLimits(bootstrap.quotaGroupLimits || [])
     setPersistedConnection(bootstrap.connection)
     setConstraints(bootstrap.constraints || [])
+    setCapacityCalendarEntries(bootstrap.capacityCalendarEntries || [])
     setImpactResults(bootstrap.impactResults || [])
     setAlerts(bootstrap.alerts || [])
     setEngagements(bootstrap.engagements || [])
@@ -446,6 +481,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (cancelled) return
         // Fall back to in-memory demo domain data if API/DB is unavailable.
         setConstraints(initialConstraints)
+        setCapacityCalendarEntries([])
         setImpactResults(initialImpact)
         setAlerts(initialAlerts)
         setEngagements(initialEngagements)
@@ -1323,6 +1359,146 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [user.id, awardPoints],
   )
 
+  const downgradeLinkedConstraints = useCallback(
+    async (entry: CapacityCalendarEntry, reason: string) => {
+      const now = new Date().toISOString()
+      const linkedIds = entry.linkedConstraintIds || []
+      for (const constraintId of linkedIds) {
+        const current = constraintsRef.current.find((c) => c.id === constraintId)
+        if (!current) continue
+        if (current.status === 'Resolved') continue
+        if (!canDowngradeSeverity(current.severity)) continue
+        const nextSeverity = downgradeConstraintSeverity(current.severity)
+        if (nextSeverity === current.severity) continue
+        const updated: CapacityConstraint = {
+          ...current,
+          severity: nextSeverity,
+          updatedAt: now,
+          history: [
+            ...current.history,
+            {
+              id: `h-${Date.now()}-${constraintId}`,
+              at: now,
+              by: 'system',
+              action: 'Severity auto-downgrade',
+              detail: `${reason} Linked calendar relief for ${entry.sku}: ${current.severity} → ${nextSeverity}.`,
+            },
+          ],
+        }
+        await persistConstraint(updated)
+        setConstraints((prev) => prev.map((c) => (c.id === constraintId ? updated : c)))
+        constraintsRef.current = constraintsRef.current.map((c) =>
+          c.id === constraintId ? updated : c,
+        )
+      }
+    },
+    [],
+  )
+
+  const applyCapacityCalendarAutoDowngrades = useCallback(async () => {
+    const entries = capacityCalendarEntriesRef.current
+    for (const entry of entries) {
+      if (!calendarEntryNeedsAutoDowngrade(entry)) continue
+      const now = new Date().toISOString()
+      const nextStatus = effectiveCalendarStatus(entry)
+      const updated: CapacityCalendarEntry = {
+        ...entry,
+        status: nextStatus === 'Resolved' ? 'Resolved' : 'Past due',
+        severityDowngradedAt: now,
+        updatedAt: now,
+      }
+      try {
+        await persistCapacityCalendarEntry(updated)
+        setCapacityCalendarEntries((prev) => prev.map((e) => (e.id === entry.id ? updated : e)))
+        capacityCalendarEntriesRef.current = capacityCalendarEntriesRef.current.map((e) =>
+          e.id === entry.id ? updated : e,
+        )
+        await downgradeLinkedConstraints(
+          entry,
+          nextStatus === 'Resolved'
+            ? 'Calendar entry marked resolved.'
+            : 'Expected relief date is past due.',
+        )
+      } catch (err) {
+        console.error('Failed to apply calendar auto-downgrade', err)
+      }
+    }
+  }, [downgradeLinkedConstraints])
+
+  const createCapacityCalendarEntryRecord = useCallback(
+    async (input: CreateCapacityCalendarInput) => {
+      const now = new Date().toISOString()
+      const status = effectiveCalendarStatus({
+        status: 'Scheduled',
+        expectedReliefDate: input.expectedReliefDate,
+      })
+      const entry: CapacityCalendarEntry = {
+        id: `cal-${Date.now()}`,
+        resourceType: input.resourceType,
+        sku: input.sku,
+        expectedReliefDate: input.expectedReliefDate.slice(0, 10),
+        notes: input.notes,
+        source: input.source || 'Capacity call',
+        linkedConstraintIds: input.linkedConstraintIds || [],
+        status: status === 'Past due' ? 'Past due' : 'Scheduled',
+        severityDowngradedAt: null,
+        createdBy: user.id,
+        createdAt: now,
+        updatedAt: now,
+      }
+      await persistNewCapacityCalendarEntry(entry)
+      setCapacityCalendarEntries((prev) =>
+        [...prev, entry].sort((a, b) => a.expectedReliefDate.localeCompare(b.expectedReliefDate)),
+      )
+      capacityCalendarEntriesRef.current = [
+        ...capacityCalendarEntriesRef.current.filter((e) => e.id !== entry.id),
+        entry,
+      ]
+      if (calendarEntryNeedsAutoDowngrade(entry)) {
+        await applyCapacityCalendarAutoDowngrades()
+      }
+      return entry
+    },
+    [user.id, applyCapacityCalendarAutoDowngrades],
+  )
+
+  const resolveCapacityCalendarEntry = useCallback(
+    async (id: string) => {
+      const current = capacityCalendarEntriesRef.current.find((e) => e.id === id)
+      if (!current || current.status === 'Resolved') return
+      const now = new Date().toISOString()
+      const updated: CapacityCalendarEntry = {
+        ...current,
+        status: 'Resolved',
+        updatedAt: now,
+        severityDowngradedAt: current.severityDowngradedAt || now,
+      }
+      await persistCapacityCalendarEntry(updated)
+      setCapacityCalendarEntries((prev) => prev.map((e) => (e.id === id ? updated : e)))
+      capacityCalendarEntriesRef.current = capacityCalendarEntriesRef.current.map((e) =>
+        e.id === id ? updated : e,
+      )
+      if (!current.severityDowngradedAt) {
+        await downgradeLinkedConstraints(current, 'Calendar entry marked resolved.')
+      }
+    },
+    [downgradeLinkedConstraints],
+  )
+
+  const deleteCapacityCalendarEntryById = useCallback(async (id: string) => {
+    await removeCapacityCalendarEntry(id)
+    setCapacityCalendarEntries((prev) => prev.filter((e) => e.id !== id))
+    capacityCalendarEntriesRef.current = capacityCalendarEntriesRef.current.filter(
+      (e) => e.id !== id,
+    )
+  }, [])
+
+  // Apply past-due auto-downgrades once domain data is ready.
+  useEffect(() => {
+    if (!dataReady || dataError) return
+    void applyCapacityCalendarAutoDowngrades()
+  }, [dataReady, dataError, applyCapacityCalendarAutoDowngrades])
+
   const rerunImpact = useCallback(async (constraintId: string) => {
     const constraint = constraintsRef.current.find((c) => c.id === constraintId)
     if (!constraint) return
@@ -1403,6 +1579,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     users,
     syncJobs,
     constraints,
+    capacityCalendarEntries,
     impactResults,
     alerts,
     engagements,
@@ -1412,6 +1589,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     getUserPoints,
     createConstraint,
     updateConstraintStatus,
+    createCapacityCalendarEntry: createCapacityCalendarEntryRecord,
+    resolveCapacityCalendarEntry,
+    deleteCapacityCalendarEntryById,
+    applyCapacityCalendarAutoDowngrades,
     rerunImpact,
     markAlertRead,
     createEngagement,

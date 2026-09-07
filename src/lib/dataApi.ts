@@ -1,5 +1,6 @@
 import type {
   AlertItem,
+  CapacityCalendarEntry,
   CapacityConstraint,
   Customer,
   Engagement,
@@ -65,6 +66,7 @@ export interface BootstrapData {
   alerts: AlertItem[]
   engagements: Engagement[]
   rewardEvents: RewardEvent[]
+  capacityCalendarEntries: CapacityCalendarEntry[]
 }
 
 export function fetchBootstrap() {
@@ -153,6 +155,29 @@ export function persistConstraint(constraint: CapacityConstraint) {
   return api<CapacityConstraint>(`/api/data/constraints/${encodeURIComponent(constraint.id)}`, {
     method: 'PUT',
     body: JSON.stringify(constraint),
+  })
+}
+
+export function persistCapacityCalendarEntry(entry: CapacityCalendarEntry) {
+  return api<CapacityCalendarEntry>(
+    `/api/data/capacity-calendar/${encodeURIComponent(entry.id)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(entry),
+    },
+  )
+}
+
+export function createCapacityCalendarEntry(entry: CapacityCalendarEntry) {
+  return api<CapacityCalendarEntry>('/api/data/capacity-calendar', {
+    method: 'POST',
+    body: JSON.stringify(entry),
+  })
+}
+
+export function deleteCapacityCalendarEntry(id: string) {
+  return api<{ ok: boolean }>(`/api/data/capacity-calendar/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
   })
 }
 
