@@ -97,6 +97,7 @@ interface CreateConstraintInput {
 export interface CreateCapacityCalendarInput {
   resourceType: ResourceType | string
   sku: string
+  region: string
   expectedReliefDate: string
   notes: string
   source: string
@@ -1436,6 +1437,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         id: `cal-${Date.now()}`,
         resourceType: input.resourceType,
         sku: input.sku,
+        region: input.region || '',
         expectedReliefDate: input.expectedReliefDate.slice(0, 10),
         notes: input.notes,
         source: input.source || 'Capacity call',

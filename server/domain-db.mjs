@@ -85,6 +85,7 @@ function mapCalendarEntry(row) {
     id: row.id,
     resourceType: row.resource_type,
     sku: row.sku,
+    region: row.region || '',
     expectedReliefDate: row.expected_relief_date
       ? new Date(row.expected_relief_date).toISOString().slice(0, 10)
       : row.expected_relief_date,
@@ -187,6 +188,7 @@ export async function initDomainTables() {
       id TEXT PRIMARY KEY,
       resource_type TEXT NOT NULL,
       sku TEXT NOT NULL,
+      region TEXT NOT NULL DEFAULT '',
       expected_relief_date DATE NOT NULL,
       notes TEXT NOT NULL DEFAULT '',
       source TEXT NOT NULL DEFAULT '',
@@ -200,6 +202,12 @@ export async function initDomainTables() {
 
     CREATE INDEX IF NOT EXISTS idx_capacity_calendar_date
       ON capacity_calendar_entries(expected_relief_date);
+  `)
+
+  // Existing deployments may pre-date the region column.
+  await pool.query(`
+    ALTER TABLE capacity_calendar_entries
+      ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT ''
   `)
 }
 
@@ -431,15 +439,16 @@ export async function upsertCapacityCalendarEntry(entry, client = pool) {
   await client.query(
     `
     INSERT INTO capacity_calendar_entries (
-      id, resource_type, sku, expected_relief_date, notes, source,
+      id, resource_type, sku, region, expected_relief_date, notes, source,
       linked_constraint_ids, status, severity_downgraded_at,
       created_by, created_at, updated_at
     ) VALUES (
-      $1,$2,$3,$4::date,$5,$6,$7::jsonb,$8,$9,$10,$11,$12
+      $1,$2,$3,$4,$5::date,$6,$7,$8::jsonb,$9,$10,$11,$12,$13
     )
     ON CONFLICT (id) DO UPDATE SET
       resource_type = EXCLUDED.resource_type,
       sku = EXCLUDED.sku,
+      region = EXCLUDED.region,
       expected_relief_date = EXCLUDED.expected_relief_date,
       notes = EXCLUDED.notes,
       source = EXCLUDED.source,
@@ -454,6 +463,7 @@ export async function upsertCapacityCalendarEntry(entry, client = pool) {
       entry.id,
       entry.resourceType,
       entry.sku,
+      entry.region || '',
       entry.expectedReliefDate,
       entry.notes || '',
       entry.source || '',

@@ -196,6 +196,7 @@ export interface CapacityCalendarEntry {
   id: string
   resourceType: ResourceType | string
   sku: string
+  region: string
   expectedReliefDate: string
   notes: string
   source: string

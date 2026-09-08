@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Plus, Trash2 } from 'lucide-react'
 import { SeverityBadge, StatusBadge } from '../components/Badges'
 import { useApp } from '../context/AppContext'
+import { azureRegions } from '../data/mockData'
 import {
   effectiveCalendarStatus,
   monthMatrix,
@@ -15,8 +16,8 @@ import {
   fetchInventorySkus,
   type InventorySkuOption,
 } from '../lib/dataApi'
-import { formatDate } from '../lib/format'
-import type { CapacityCalendarEntry, ResourceType } from '../types'
+import { formatDate, prettyRegion } from '../lib/format'
+import type { CapacityCalendarEntry, CapacityConstraint, ResourceType } from '../types'
 
 const FALLBACK_RESOURCE_TYPES: ResourceType[] = [
   'Virtual Machine',
@@ -69,6 +70,7 @@ export function CapacityCalendarPage() {
   const [skuOptions, setSkuOptions] = useState<InventorySkuOption[]>([])
   const [resourceType, setResourceType] = useState('Virtual Machine')
   const [sku, setSku] = useState('')
+  const [region, setRegion] = useState('')
   const [expectedReliefDate, setExpectedReliefDate] = useState(today)
   const [notes, setNotes] = useState('')
   const [source, setSource] = useState('Weekly Capacity call')
@@ -77,6 +79,7 @@ export function CapacityCalendarPage() {
   const [loadingSkus, setLoadingSkus] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const pendingSkuRef = useRef<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -114,13 +117,25 @@ export function CapacityCalendarPage() {
         if (cancelled) return
         setSkuOptions(data.skus)
         setSku((prev) => {
+          const preferred = pendingSkuRef.current
+          if (preferred && data.skus.some((s) => s.sku === preferred)) {
+            pendingSkuRef.current = null
+            return preferred
+          }
           if (data.skus.some((s) => s.sku === prev)) return prev
+          if (preferred) {
+            // Keep constraint SKU even if not in inventory options yet.
+            pendingSkuRef.current = null
+            return preferred
+          }
           return data.skus[0]?.sku ?? ''
         })
       } catch (err) {
         if (!cancelled) {
           setSkuOptions([])
-          setSku('')
+          const preferred = pendingSkuRef.current
+          pendingSkuRef.current = null
+          setSku(preferred || '')
           setError(err instanceof Error ? err.message : String(err))
         }
       } finally {
@@ -160,12 +175,49 @@ export function CapacityCalendarPage() {
       .sort((a, b) => a.expectedReliefDate.localeCompare(b.expectedReliefDate))
   }, [capacityCalendarEntries])
 
+  const selectedSku = useMemo(
+    () => skuOptions.find((option) => option.sku === sku) ?? null,
+    [skuOptions, sku],
+  )
+
+  const linkedConstraints = useMemo(
+    () => constraints.filter((c) => linkedConstraintIds.includes(c.id)),
+    [constraints, linkedConstraintIds],
+  )
+
+  const regionChoices = useMemo(() => {
+    const merged: string[] = []
+    const push = (value: string | undefined | null) => {
+      const v = String(value || '').trim()
+      if (!v || merged.includes(v)) return
+      merged.push(v)
+    }
+    for (const c of linkedConstraints) {
+      for (const r of c.regions || []) push(r)
+    }
+    for (const r of selectedSku?.regions || []) push(r)
+    for (const r of azureRegions) push(r)
+    if (region) push(region)
+    return merged
+  }, [linkedConstraints, selectedSku, region])
+
+  useEffect(() => {
+    if (!region && regionChoices.length > 0) {
+      setRegion(regionChoices[0])
+      return
+    }
+    if (region && regionChoices.length > 0 && !regionChoices.includes(region)) {
+      setRegion(regionChoices[0])
+    }
+  }, [region, regionChoices])
+
   const linkableConstraints = useMemo(() => {
-    const open = filterListableConstraints(constraints)
-    const exact = open.filter((c) => c.resourceType === resourceType && c.sku === sku)
-    if (exact.length > 0) return exact
-    return open.filter((c) => c.resourceType === resourceType)
-  }, [constraints, resourceType, sku])
+    return filterListableConstraints(constraints).slice().sort((a, b) => {
+      const skuCmp = a.sku.localeCompare(b.sku)
+      if (skuCmp !== 0) return skuCmp
+      return (a.regions[0] || '').localeCompare(b.regions[0] || '')
+    })
+  }, [constraints])
 
   const monthLabel = new Intl.DateTimeFormat('en-GB', {
     month: 'long',
@@ -179,10 +231,27 @@ export function CapacityCalendarPage() {
     })
   }
 
-  function toggleLinkedConstraint(id: string) {
-    setLinkedConstraintIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+  function applyConstraintToForm(constraint: CapacityConstraint) {
+    const nextType = constraint.resourceType || resourceType
+    const nextSku = constraint.sku || ''
+    const nextRegion = constraint.regions?.[0] || region || ''
+    pendingSkuRef.current = nextSku
+    setResourceType(nextType)
+    setSku(nextSku)
+    if (nextRegion) setRegion(nextRegion)
+    setResourceTypes((prev) =>
+      prev.includes(nextType) ? prev : [...prev, nextType].sort((a, b) => a.localeCompare(b)),
     )
+  }
+
+  function toggleLinkedConstraint(id: string) {
+    setLinkedConstraintIds((prev) => {
+      const already = prev.includes(id)
+      if (already) return prev.filter((x) => x !== id)
+      const constraint = constraints.find((c) => c.id === id)
+      if (constraint) applyConstraintToForm(constraint)
+      return [...prev, id]
+    })
   }
 
   function openCreateForDate(dateKey: string) {
@@ -193,13 +262,14 @@ export function CapacityCalendarPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
-    if (!sku || !expectedReliefDate || saving) return
+    if (!sku || !expectedReliefDate || !region || saving) return
     setSaving(true)
     setError(null)
     try {
       await createCapacityCalendarEntry({
         resourceType,
         sku,
+        region,
         expectedReliefDate,
         notes,
         source,
@@ -340,6 +410,7 @@ export function CapacityCalendarPage() {
                           <span className="muted"> · {entry.resourceType}</span>
                         </strong>
                         <div className="muted" style={{ fontSize: '0.82rem' }}>
+                          {entry.region ? `${prettyRegion(entry.region)} · ` : ''}
                           {entry.source || 'Capacity input'}
                           {entry.severityDowngradedAt
                             ? ` · severity downgraded ${formatDate(entry.severityDowngradedAt)}`
@@ -431,16 +502,38 @@ export function CapacityCalendarPage() {
                   id="cal-sku"
                   value={sku}
                   onChange={(e) => setSku(e.target.value)}
-                  disabled={loadingSkus || skuOptions.length === 0}
+                  disabled={loadingSkus && skuOptions.length === 0 && !sku}
                   required
                 >
-                  {skuOptions.length === 0 ? (
+                  {sku && !skuOptions.some((option) => option.sku === sku) ? (
+                    <option value={sku}>{sku}</option>
+                  ) : null}
+                  {skuOptions.length === 0 && !sku ? (
                     <option value="">{loadingSkus ? 'Loading…' : 'No families available'}</option>
                   ) : (
                     skuOptions.map((option) => (
                       <option key={option.sku} value={option.sku}>
                         {option.sku}
                         {option.resourceCount > 0 ? ` (${option.resourceCount})` : ' (suggested)'}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="cal-region">Region</label>
+                <select
+                  id="cal-region"
+                  value={region}
+                  onChange={(e) => setRegion(e.target.value)}
+                  required
+                >
+                  {regionChoices.length === 0 ? (
+                    <option value="">No regions available</option>
+                  ) : (
+                    regionChoices.map((r) => (
+                      <option key={r} value={r}>
+                        {prettyRegion(r)}
                       </option>
                     ))
                   )}
@@ -477,9 +570,12 @@ export function CapacityCalendarPage() {
               </div>
               <div className="field full">
                 <label>Link open constraints</label>
+                <p className="field-hint" style={{ marginTop: 0 }}>
+                  Selecting a constraint fills resource type, SKU/series, and region from that record.
+                </p>
                 {linkableConstraints.length === 0 ? (
                   <p className="muted" style={{ margin: 0 }}>
-                    No open constraints for this resource type.
+                    No open constraints available.
                   </p>
                 ) : (
                   <div className="calendar-link-list">
@@ -491,7 +587,8 @@ export function CapacityCalendarPage() {
                           onChange={() => toggleLinkedConstraint(c.id)}
                         />
                         <span>
-                          {c.sku} · {c.regions.join(', ')}
+                          {c.sku} · {c.resourceType} ·{' '}
+                          {(c.regions || []).map((r) => prettyRegion(r)).join(', ') || 'No region'}
                         </span>
                         <SeverityBadge severity={c.severity} />
                         <StatusBadge status={c.status} />
@@ -502,7 +599,11 @@ export function CapacityCalendarPage() {
               </div>
             </div>
             <div style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem' }}>
-              <button type="submit" className="btn btn-primary" disabled={saving || !sku}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={saving || !sku || !region}
+              >
                 {saving ? 'Saving…' : 'Save relief date'}
               </button>
             </div>
@@ -523,6 +624,7 @@ export function CapacityCalendarPage() {
               <tr>
                 <th>Date</th>
                 <th>SKU / series</th>
+                <th>Region</th>
                 <th>Type</th>
                 <th>Status</th>
                 <th>Source</th>
@@ -533,7 +635,7 @@ export function CapacityCalendarPage() {
             <tbody>
               {upcoming.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="muted">
+                  <td colSpan={8} className="muted">
                     No calendar entries yet.
                   </td>
                 </tr>
@@ -552,6 +654,7 @@ export function CapacityCalendarPage() {
                   >
                     <td>{entry.expectedReliefDate}</td>
                     <td>{entry.sku}</td>
+                    <td>{entry.region ? prettyRegion(entry.region) : '—'}</td>
                     <td>{entry.resourceType}</td>
                     <td>
                       <span className={`pill pill-${statusTone(entry.status)}`}>{entry.status}</span>
