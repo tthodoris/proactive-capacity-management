@@ -2146,6 +2146,68 @@ table.data tr.clickable {
   margin-bottom: 0.35rem;
 }
 
+.region-eval-status-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+button.region-eval-constraint-tag {
+  border: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+button.region-eval-constraint-tag:hover {
+  filter: brightness(0.97);
+}
+
+.constraint-brief-modal {
+  max-width: 640px;
+}
+
+.constraint-brief-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.85rem 0.95rem;
+  background: var(--panel-soft);
+}
+
+.constraint-brief-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.constraint-brief-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.constraint-brief-meta {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.65rem;
+  font-size: 0.84rem;
+}
+
+.constraint-brief-label {
+  display: inline-block;
+  min-width: 4.5rem;
+  font-weight: 650;
+  color: var(--ink-soft);
+  margin-right: 0.35rem;
+}
+
+.constraint-brief-desc {
+  margin: 0.65rem 0 0;
+  white-space: pre-wrap;
+}
+
 /* ── Capacity calendar ─────────────────────────── */
 .calendar-layout {
   display: grid;

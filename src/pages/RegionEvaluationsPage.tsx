@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState, Fragment } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart3, ChevronDown, ChevronRight, MapPinned, Trash2 } from 'lucide-react'
+import { ConstraintBriefModal } from '../components/ConstraintBriefModal'
 import { useApp } from '../context/AppContext'
 import type { RegionEvalStatus, SavedRegionEvaluation } from '../lib/azureApi'
+import { findMatchingConstraintsForEval } from '../lib/constraints'
 import { deleteRegionEvaluation, fetchRegionEvaluations } from '../lib/dataApi'
 import { formatDate } from '../lib/format'
+import type { CapacityConstraint } from '../types'
 
 function statusTone(status: RegionEvalStatus) {
   if (status === 'available') return 'pill-ok'
@@ -26,6 +29,7 @@ type AvailabilityGap = {
   resourceType: string
   sku: string
   size: string | null
+  family: string | null
   resourceCount: number
   sourceRegions: string[]
   status: RegionEvalStatus
@@ -44,7 +48,8 @@ function collectAvailabilityGaps(evaluation: SavedRegionEvaluation): Availabilit
         regionLabel: region.label || region.id,
         resourceType: row.resourceType,
         sku: row.sku,
-        size: row.size,
+        size: row.size ?? null,
+        family: row.family ?? null,
         resourceCount: row.resourceCount,
         sourceRegions: row.sourceRegions || [],
         status,
@@ -60,7 +65,17 @@ function collectAvailabilityGaps(evaluation: SavedRegionEvaluation): Availabilit
   )
 }
 
-function EvaluationGapsPanel({ evaluation }: { evaluation: SavedRegionEvaluation }) {
+function EvaluationGapsPanel({
+  evaluation,
+  constraints,
+}: {
+  evaluation: SavedRegionEvaluation
+  constraints: CapacityConstraint[]
+}) {
+  const [constraintPopup, setConstraintPopup] = useState<{
+    constraints: CapacityConstraint[]
+    contextLabel: string
+  } | null>(null)
   const gaps = useMemo(() => collectAvailabilityGaps(evaluation), [evaluation])
   const byRegion = useMemo(() => {
     const map = new Map<string, AvailabilityGap[]>()
@@ -109,34 +124,71 @@ function EvaluationGapsPanel({ evaluation }: { evaluation: SavedRegionEvaluation
                 </tr>
               </thead>
               <tbody>
-                {group.items.map((gap) => (
-                  <tr key={`${gap.regionId}-${gap.resourceType}-${gap.sku}-${gap.size || ''}`}>
-                    <td>{gap.resourceType}</td>
-                    <td>
-                      <strong>{gap.sku}</strong>
-                      {gap.size ? <div className="muted">{gap.size}</div> : null}
-                    </td>
-                    <td>{gap.resourceCount}</td>
-                    <td className="muted">{gap.sourceRegions.join(', ') || '—'}</td>
-                    <td>
-                      <span className={`pill ${statusTone(gap.status)}`}>
-                        {statusLabel(gap.status)}
-                      </span>
-                    </td>
-                    <td className="muted">{gap.reason}</td>
-                  </tr>
-                ))}
+                {group.items.map((gap) => {
+                  const matchingConstraints = findMatchingConstraintsForEval({
+                    constraints,
+                    resourceType: gap.resourceType,
+                    sku: gap.sku,
+                    size: gap.size,
+                    family: gap.family,
+                    targetRegionId: gap.regionId,
+                    targetRegionLabel: gap.regionLabel,
+                  })
+                  return (
+                    <tr key={`${gap.regionId}-${gap.resourceType}-${gap.sku}-${gap.size || ''}`}>
+                      <td>{gap.resourceType}</td>
+                      <td>
+                        <strong>{gap.sku}</strong>
+                        {gap.size ? <div className="muted">{gap.size}</div> : null}
+                      </td>
+                      <td>{gap.resourceCount}</td>
+                      <td className="muted">{gap.sourceRegions.join(', ') || '—'}</td>
+                      <td>
+                        <div className="region-eval-status-stack">
+                          <span className={`pill ${statusTone(gap.status)}`}>
+                            {statusLabel(gap.status)}
+                          </span>
+                          {matchingConstraints.length > 0 ? (
+                            <button
+                              type="button"
+                              className="pill pill-high region-eval-constraint-tag"
+                              onClick={() =>
+                                setConstraintPopup({
+                                  constraints: matchingConstraints,
+                                  contextLabel: `${gap.sku} · ${gap.regionLabel}`,
+                                })
+                              }
+                            >
+                              Constrained
+                              {matchingConstraints.length > 1
+                                ? ` (${matchingConstraints.length})`
+                                : ''}
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="muted">{gap.reason}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
         </div>
       ))}
+      {constraintPopup ? (
+        <ConstraintBriefModal
+          constraints={constraintPopup.constraints}
+          contextLabel={constraintPopup.contextLabel}
+          onClose={() => setConstraintPopup(null)}
+        />
+      ) : null}
     </div>
   )
 }
 
 export function RegionEvaluationsPage() {
-  const { customers, portfolioCustomerIds, canSeeAllPortfolios } = useApp()
+  const { customers, constraints, portfolioCustomerIds, canSeeAllPortfolios } = useApp()
   const [customerFilter, setCustomerFilter] = useState('')
   const [evaluations, setEvaluations] = useState<SavedRegionEvaluation[]>([])
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
@@ -374,7 +426,10 @@ export function RegionEvaluationsPage() {
                         {expanded ? (
                           <tr>
                             <td colSpan={9}>
-                              <EvaluationGapsPanel evaluation={evaluation} />
+                              <EvaluationGapsPanel
+                                evaluation={evaluation}
+                                constraints={constraints}
+                              />
                             </td>
                           </tr>
                         ) : null}

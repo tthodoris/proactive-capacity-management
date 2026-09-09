@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Download, History, MapPinned, X } from 'lucide-react'
+import { ConstraintBriefModal } from '../components/ConstraintBriefModal'
 import { useApp } from '../context/AppContext'
 import type {
   RegionEvalLineItem,
@@ -8,6 +9,7 @@ import type {
   RegionEvalStatus,
   SavedRegionEvaluation,
 } from '../lib/azureApi'
+import { findMatchingConstraintsForEval } from '../lib/constraints'
 import { fetchRegionEvaluation, fetchRegionEvaluations } from '../lib/dataApi'
 import { exportSheetsToExcel } from '../lib/exportExcel'
 import { formatDate } from '../lib/format'
@@ -19,6 +21,7 @@ import {
   useSortState,
   useSortedRows,
 } from '../lib/tableSort'
+import type { CapacityConstraint } from '../types'
 
 type TotalsRow = {
   subscriptionId: string
@@ -127,7 +130,7 @@ function CostBarChart({
 }
 
 export function RegionCostAnalysisPage() {
-  const { customers, portfolioCustomerIds, canSeeAllPortfolios } = useApp()
+  const { customers, constraints, portfolioCustomerIds, canSeeAllPortfolios } = useApp()
   const [searchParams, setSearchParams] = useSearchParams()
   const evaluationId = searchParams.get('evaluationId') || ''
 
@@ -136,6 +139,10 @@ export function RegionCostAnalysisPage() {
   const [loadingList, setLoadingList] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [constraintPopup, setConstraintPopup] = useState<{
+    constraints: CapacityConstraint[]
+    contextLabel: string
+  } | null>(null)
   const { sortKey, sortDir, toggleSort } = useSortState<DetailSortKey>('subscription')
   const {
     filters,
@@ -647,6 +654,32 @@ export function RegionCostAnalysisPage() {
                       {(selected?.targetRegions || []).map((region) => {
                         const cell = item.byRegion?.[region.id]
                         const status = (cell?.status || 'unknown') as RegionEvalStatus
+                        const matchingConstraints = findMatchingConstraintsForEval({
+                          constraints,
+                          resourceType: item.resourceType,
+                          sku: item.sku,
+                          size: item.size,
+                          targetRegionId: region.id,
+                          targetRegionLabel: region.label,
+                        })
+                        const constrainedTag =
+                          matchingConstraints.length > 0 ? (
+                            <button
+                              type="button"
+                              className="pill pill-high region-eval-constraint-tag"
+                              onClick={() =>
+                                setConstraintPopup({
+                                  constraints: matchingConstraints,
+                                  contextLabel: `${item.sku} · ${region.label || region.id}`,
+                                })
+                              }
+                            >
+                              Constrained
+                              {matchingConstraints.length > 1
+                                ? ` (${matchingConstraints.length})`
+                                : ''}
+                            </button>
+                          ) : null
                         if (!isTargetAvailable(cell)) {
                           return (
                             <td
@@ -654,18 +687,26 @@ export function RegionCostAnalysisPage() {
                               className="cost-unavailable"
                               title={cell?.reason || statusLabel(status)}
                             >
-                              <span className={`pill ${statusTone(status)}`}>
-                                {statusLabel(status)}
-                              </span>
+                              <div className="region-eval-status-stack">
+                                <span className={`pill ${statusTone(status)}`}>
+                                  {statusLabel(status)}
+                                </span>
+                                {constrainedTag}
+                              </div>
                             </td>
                           )
                         }
                         return (
                           <td key={region.id}>
-                            {formatRegionMoney(
-                              cell?.monthlyTotalPrice ?? cell?.monthlyUnitPrice,
-                              cell?.currencyCode,
-                            ) || '—'}
+                            <div className="region-eval-status-stack">
+                              <span>
+                                {formatRegionMoney(
+                                  cell?.monthlyTotalPrice ?? cell?.monthlyUnitPrice,
+                                  cell?.currencyCode,
+                                ) || '—'}
+                              </span>
+                              {constrainedTag}
+                            </div>
                           </td>
                         )
                       })}
@@ -694,6 +735,14 @@ export function RegionCostAnalysisPage() {
           Select a saved evaluation, or run a new one from{' '}
           <Link to="/region-evaluation">Region evaluation</Link>.
         </div>
+      ) : null}
+
+      {constraintPopup ? (
+        <ConstraintBriefModal
+          constraints={constraintPopup.constraints}
+          contextLabel={constraintPopup.contextLabel}
+          onClose={() => setConstraintPopup(null)}
+        />
       ) : null}
     </div>
   )

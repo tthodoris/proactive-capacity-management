@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Loader2, MapPinned, PlugZap, RefreshCw, X } from 'lucide-react'
 import { CheckboxMultiSelect } from '../components/CheckboxMultiSelect'
+import { ConstraintBriefModal } from '../components/ConstraintBriefModal'
 import { useApp } from '../context/AppContext'
 import { deployableAzureRegions } from '../data/azureLocations'
 import {
@@ -11,6 +12,7 @@ import {
   type RegionEvalStatus,
   type RegionEvaluationResponse,
 } from '../lib/azureApi'
+import { findMatchingConstraintsForEval } from '../lib/constraints'
 import { persistRegionEvaluation } from '../lib/dataApi'
 import {
   findSourceCostCell,
@@ -25,6 +27,7 @@ import {
   useSortState,
   useSortedRows,
 } from '../lib/tableSort'
+import type { CapacityConstraint } from '../types'
 
 function statusTone(status: RegionEvalStatus) {
   if (status === 'available') return 'pill-ok'
@@ -84,6 +87,7 @@ export function RegionEvaluationPage() {
     customers,
     subscriptions,
     inventory,
+    constraints,
     portfolioCustomerIds,
     canSeeAllPortfolios,
     azureSessionReady,
@@ -105,6 +109,10 @@ export function RegionEvaluationPage() {
   const [statusNote, setStatusNote] = useState<string | null>(null)
   const [result, setResult] = useState<RegionEvaluationResponse | null>(null)
   const [savedEvaluationId, setSavedEvaluationId] = useState<string | null>(null)
+  const [constraintPopup, setConstraintPopup] = useState<{
+    constraints: CapacityConstraint[]
+    contextLabel: string
+  } | null>(null)
   const sessionEnsureRef = useRef(false)
   const { sortKey, sortDir, toggleSort } = useSortState<ResultSortKey>('resourceType')
   const {
@@ -813,19 +821,52 @@ export function RegionEvaluationPage() {
                       {result.targetRegions.map((region) => {
                         const cell = row.byRegion[region.id]
                         const status = cell?.status || 'unknown'
+                        const matchingConstraints = findMatchingConstraintsForEval({
+                          constraints,
+                          resourceType: row.resourceType,
+                          sku: row.sku,
+                          size: row.size,
+                          family: row.family,
+                          targetRegionId: region.id,
+                          targetRegionLabel: region.label,
+                        })
                         const tip = [
                           cell?.reason,
                           cell?.productName ? `Meter: ${cell.productName}` : null,
                           cell?.meterName ? `Meter name: ${cell.meterName}` : null,
                           cell?.costNote,
+                          matchingConstraints.length
+                            ? `${matchingConstraints.length} open capacity constraint${
+                                matchingConstraints.length === 1 ? '' : 's'
+                              }`
+                            : null,
                         ]
                           .filter(Boolean)
                           .join(' · ')
                         return (
                           <td key={region.id} title={tip || undefined}>
-                            <span className={`pill ${statusTone(status)}`}>
-                              {statusLabel(status)}
-                            </span>
+                            <div className="region-eval-status-stack">
+                              <span className={`pill ${statusTone(status)}`}>
+                                {statusLabel(status)}
+                              </span>
+                              {matchingConstraints.length > 0 ? (
+                                <button
+                                  type="button"
+                                  className="pill pill-high region-eval-constraint-tag"
+                                  onClick={() =>
+                                    setConstraintPopup({
+                                      constraints: matchingConstraints,
+                                      contextLabel: `${row.sku} · ${region.label}`,
+                                    })
+                                  }
+                                >
+                                  Constrained
+                                  {matchingConstraints.length > 1
+                                    ? ` (${matchingConstraints.length})`
+                                    : ''}
+                                </button>
+                              ) : null}
+                            </div>
                             {renderCostBlock(cell, row.resourceCount)}
                           </td>
                         )
@@ -844,6 +885,14 @@ export function RegionEvaluationPage() {
             </div>
           </section>
         </>
+      ) : null}
+
+      {constraintPopup ? (
+        <ConstraintBriefModal
+          constraints={constraintPopup.constraints}
+          contextLabel={constraintPopup.contextLabel}
+          onClose={() => setConstraintPopup(null)}
+        />
       ) : null}
     </div>
   )
