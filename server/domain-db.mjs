@@ -95,6 +95,8 @@ function mapCalendarEntry(row) {
       ? row.linked_constraint_ids
       : row.linked_constraint_ids || [],
     status: row.status,
+    targetSeverity: row.target_severity || null,
+    targetStatus: row.target_status || null,
     severityDowngradedAt: row.severity_downgraded_at
       ? new Date(row.severity_downgraded_at).toISOString()
       : null,
@@ -194,6 +196,8 @@ export async function initDomainTables() {
       source TEXT NOT NULL DEFAULT '',
       linked_constraint_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
       status TEXT NOT NULL DEFAULT 'Scheduled',
+      target_severity TEXT,
+      target_status TEXT,
       severity_downgraded_at TIMESTAMPTZ,
       created_by TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -204,10 +208,14 @@ export async function initDomainTables() {
       ON capacity_calendar_entries(expected_relief_date);
   `)
 
-  // Existing deployments may pre-date the region column.
+  // Existing deployments may pre-date newer calendar columns.
   await pool.query(`
     ALTER TABLE capacity_calendar_entries
-      ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT ''
+      ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT '';
+    ALTER TABLE capacity_calendar_entries
+      ADD COLUMN IF NOT EXISTS target_severity TEXT;
+    ALTER TABLE capacity_calendar_entries
+      ADD COLUMN IF NOT EXISTS target_status TEXT;
   `)
 }
 
@@ -440,10 +448,10 @@ export async function upsertCapacityCalendarEntry(entry, client = pool) {
     `
     INSERT INTO capacity_calendar_entries (
       id, resource_type, sku, region, expected_relief_date, notes, source,
-      linked_constraint_ids, status, severity_downgraded_at,
+      linked_constraint_ids, status, target_severity, target_status, severity_downgraded_at,
       created_by, created_at, updated_at
     ) VALUES (
-      $1,$2,$3,$4,$5::date,$6,$7,$8::jsonb,$9,$10,$11,$12,$13
+      $1,$2,$3,$4,$5::date,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15
     )
     ON CONFLICT (id) DO UPDATE SET
       resource_type = EXCLUDED.resource_type,
@@ -454,6 +462,8 @@ export async function upsertCapacityCalendarEntry(entry, client = pool) {
       source = EXCLUDED.source,
       linked_constraint_ids = EXCLUDED.linked_constraint_ids,
       status = EXCLUDED.status,
+      target_severity = EXCLUDED.target_severity,
+      target_status = EXCLUDED.target_status,
       severity_downgraded_at = EXCLUDED.severity_downgraded_at,
       created_by = EXCLUDED.created_by,
       created_at = EXCLUDED.created_at,
@@ -469,6 +479,8 @@ export async function upsertCapacityCalendarEntry(entry, client = pool) {
       entry.source || '',
       JSON.stringify(entry.linkedConstraintIds || []),
       entry.status || 'Scheduled',
+      entry.targetSeverity || null,
+      entry.targetStatus || null,
       entry.severityDowngradedAt || null,
       entry.createdBy,
       entry.createdAt || new Date().toISOString(),

@@ -59,6 +59,7 @@ import type {
   AlertItem,
   CapacityCalendarEntry,
   CapacityConstraint,
+  ConstraintSeverity,
   ConstraintStatus,
   Customer,
   Engagement,
@@ -102,6 +103,10 @@ export interface CreateCapacityCalendarInput {
   notes: string
   source: string
   linkedConstraintIds: string[]
+  /** Explicit target severity; omit/null = default one-level downgrade. */
+  targetSeverity?: ConstraintSeverity | null
+  /** Explicit target status; omit/null = leave linked constraint status unchanged. */
+  targetStatus?: ConstraintStatus | null
 }
 
 interface UpsertTenantCustomerInput {
@@ -1360,40 +1365,82 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [user.id, awardPoints],
   )
 
-  const downgradeLinkedConstraints = useCallback(
+  const applyLinkedConstraintRelief = useCallback(
     async (entry: CapacityCalendarEntry, reason: string) => {
       const now = new Date().toISOString()
       const linkedIds = entry.linkedConstraintIds || []
+      const explicitSeverity = entry.targetSeverity || null
+      const explicitStatus = entry.targetStatus || null
+
       for (const constraintId of linkedIds) {
         const current = constraintsRef.current.find((c) => c.id === constraintId)
         if (!current) continue
-        if (current.status === 'Resolved') continue
-        if (!canDowngradeSeverity(current.severity)) continue
-        const nextSeverity = downgradeConstraintSeverity(current.severity)
-        if (nextSeverity === current.severity) continue
+        if (current.status === 'Resolved' && explicitStatus !== 'Resolved') continue
+
+        let nextSeverity = current.severity
+        let severityChanged = false
+        if (explicitSeverity) {
+          if (explicitSeverity !== current.severity) {
+            nextSeverity = explicitSeverity
+            severityChanged = true
+          }
+        } else if (canDowngradeSeverity(current.severity)) {
+          const downgraded = downgradeConstraintSeverity(current.severity)
+          if (downgraded !== current.severity) {
+            nextSeverity = downgraded
+            severityChanged = true
+          }
+        }
+
+        let nextStatus = current.status
+        let statusChanged = false
+        if (explicitStatus && explicitStatus !== current.status) {
+          nextStatus = explicitStatus
+          statusChanged = true
+        }
+
+        if (!severityChanged && !statusChanged) continue
+
+        const history = [...current.history]
+        if (severityChanged) {
+          history.push({
+            id: `h-${Date.now()}-sev-${constraintId}`,
+            at: now,
+            by: explicitSeverity ? userRef.current.id : 'system',
+            action: explicitSeverity ? 'Severity update' : 'Severity auto-downgrade',
+            detail: `${reason} Linked calendar relief for ${entry.sku}: severity ${current.severity} → ${nextSeverity}${
+              explicitSeverity ? ' (target severity).' : ' (default one level down).'
+            }`,
+          })
+        }
+        if (statusChanged) {
+          history.push({
+            id: `h-${Date.now()}-st-${constraintId}`,
+            at: now,
+            by: userRef.current.id,
+            action: 'Status update',
+            detail: `${reason} Linked calendar relief for ${entry.sku}: status ${current.status} → ${nextStatus} (target status).`,
+          })
+        }
+
         const updated: CapacityConstraint = {
           ...current,
           severity: nextSeverity,
+          status: nextStatus,
           updatedAt: now,
-          history: [
-            ...current.history,
-            {
-              id: `h-${Date.now()}-${constraintId}`,
-              at: now,
-              by: 'system',
-              action: 'Severity auto-downgrade',
-              detail: `${reason} Linked calendar relief for ${entry.sku}: ${current.severity} → ${nextSeverity}.`,
-            },
-          ],
+          history,
         }
         await persistConstraint(updated)
         setConstraints((prev) => prev.map((c) => (c.id === constraintId ? updated : c)))
         constraintsRef.current = constraintsRef.current.map((c) =>
           c.id === constraintId ? updated : c,
         )
+        if (statusChanged && nextStatus === 'Resolved' && current.status !== 'Resolved') {
+          awardPoints('constraint_resolved', `Resolved ${current.sku}`, constraintId)
+        }
       }
     },
-    [],
+    [awardPoints],
   )
 
   const applyCapacityCalendarAutoDowngrades = useCallback(async () => {
@@ -1414,7 +1461,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         capacityCalendarEntriesRef.current = capacityCalendarEntriesRef.current.map((e) =>
           e.id === entry.id ? updated : e,
         )
-        await downgradeLinkedConstraints(
+        await applyLinkedConstraintRelief(
           entry,
           nextStatus === 'Resolved'
             ? 'Calendar entry marked resolved.'
@@ -1424,7 +1471,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         console.error('Failed to apply calendar auto-downgrade', err)
       }
     }
-  }, [downgradeLinkedConstraints])
+  }, [applyLinkedConstraintRelief])
 
   const createCapacityCalendarEntryRecord = useCallback(
     async (input: CreateCapacityCalendarInput) => {
@@ -1442,6 +1489,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         notes: input.notes,
         source: input.source || 'Capacity call',
         linkedConstraintIds: input.linkedConstraintIds || [],
+        targetSeverity: input.targetSeverity || null,
+        targetStatus: input.targetStatus || null,
         status: status === 'Past due' ? 'Past due' : 'Scheduled',
         severityDowngradedAt: null,
         createdBy: user.id,
@@ -1481,10 +1530,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         e.id === id ? updated : e,
       )
       if (!current.severityDowngradedAt) {
-        await downgradeLinkedConstraints(current, 'Calendar entry marked resolved.')
+        await applyLinkedConstraintRelief(current, 'Calendar entry marked resolved.')
       }
     },
-    [downgradeLinkedConstraints],
+    [applyLinkedConstraintRelief],
   )
 
   const deleteCapacityCalendarEntryById = useCallback(async (id: string) => {

@@ -202,7 +202,17 @@ export interface CapacityCalendarEntry {
   source: string
   linkedConstraintIds: string[]
   status: CapacityCalendarEntryStatus
-  /** Set once when auto-downgrade has been applied for past-due or resolved. */
+  /**
+   * When set, linked constraints are updated to this severity when relief applies.
+   * When null/undefined, default behaviour is one severity level down.
+   */
+  targetSeverity?: ConstraintSeverity | null
+  /**
+   * When set, linked constraints are updated to this status when relief applies.
+   * When null/undefined, linked constraint status is left unchanged.
+   */
+  targetStatus?: ConstraintStatus | null
+  /** Set once when auto-downgrade / target relief has been applied for past-due or resolved. */
   severityDowngradedAt?: string | null
   createdBy: string
   createdAt: string

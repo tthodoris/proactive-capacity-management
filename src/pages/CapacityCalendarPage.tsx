@@ -17,7 +17,13 @@ import {
   type InventorySkuOption,
 } from '../lib/dataApi'
 import { formatDate, prettyRegion } from '../lib/format'
-import type { CapacityCalendarEntry, CapacityConstraint, ResourceType } from '../types'
+import type {
+  CapacityCalendarEntry,
+  CapacityConstraint,
+  ConstraintSeverity,
+  ConstraintStatus,
+  ResourceType,
+} from '../types'
 
 const FALLBACK_RESOURCE_TYPES: ResourceType[] = [
   'Virtual Machine',
@@ -42,6 +48,19 @@ const FALLBACK_RESOURCE_TYPES: ResourceType[] = [
 ]
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+const SEVERITY_OPTIONS: ConstraintSeverity[] = ['Critical', 'High', 'Medium', 'Low']
+const STATUS_OPTIONS: ConstraintStatus[] = [
+  'Open',
+  'Under investigation',
+  'Mitigating',
+  'Resolved',
+]
+
+/** Form sentinel: keep default one-level severity downgrade. */
+const TARGET_SEVERITY_DEFAULT = '__default__'
+/** Form sentinel: do not change linked constraint status. */
+const TARGET_STATUS_UNCHANGED = '__unchanged__'
 
 function statusTone(status: CapacityCalendarEntry['status']) {
   if (status === 'Resolved') return 'ok'
@@ -75,6 +94,8 @@ export function CapacityCalendarPage() {
   const [notes, setNotes] = useState('')
   const [source, setSource] = useState('Weekly Capacity call')
   const [linkedConstraintIds, setLinkedConstraintIds] = useState<string[]>([])
+  const [targetSeverityChoice, setTargetSeverityChoice] = useState(TARGET_SEVERITY_DEFAULT)
+  const [targetStatusChoice, setTargetStatusChoice] = useState(TARGET_STATUS_UNCHANGED)
   const [loadingTypes, setLoadingTypes] = useState(true)
   const [loadingSkus, setLoadingSkus] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -274,9 +295,19 @@ export function CapacityCalendarPage() {
         notes,
         source,
         linkedConstraintIds,
+        targetSeverity:
+          linkedConstraintIds.length > 0 && targetSeverityChoice !== TARGET_SEVERITY_DEFAULT
+            ? (targetSeverityChoice as ConstraintSeverity)
+            : null,
+        targetStatus:
+          linkedConstraintIds.length > 0 && targetStatusChoice !== TARGET_STATUS_UNCHANGED
+            ? (targetStatusChoice as ConstraintStatus)
+            : null,
       })
       setNotes('')
       setLinkedConstraintIds([])
+      setTargetSeverityChoice(TARGET_SEVERITY_DEFAULT)
+      setTargetStatusChoice(TARGET_STATUS_UNCHANGED)
       setShowForm(false)
       setSelectedDate(expectedReliefDate)
     } catch (err) {
@@ -412,8 +443,14 @@ export function CapacityCalendarPage() {
                         <div className="muted" style={{ fontSize: '0.82rem' }}>
                           {entry.region ? `${prettyRegion(entry.region)} · ` : ''}
                           {entry.source || 'Capacity input'}
+                          {entry.targetSeverity
+                            ? ` · target severity ${entry.targetSeverity}`
+                            : linked.length > 0
+                              ? ' · severity −1 level (default)'
+                              : ''}
+                          {entry.targetStatus ? ` · target status ${entry.targetStatus}` : ''}
                           {entry.severityDowngradedAt
-                            ? ` · severity downgraded ${formatDate(entry.severityDowngradedAt)}`
+                            ? ` · relief applied ${formatDate(entry.severityDowngradedAt)}`
                             : ''}
                         </div>
                       </div>
@@ -597,6 +634,50 @@ export function CapacityCalendarPage() {
                   </div>
                 )}
               </div>
+              {linkedConstraintIds.length > 0 ? (
+                <>
+                  <div className="field">
+                    <label htmlFor="cal-target-severity">Target severity (linked constraints)</label>
+                    <select
+                      id="cal-target-severity"
+                      value={targetSeverityChoice}
+                      onChange={(e) => setTargetSeverityChoice(e.target.value)}
+                    >
+                      <option value={TARGET_SEVERITY_DEFAULT}>
+                        Default — decrease one severity level
+                      </option>
+                      {SEVERITY_OPTIONS.map((severity) => (
+                        <option key={severity} value={severity}>
+                          Set to {severity}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="field-hint">
+                      Applied when the relief date is past due or the calendar entry is marked
+                      resolved.
+                    </p>
+                  </div>
+                  <div className="field">
+                    <label htmlFor="cal-target-status">Target status (linked constraints)</label>
+                    <select
+                      id="cal-target-status"
+                      value={targetStatusChoice}
+                      onChange={(e) => setTargetStatusChoice(e.target.value)}
+                    >
+                      <option value={TARGET_STATUS_UNCHANGED}>No status change</option>
+                      {STATUS_OPTIONS.map((status) => (
+                        <option key={status} value={status}>
+                          Set to {status}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="field-hint">
+                      Optional. Leave unchanged unless Capacity relief should also update investigation
+                      status.
+                    </p>
+                  </div>
+                </>
+              ) : null}
             </div>
             <div style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem' }}>
               <button
