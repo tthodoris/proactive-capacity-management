@@ -56,10 +56,11 @@ const nav: NavItem[] = [
   { to: '/quota-groups', label: 'Quota groups', icon: Layers },
   {
     to: '/region-evaluation',
-    label: 'Region Evaluation',
+    label: 'Multiregion',
     icon: MapPinned,
     children: [
-      { to: '/region-evaluation', label: 'Run evaluation', icon: MapPinned },
+      { to: '/region-evaluation', label: 'Region evaluation', icon: MapPinned },
+      { to: '/region-evaluation/strategy', label: 'Multiregion strategy', icon: Layers },
       { to: '/region-evaluation/history', label: 'Evaluations', icon: History },
       { to: '/region-evaluation/cost-analysis', label: 'Cost analysis', icon: BarChart3 },
     ],
@@ -118,6 +119,11 @@ const titles: Record<string, { title: string; subtitle: string }> = {
     title: 'Region evaluation',
     subtitle:
       'Compare current inventory SKUs and services against preferred target regions for potential deployment.',
+  },
+  '/region-evaluation/strategy': {
+    title: 'Multiregion strategy',
+    subtitle:
+      'Plan and demonstrate multiregion options for a customer workload using inventory already in PCM.',
   },
   '/region-evaluation/history': {
     title: 'Evaluations',

@@ -156,6 +156,29 @@ export async function initDb() {
       ON region_evaluations(customer_id);
     CREATE INDEX IF NOT EXISTS idx_region_evaluations_created
       ON region_evaluations(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS strategy_scenarios (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+      customer_name TEXT NOT NULL,
+      name TEXT NOT NULL,
+      notes TEXT NOT NULL DEFAULT '',
+      subscription_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      group_by TEXT NOT NULL DEFAULT 'resourceGroup',
+      selected_group_key TEXT,
+      candidate_region_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      what_if_percent INTEGER NOT NULL DEFAULT 50,
+      linked_evaluation_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_by_user_id TEXT,
+      created_by_name TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_strategy_scenarios_customer
+      ON strategy_scenarios(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_strategy_scenarios_updated
+      ON strategy_scenarios(updated_at DESC);
   `)
 
   const { initDomainTables } = await import('./domain-db.mjs')
@@ -1035,6 +1058,100 @@ export async function createRegionEvaluation(evaluation) {
 export async function deleteRegionEvaluation(id) {
   const result = await pool.query(
     `DELETE FROM region_evaluations WHERE id = $1 RETURNING id`,
+    [id],
+  )
+  return result.rowCount > 0
+}
+
+function mapStrategyScenario(row) {
+  return {
+    id: row.id,
+    customerId: row.customer_id,
+    customerName: row.customer_name,
+    name: row.name,
+    notes: row.notes || '',
+    subscriptionIds: row.subscription_ids || [],
+    groupBy: row.group_by || 'resourceGroup',
+    selectedGroupKey: row.selected_group_key || null,
+    candidateRegionIds: row.candidate_region_ids || [],
+    whatIfPercent: Number(row.what_if_percent || 50),
+    linkedEvaluationIds: row.linked_evaluation_ids || [],
+    createdByUserId: row.created_by_user_id || null,
+    createdByName: row.created_by_name || null,
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : row.created_at,
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : row.updated_at,
+  }
+}
+
+export async function listStrategyScenarios({ customerId } = {}) {
+  const params = []
+  let where = ''
+  if (customerId) {
+    params.push(customerId)
+    where = `WHERE customer_id = $${params.length}`
+  }
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM strategy_scenarios
+      ${where}
+      ORDER BY updated_at DESC
+    `,
+    params,
+  )
+  return result.rows.map(mapStrategyScenario)
+}
+
+export async function upsertStrategyScenario(scenario) {
+  if (!scenario?.id) throw new Error('scenario.id is required')
+  const result = await pool.query(
+    `
+      INSERT INTO strategy_scenarios (
+        id, customer_id, customer_name, name, notes, subscription_ids, group_by,
+        selected_group_key, candidate_region_ids, what_if_percent, linked_evaluation_ids,
+        created_by_user_id, created_by_name, created_at, updated_at
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9::jsonb,$10,$11::jsonb,$12,$13,COALESCE($14::timestamptz, NOW()),NOW()
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        customer_id = EXCLUDED.customer_id,
+        customer_name = EXCLUDED.customer_name,
+        name = EXCLUDED.name,
+        notes = EXCLUDED.notes,
+        subscription_ids = EXCLUDED.subscription_ids,
+        group_by = EXCLUDED.group_by,
+        selected_group_key = EXCLUDED.selected_group_key,
+        candidate_region_ids = EXCLUDED.candidate_region_ids,
+        what_if_percent = EXCLUDED.what_if_percent,
+        linked_evaluation_ids = EXCLUDED.linked_evaluation_ids,
+        created_by_user_id = EXCLUDED.created_by_user_id,
+        created_by_name = EXCLUDED.created_by_name,
+        updated_at = NOW()
+      RETURNING *
+    `,
+    [
+      scenario.id,
+      scenario.customerId,
+      scenario.customerName,
+      scenario.name,
+      scenario.notes || '',
+      JSON.stringify(scenario.subscriptionIds || []),
+      scenario.groupBy || 'resourceGroup',
+      scenario.selectedGroupKey || null,
+      JSON.stringify(scenario.candidateRegionIds || []),
+      Number(scenario.whatIfPercent || 50),
+      JSON.stringify(scenario.linkedEvaluationIds || []),
+      scenario.createdByUserId || null,
+      scenario.createdByName || null,
+      scenario.createdAt || null,
+    ],
+  )
+  return mapStrategyScenario(result.rows[0])
+}
+
+export async function deleteStrategyScenario(id) {
+  const result = await pool.query(
+    `DELETE FROM strategy_scenarios WHERE id = $1 RETURNING id`,
     [id],
   )
   return result.rowCount > 0

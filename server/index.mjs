@@ -28,6 +28,9 @@ import {
   getRegionEvaluation,
   createRegionEvaluation,
   deleteRegionEvaluation,
+  listStrategyScenarios,
+  upsertStrategyScenario,
+  deleteStrategyScenario,
 } from './db.mjs'
 import { toSkuFamily } from './skuFamily.mjs'
 import { enrichResultsWithRetailPrices } from './retailPrices.mjs'
@@ -2708,6 +2711,54 @@ app.delete('/api/data/region-evaluations/:id', async (req, res) => {
   try {
     const deleted = await deleteRegionEvaluation(req.params.id)
     if (!deleted) return res.status(404).json({ error: 'Region evaluation not found' })
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+app.get('/api/data/strategy-scenarios', async (req, res) => {
+  try {
+    const customerId = typeof req.query.customerId === 'string' ? req.query.customerId : undefined
+    const scenarios = await listStrategyScenarios({ customerId })
+    res.json({ scenarios })
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+app.post('/api/data/strategy-scenarios', async (req, res) => {
+  try {
+    const body = req.body || {}
+    if (!body.customerId || !body.name) {
+      return res.status(400).json({ error: 'customerId and name are required' })
+    }
+    const scenario = await upsertStrategyScenario({
+      id: body.id || randomUUID(),
+      customerId: body.customerId,
+      customerName: body.customerName || body.customerId,
+      name: String(body.name).trim(),
+      notes: body.notes || '',
+      subscriptionIds: Array.isArray(body.subscriptionIds) ? body.subscriptionIds : [],
+      groupBy: body.groupBy || 'resourceGroup',
+      selectedGroupKey: body.selectedGroupKey || null,
+      candidateRegionIds: Array.isArray(body.candidateRegionIds) ? body.candidateRegionIds : [],
+      whatIfPercent: Number(body.whatIfPercent || 50),
+      linkedEvaluationIds: Array.isArray(body.linkedEvaluationIds) ? body.linkedEvaluationIds : [],
+      createdByUserId: body.createdByUserId || null,
+      createdByName: body.createdByName || null,
+      createdAt: body.createdAt || null,
+    })
+    res.json({ scenario })
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+app.delete('/api/data/strategy-scenarios/:id', async (req, res) => {
+  try {
+    const deleted = await deleteStrategyScenario(req.params.id)
+    if (!deleted) return res.status(404).json({ error: 'Strategy scenario not found' })
     res.json({ ok: true })
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) })

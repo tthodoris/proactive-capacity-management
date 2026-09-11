@@ -270,6 +270,46 @@ export function deleteRegionEvaluation(id: string) {
   })
 }
 
+export type StrategyScenarioPayload = {
+  id?: string
+  customerId: string
+  customerName: string
+  name: string
+  notes?: string
+  subscriptionIds?: string[]
+  groupBy?: import('./multiregionStrategy').StrategyGroupBy
+  selectedGroupKey?: string | null
+  candidateRegionIds?: string[]
+  whatIfPercent?: number
+  linkedEvaluationIds?: string[]
+  createdByUserId?: string | null
+  createdByName?: string | null
+  createdAt?: string | null
+}
+
+export function fetchStrategyScenarios(customerId?: string) {
+  const qs = customerId ? `?customerId=${encodeURIComponent(customerId)}` : ''
+  return api<{ scenarios: import('./multiregionStrategy').StrategyScenario[] }>(
+    `/api/data/strategy-scenarios${qs}`,
+  )
+}
+
+export function persistStrategyScenario(payload: StrategyScenarioPayload) {
+  return api<{ scenario: import('./multiregionStrategy').StrategyScenario }>(
+    '/api/data/strategy-scenarios',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function deleteStrategyScenario(id: string) {
+  return api<{ ok: boolean }>(`/api/data/strategy-scenarios/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+}
+
 export interface InventorySkuOption {
   sku: string
   resourceCount: number

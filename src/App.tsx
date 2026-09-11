@@ -18,6 +18,7 @@ import { QuotasPage } from './pages/QuotasPage'
 import { RegionCostAnalysisPage } from './pages/RegionCostAnalysisPage'
 import { RegionEvaluationPage } from './pages/RegionEvaluationPage'
 import { RegionEvaluationsPage } from './pages/RegionEvaluationsPage'
+import { MultiregionStrategyPage } from './pages/MultiregionStrategyPage'
 import { ReportsPage } from './pages/ReportsPage'
 import { RewardsPage } from './pages/RewardsPage'
 
@@ -41,6 +42,7 @@ export default function App() {
             <Route path="quotas" element={<QuotasPage />} />
             <Route path="quota-groups" element={<QuotaGroupsPage />} />
             <Route path="region-evaluation" element={<RegionEvaluationPage />} />
+            <Route path="region-evaluation/strategy" element={<MultiregionStrategyPage />} />
             <Route path="region-evaluation/history" element={<RegionEvaluationsPage />} />
             <Route path="region-evaluation/cost-analysis" element={<RegionCostAnalysisPage />} />
             <Route path="reports" element={<ReportsPage />} />
