@@ -2269,10 +2269,32 @@ button.region-eval-constraint-tag:hover {
   flex-wrap: wrap;
 }
 
+.strategy-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.strategy-score-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
 .strategy-scope-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.9rem 1rem;
+  align-items: start;
+}
+
+.strategy-scope-grid .field > span,
+.strategy-whatif-pct > span {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  line-height: 1.2;
 }
 
 .strategy-scope-meta {
@@ -2283,6 +2305,7 @@ button.region-eval-constraint-tag:hover {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.2fr);
   gap: 1rem;
+  align-items: start;
 }
 
 .strategy-group-list {
@@ -2290,17 +2313,25 @@ button.region-eval-constraint-tag:hover {
   gap: 0.55rem;
   max-height: 28rem;
   overflow: auto;
+  min-width: 0;
 }
 
 .strategy-group-item {
+  width: 100%;
+  box-sizing: border-box;
   text-align: left;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel-soft);
-  padding: 0.75rem 0.85rem;
+  padding: 0.85rem 0.95rem;
   cursor: pointer;
-  display: grid;
-  gap: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  color: inherit;
+  font: inherit;
+  line-height: 1.35;
 }
 
 .strategy-group-item:hover {
@@ -2312,30 +2343,50 @@ button.region-eval-constraint-tag:hover {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
-.strategy-group-item strong {
+.strategy-group-title {
+  display: block;
   font-size: 0.95rem;
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.strategy-group-meta {
+  display: block;
+  font-size: 0.82rem;
+  line-height: 1.3;
 }
 
 .strategy-share-bars {
   display: grid;
-  gap: 0.3rem;
-  margin-top: 0.45rem;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+  width: 100%;
 }
 
 .strategy-share-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr) auto;
-  gap: 0.4rem;
+  grid-template-columns: 7.5rem minmax(0, 1fr) 2.75rem;
+  gap: 0.5rem;
   align-items: center;
   font-size: 0.78rem;
   color: var(--muted);
+  min-width: 0;
+}
+
+.strategy-share-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
 .strategy-share-track {
-  height: 0.35rem;
+  height: 0.4rem;
   border-radius: 999px;
   background: color-mix(in srgb, var(--line) 80%, transparent);
   overflow: hidden;
+  min-width: 0;
 }
 
 .strategy-share-fill {
@@ -2344,20 +2395,32 @@ button.region-eval-constraint-tag:hover {
   border-radius: inherit;
 }
 
+.strategy-share-pct {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
 .strategy-group-detail {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel-soft);
-  padding: 1rem;
+  padding: 1rem 1.05rem;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .strategy-group-detail h5 {
-  margin: 0 0 0.75rem;
+  margin: 0 0 0.85rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
-.strategy-group-detail h6 {
-  margin: 0 0 0.4rem;
+.strategy-group-detail h6,
+.strategy-detail-cols h6 {
+  margin: 0 0 0.45rem;
   font-size: 0.85rem;
+  line-height: 1.3;
 }
 
 .strategy-stat-row {
@@ -2367,37 +2430,56 @@ button.region-eval-constraint-tag:hover {
   margin-bottom: 1rem;
 }
 
-.strategy-stat-row > div {
-  display: grid;
-  gap: 0.2rem;
+.strategy-stat-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.3rem;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 0.7rem 0.8rem;
 }
 
-.strategy-stat-row strong {
-  font-size: 1.15rem;
+.strategy-stat-card .muted {
+  line-height: 1.2;
+  font-size: 0.78rem;
+}
+
+.strategy-stat-card strong {
+  font-size: 1.1rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .strategy-detail-cols {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
+  align-items: start;
 }
 
 .strategy-plain-list {
   margin: 0;
   padding-left: 1.1rem;
   display: grid;
-  gap: 0.35rem;
+  gap: 0.4rem;
+  line-height: 1.35;
 }
 
 .strategy-two-col {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
+  align-items: start;
 }
 
 .strategy-reason {
   font-size: 0.8rem;
-  margin-top: 0.2rem;
+  margin-top: 0.25rem;
+  line-height: 1.35;
 }
 
 .strategy-check-list {
@@ -2409,33 +2491,76 @@ button.region-eval-constraint-tag:hover {
 }
 
 .strategy-check-list li {
+  display: grid;
+  grid-template-columns: 3.5rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 0.65rem 0.75rem;
+  padding: 0.75rem 0.85rem;
   background: var(--panel-soft);
+  box-sizing: border-box;
 }
 
-.strategy-check-list li.is-pass strong {
+.strategy-check-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.5rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.strategy-check-badge.is-pass,
+.strategy-check-list li.is-pass .strategy-check-badge {
+  background: var(--ok-soft);
   color: var(--ok, #1f7a4d);
 }
 
-.strategy-check-list li.is-fail strong {
+.strategy-check-badge.is-fail,
+.strategy-check-list li.is-fail .strategy-check-badge {
+  background: var(--danger-soft);
   color: var(--critical, #b42318);
+}
+
+.strategy-check-copy {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.strategy-check-copy strong {
+  font-size: 0.92rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.strategy-check-copy .muted {
+  line-height: 1.4;
 }
 
 .strategy-dep-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
+  align-items: stretch;
 }
 
 .strategy-dep-card {
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 0.75rem 0.85rem;
+  padding: 0.85rem 0.95rem;
   background: var(--panel-soft);
-  display: grid;
-  gap: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+  box-sizing: border-box;
+  line-height: 1.35;
 }
 
 .strategy-dep-card.is-missing {
@@ -2446,24 +2571,42 @@ button.region-eval-constraint-tag:hover {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.65rem;
 }
 
+.strategy-dep-top strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+}
+
+.strategy-dep-top .pill {
+  flex: 0 0 auto;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.strategy-dep-regions,
 .strategy-dep-pairs {
   font-size: 0.85rem;
+  line-height: 1.35;
 }
 
 .strategy-dep-card p {
   margin: 0;
   font-size: 0.82rem;
+  line-height: 1.4;
 }
 
 .strategy-whatif-pct {
   min-width: 10rem;
+  margin: 0;
 }
 
 .strategy-whatif-pct input[type='range'] {
   width: 100%;
+  margin: 0;
 }
 
 button.linkish {
@@ -2474,6 +2617,7 @@ button.linkish {
   cursor: pointer;
   font: inherit;
   text-align: left;
+  line-height: inherit;
 }
 
 button.linkish:hover {
@@ -2498,10 +2642,18 @@ tr.is-selected-row td {
   .strategy-detail-cols {
     grid-template-columns: 1fr;
   }
+
+  .strategy-share-row {
+    grid-template-columns: 6.5rem minmax(0, 1fr) 2.75rem;
+  }
 }
 
 @media (max-width: 720px) {
   .strategy-stat-row {
+    grid-template-columns: 1fr;
+  }
+
+  .strategy-check-list li {
     grid-template-columns: 1fr;
   }
 }

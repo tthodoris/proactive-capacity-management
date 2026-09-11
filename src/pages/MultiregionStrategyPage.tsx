@@ -531,59 +531,61 @@ export function MultiregionStrategyPage() {
             </p>
           </div>
         </div>
-        <div className="strategy-scope-grid">
-          <label className="field">
-            <span>Customer</span>
-            <select
-              value={customerId}
-              onChange={(e) => resetScopeForCustomer(e.target.value)}
-            >
-              <option value="">Select customer…</option>
-              {visibleCustomers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <CheckboxMultiSelect
-            label="Subscriptions"
-            options={customerSubs.map((s) => ({ value: s.id, label: s.name }))}
-            value={selectedSubscriptionIds}
-            onChange={setSelectedSubscriptionIds}
-            placeholder={customerId ? 'All subscriptions' : 'Select customer first'}
-            disabled={!customerId}
-            emptyLabel="No subscriptions"
-            selectAllLabel="All subscriptions"
-          />
-          <label className="field">
-            <span>Group by</span>
-            <select
-              value={groupBy}
-              onChange={(e) => setGroupBy(e.target.value as StrategyGroupBy)}
-            >
-              {GROUP_BY_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <CheckboxMultiSelect
-            label="Candidate regions (optional)"
-            options={regionOptions}
-            value={candidateRegionIds}
-            onChange={setCandidateRegionIds}
-            placeholder="Auto from footprint"
-            searchableFrom={0}
-            searchPlaceholder="Search regions…"
-          />
+        <div className="panel-body">
+          <div className="strategy-scope-grid">
+            <label className="field">
+              <span>Customer</span>
+              <select
+                value={customerId}
+                onChange={(e) => resetScopeForCustomer(e.target.value)}
+              >
+                <option value="">Select customer…</option>
+                {visibleCustomers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <CheckboxMultiSelect
+              label="Subscriptions"
+              options={customerSubs.map((s) => ({ value: s.id, label: s.name }))}
+              value={selectedSubscriptionIds}
+              onChange={setSelectedSubscriptionIds}
+              placeholder={customerId ? 'All subscriptions' : 'Select customer first'}
+              disabled={!customerId}
+              emptyLabel="No subscriptions"
+              selectAllLabel="All subscriptions"
+            />
+            <label className="field">
+              <span>Group by</span>
+              <select
+                value={groupBy}
+                onChange={(e) => setGroupBy(e.target.value as StrategyGroupBy)}
+              >
+                {GROUP_BY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <CheckboxMultiSelect
+              label="Candidate regions (optional)"
+              options={regionOptions}
+              value={candidateRegionIds}
+              onChange={setCandidateRegionIds}
+              placeholder="Auto from footprint"
+              searchableFrom={0}
+              searchPlaceholder="Search regions…"
+            />
+          </div>
+          <p className="muted strategy-scope-meta">
+            {customerId
+              ? `${scopedInventory.length} resources in scope · ${workloadGroups.length} groups`
+              : 'Select a customer to begin.'}
+          </p>
         </div>
-        <p className="muted strategy-scope-meta">
-          {customerId
-            ? `${scopedInventory.length} resources in scope · ${workloadGroups.length} groups`
-            : 'Select a customer to begin.'}
-        </p>
       </section>
 
       <section className="panel">
@@ -593,91 +595,93 @@ export function MultiregionStrategyPage() {
             <p>Where the selected workload runs today — regions, types, and relative weight.</p>
           </div>
         </div>
-        {!customerId ? (
-          <div className="empty">Select a customer to build the footprint.</div>
-        ) : workloadGroups.length === 0 ? (
-          <div className="empty">No inventory in this scope.</div>
-        ) : (
-          <div className="strategy-footprint">
-            <div className="strategy-group-list" role="list">
-              {workloadGroups.map((g) => (
-                <button
-                  key={g.key}
-                  type="button"
-                  role="listitem"
-                  className={`strategy-group-item${
-                    selectedGroupKey === g.key ? ' is-active' : ''
-                  }`}
-                  onClick={() => setSelectedGroupKey(g.key)}
-                >
-                  <strong>{g.label}</strong>
-                  <span className="muted">
-                    {g.itemCount} resources · ~{g.vcpuEstimate} vCPU
-                  </span>
-                  <div className="strategy-share-bars">
-                    {g.regions.slice(0, 3).map((r) => (
-                      <div key={r.region} className="strategy-share-row">
-                        <span>{prettyRegion(r.region)}</span>
-                        <div className="strategy-share-track">
-                          <div
-                            className="strategy-share-fill"
-                            style={{ width: `${Math.min(100, r.sharePct)}%` }}
-                          />
+        <div className="panel-body">
+          {!customerId ? (
+            <div className="empty">Select a customer to build the footprint.</div>
+          ) : workloadGroups.length === 0 ? (
+            <div className="empty">No inventory in this scope.</div>
+          ) : (
+            <div className="strategy-footprint">
+              <div className="strategy-group-list" role="list">
+                {workloadGroups.map((g) => (
+                  <button
+                    key={g.key}
+                    type="button"
+                    role="listitem"
+                    className={`strategy-group-item${
+                      selectedGroupKey === g.key ? ' is-active' : ''
+                    }`}
+                    onClick={() => setSelectedGroupKey(g.key)}
+                  >
+                    <strong className="strategy-group-title">{g.label}</strong>
+                    <span className="muted strategy-group-meta">
+                      {g.itemCount} resources · ~{g.vcpuEstimate} vCPU
+                    </span>
+                    <div className="strategy-share-bars">
+                      {g.regions.slice(0, 3).map((r) => (
+                        <div key={r.region} className="strategy-share-row">
+                          <span className="strategy-share-label">{prettyRegion(r.region)}</span>
+                          <div className="strategy-share-track">
+                            <div
+                              className="strategy-share-fill"
+                              style={{ width: `${Math.min(100, r.sharePct)}%` }}
+                            />
+                          </div>
+                          <span className="strategy-share-pct">{r.sharePct}%</span>
                         </div>
-                        <span>{r.sharePct}%</span>
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <div className="strategy-group-detail">
+                {selectedGroup ? (
+                  <>
+                    <h5>{selectedGroup.label}</h5>
+                    <div className="strategy-stat-row">
+                      <div className="strategy-stat-card">
+                        <span className="muted">Resources</span>
+                        <strong>{selectedGroup.itemCount}</strong>
                       </div>
-                    ))}
-                  </div>
-                </button>
-              ))}
+                      <div className="strategy-stat-card">
+                        <span className="muted">Est. vCPU</span>
+                        <strong>{selectedGroup.vcpuEstimate}</strong>
+                      </div>
+                      <div className="strategy-stat-card">
+                        <span className="muted">Regions</span>
+                        <strong>{selectedGroup.regions.length}</strong>
+                      </div>
+                    </div>
+                    <div className="strategy-detail-cols">
+                      <div>
+                        <h6>Top resource types</h6>
+                        <ul className="strategy-plain-list">
+                          {selectedGroup.resourceTypes.slice(0, 8).map((t) => (
+                            <li key={t.type}>
+                              {t.type} <span className="muted">×{t.count}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <h6>Top SKU families</h6>
+                        <ul className="strategy-plain-list">
+                          {selectedGroup.skuFamilies.slice(0, 8).map((f) => (
+                            <li key={f.family}>
+                              {f.family} <span className="muted">×{f.count}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty">Select a group.</div>
+                )}
+              </div>
             </div>
-            <div className="strategy-group-detail">
-              {selectedGroup ? (
-                <>
-                  <h5>{selectedGroup.label}</h5>
-                  <div className="strategy-stat-row">
-                    <div>
-                      <span className="muted">Resources</span>
-                      <strong>{selectedGroup.itemCount}</strong>
-                    </div>
-                    <div>
-                      <span className="muted">Est. vCPU</span>
-                      <strong>{selectedGroup.vcpuEstimate}</strong>
-                    </div>
-                    <div>
-                      <span className="muted">Regions</span>
-                      <strong>{selectedGroup.regions.length}</strong>
-                    </div>
-                  </div>
-                  <div className="strategy-detail-cols">
-                    <div>
-                      <h6>Top resource types</h6>
-                      <ul className="strategy-plain-list">
-                        {selectedGroup.resourceTypes.slice(0, 8).map((t) => (
-                          <li key={t.type}>
-                            {t.type} <span className="muted">×{t.count}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                    <div>
-                      <h6>Top SKU families</h6>
-                      <ul className="strategy-plain-list">
-                        {selectedGroup.skuFamilies.slice(0, 8).map((f) => (
-                          <li key={f.family}>
-                            {f.family} <span className="muted">×{f.count}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="empty">Select a group.</div>
-              )}
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </section>
 
       <div className="strategy-two-col">
@@ -688,68 +692,78 @@ export function MultiregionStrategyPage() {
               <p>Primary / secondary / tertiary from constraints, quotas, and pairing hints.</p>
             </div>
           </div>
-          {shortlist.length === 0 ? (
-            <div className="empty">Need scoped inventory and candidate regions.</div>
-          ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Role</th>
-                    <th>Region</th>
-                    <th>Score</th>
-                    <th>Share</th>
-                    <th>Constraints</th>
-                    <th>Quota</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shortlist.slice(0, 8).map((entry) => (
-                    <tr key={entry.regionId}>
-                      <td>
-                        <span className={`pill ${rolePillClass(entry.role)}`}>{entry.role}</span>
-                      </td>
-                      <td>
-                        <strong>{entry.regionLabel}</strong>
-                        <div className="muted strategy-reason">
-                          {entry.reasons[0]}
-                        </div>
-                      </td>
-                      <td>{entry.score}</td>
-                      <td>{entry.currentSharePct}%</td>
-                      <td>{entry.openConstraintCount}</td>
-                      <td>
-                        {entry.quotaPressurePct == null ? '—' : `${entry.quotaPressurePct}%`}
-                      </td>
+          <div className="panel-body">
+            {shortlist.length === 0 ? (
+              <div className="empty">Need scoped inventory and candidate regions.</div>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Role</th>
+                      <th>Region</th>
+                      <th>Score</th>
+                      <th>Share</th>
+                      <th>Constraints</th>
+                      <th>Quota</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  </thead>
+                  <tbody>
+                    {shortlist.slice(0, 8).map((entry) => (
+                      <tr key={entry.regionId}>
+                        <td>
+                          <span className={`pill ${rolePillClass(entry.role)}`}>{entry.role}</span>
+                        </td>
+                        <td>
+                          <strong>{entry.regionLabel}</strong>
+                          <div className="muted strategy-reason">
+                            {entry.reasons[0]}
+                          </div>
+                        </td>
+                        <td>{entry.score}</td>
+                        <td>{entry.currentSharePct}%</td>
+                        <td>{entry.openConstraintCount}</td>
+                        <td>
+                          {entry.quotaPressurePct == null ? '—' : `${entry.quotaPressurePct}%`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </section>
 
         <section className="panel">
           <div className="panel-header">
             <div>
               <h4>Failover readiness</h4>
-              <p>
+              <p className="strategy-score-line">
                 <span className={`pill ${gradePillClass(scorecard.grade)}`}>
                   {scorecard.grade}
-                </span>{' '}
-                {scorecard.score}/100 · {scorecard.pattern}
+                </span>
+                <span>
+                  {scorecard.score}/100 · {scorecard.pattern}
+                </span>
               </p>
             </div>
           </div>
-          <ul className="strategy-check-list">
-            {scorecard.checks.map((check) => (
-              <li key={check.id} className={check.pass ? 'is-pass' : 'is-fail'}>
-                <strong>{check.pass ? 'Pass' : 'Gap'}</strong>
-                <div>{check.label}</div>
-                <div className="muted">{check.detail}</div>
-              </li>
-            ))}
-          </ul>
+          <div className="panel-body">
+            <ul className="strategy-check-list">
+              {scorecard.checks.map((check) => (
+                <li key={check.id} className={check.pass ? 'is-pass' : 'is-fail'}>
+                  <span className={`strategy-check-badge ${check.pass ? 'is-pass' : 'is-fail'}`}>
+                    {check.pass ? 'Pass' : 'Gap'}
+                  </span>
+                  <div className="strategy-check-copy">
+                    <strong>{check.label}</strong>
+                    <span className="muted">{check.detail}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
         </section>
       </div>
 
@@ -760,36 +774,38 @@ export function MultiregionStrategyPage() {
             <p>Services that typically must move or replicate together.</p>
           </div>
         </div>
-        {dependencyNodes.length === 0 ? (
-          <div className="empty">No dependency signal until inventory is scoped.</div>
-        ) : (
-          <div className="strategy-dep-grid">
-            {dependencyNodes.slice(0, 12).map((node) => (
-              <div
-                key={node.resourceType}
-                className={`strategy-dep-card${node.present ? '' : ' is-missing'}`}
-              >
-                <div className="strategy-dep-top">
-                  <strong>{node.resourceType}</strong>
-                  <span className={`pill ${node.present ? 'pill-ok' : 'pill-neutral'}`}>
-                    {node.present ? `${node.count} present` : 'Not in scope'}
-                  </span>
+        <div className="panel-body">
+          {dependencyNodes.length === 0 ? (
+            <div className="empty">No dependency signal until inventory is scoped.</div>
+          ) : (
+            <div className="strategy-dep-grid">
+              {dependencyNodes.slice(0, 12).map((node) => (
+                <div
+                  key={node.resourceType}
+                  className={`strategy-dep-card${node.present ? '' : ' is-missing'}`}
+                >
+                  <div className="strategy-dep-top">
+                    <strong>{node.resourceType}</strong>
+                    <span className={`pill ${node.present ? 'pill-ok' : 'pill-neutral'}`}>
+                      {node.present ? `${node.count} present` : 'Not in scope'}
+                    </span>
+                  </div>
+                  {node.regions.length > 0 && (
+                    <div className="muted strategy-dep-regions">
+                      {node.regions.map(prettyRegion).join(' · ')}
+                    </div>
+                  )}
+                  {node.pairedWith.length > 0 && (
+                    <div className="strategy-dep-pairs">
+                      Pairs with: {node.pairedWith.slice(0, 4).join(', ')}
+                    </div>
+                  )}
+                  <p className="muted">{node.note}</p>
                 </div>
-                {node.regions.length > 0 && (
-                  <div className="muted">
-                    {node.regions.map(prettyRegion).join(' · ')}
-                  </div>
-                )}
-                {node.pairedWith.length > 0 && (
-                  <div className="strategy-dep-pairs">
-                    Pairs with: {node.pairedWith.slice(0, 4).join(', ')}
-                  </div>
-                )}
-                <p className="muted">{node.note}</p>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
       </section>
 
       <section className="panel">
@@ -813,72 +829,75 @@ export function MultiregionStrategyPage() {
             />
           </label>
         </div>
-        {!whatIfPlan ? (
-          <div className="empty">Select a customer with inventory to run what-if.</div>
-        ) : (
-          <>
-            <div className="strategy-stat-row">
-              <div>
-                <span className="muted">Projected resources</span>
-                <strong>
-                  {whatIfPlan.projectedItemCount}
-                  <span className="muted"> / {whatIfPlan.sourceItemCount}</span>
-                </strong>
+        <div className="panel-body">
+          {!whatIfPlan ? (
+            <div className="empty">Select a customer with inventory to run what-if.</div>
+          ) : (
+            <>
+              <div className="strategy-stat-row">
+                <div className="strategy-stat-card">
+                  <span className="muted">Projected resources</span>
+                  <strong>
+                    {whatIfPlan.projectedItemCount}
+                    <span className="muted"> / {whatIfPlan.sourceItemCount}</span>
+                  </strong>
+                </div>
+                <div className="strategy-stat-card">
+                  <span className="muted">Projected vCPU</span>
+                  <strong>
+                    {whatIfPlan.projectedVcpu}
+                    <span className="muted"> / {whatIfPlan.sourceVcpu}</span>
+                  </strong>
+                </div>
+                <div className="strategy-stat-card">
+                  <span className="muted">Target</span>
+                  <strong>{whatIfTarget?.regionLabel || '—'}</strong>
+                </div>
               </div>
-              <div>
-                <span className="muted">Projected vCPU</span>
-                <strong>
-                  {whatIfPlan.projectedVcpu}
-                  <span className="muted"> / {whatIfPlan.sourceVcpu}</span>
-                </strong>
-              </div>
-              <div>
-                <span className="muted">Target</span>
-                <strong>{whatIfTarget?.regionLabel || '—'}</strong>
-              </div>
-            </div>
-            <div className="strategy-detail-cols">
-              <div>
-                <h6>SKU family projection</h6>
-                <ul className="strategy-plain-list">
-                  {whatIfPlan.bySkuFamily.map((f) => (
-                    <li key={f.family}>
-                      {f.family}{' '}
-                      <span className="muted">
-                        {f.sourceCount} → {f.projectedCount}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <h6>Quota watch ({whatIfTarget?.regionLabel || 'target'})</h6>
-                {whatIfPlan.quotaWatch.length === 0 ? (
-                  <p className="muted">No scoped quotas for this region.</p>
-                ) : (
+              <div className="strategy-detail-cols">
+                <div>
+                  <h6>SKU family projection</h6>
                   <ul className="strategy-plain-list">
-                    {whatIfPlan.quotaWatch.map((q) => (
-                      <li key={`${q.region}-${q.name}`}>
-                        {q.name}{' '}
+                    {whatIfPlan.bySkuFamily.map((f) => (
+                      <li key={f.family}>
+                        {f.family}{' '}
                         <span className="muted">
-                          {q.usage}/{q.limit} ({q.usagePct}%) +{q.projectedExtra}
+                          {f.sourceCount} → {f.projectedCount}
                         </span>
-                        <div className="muted">{q.note}</div>
                       </li>
                     ))}
                   </ul>
-                )}
+                </div>
+                <div>
+                  <h6>Quota watch ({whatIfTarget?.regionLabel || 'target'})</h6>
+                  {whatIfPlan.quotaWatch.length === 0 ? (
+                    <p className="muted">No scoped quotas for this region.</p>
+                  ) : (
+                    <ul className="strategy-plain-list">
+                      {whatIfPlan.quotaWatch.map((q) => (
+                        <li key={`${q.region}-${q.name}`}>
+                          {q.name}{' '}
+                          <span className="muted">
+                            {q.usage}/{q.limit} ({q.usagePct}%) +{q.projectedExtra}
+                          </span>
+                          <div className="muted">{q.note}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
-            </div>
-          </>
-        )}
+            </>
+          )}
+        </div>
       </section>
 
       <section className="panel">
         <div className="panel-header">
           <div>
-            <h4>
-              <Compass size={18} /> Strategy scenarios library
+            <h4 className="strategy-panel-title">
+              <Compass size={18} />
+              Strategy scenarios library
             </h4>
             <p>Persist named plans in Postgres for follow-up CSA conversations.</p>
           </div>
@@ -892,88 +911,90 @@ export function MultiregionStrategyPage() {
             {activeScenarioId ? 'Update scenario' : 'Save scenario'}
           </button>
         </div>
-        <div className="strategy-scope-grid">
-          <label className="field">
-            <span>Scenario name</span>
-            <input
-              value={scenarioName}
-              onChange={(e) => setScenarioName(e.target.value)}
-              placeholder="e.g. DR West Europe → North Europe"
+        <div className="panel-body stack">
+          <div className="strategy-scope-grid">
+            <label className="field">
+              <span>Scenario name</span>
+              <input
+                value={scenarioName}
+                onChange={(e) => setScenarioName(e.target.value)}
+                placeholder="e.g. DR West Europe → North Europe"
+              />
+            </label>
+            <label className="field">
+              <span>Notes</span>
+              <input
+                value={scenarioNotes}
+                onChange={(e) => setScenarioNotes(e.target.value)}
+                placeholder="Workshop context, customer decisions…"
+              />
+            </label>
+            <CheckboxMultiSelect
+              label="Linked region evaluations"
+              options={evaluations.map((ev) => ({
+                value: ev.id,
+                label: `${formatDate(ev.createdAt)} · ${(ev.targetRegions || [])
+                  .map((r) => r.label || r.id)
+                  .slice(0, 3)
+                  .join(', ')}`,
+              }))}
+              value={linkedEvaluationIds}
+              onChange={setLinkedEvaluationIds}
+              placeholder={customerId ? 'None linked' : 'Select customer first'}
+              disabled={!customerId}
+              emptyLabel="No saved evaluations"
             />
-          </label>
-          <label className="field">
-            <span>Notes</span>
-            <input
-              value={scenarioNotes}
-              onChange={(e) => setScenarioNotes(e.target.value)}
-              placeholder="Workshop context, customer decisions…"
-            />
-          </label>
-          <CheckboxMultiSelect
-            label="Linked region evaluations"
-            options={evaluations.map((ev) => ({
-              value: ev.id,
-              label: `${formatDate(ev.createdAt)} · ${(ev.targetRegions || [])
-                .map((r) => r.label || r.id)
-                .slice(0, 3)
-                .join(', ')}`,
-            }))}
-            value={linkedEvaluationIds}
-            onChange={setLinkedEvaluationIds}
-            placeholder={customerId ? 'None linked' : 'Select customer first'}
-            disabled={!customerId}
-            emptyLabel="No saved evaluations"
-          />
-        </div>
-
-        {loadingScenarios ? (
-          <div className="muted">Loading scenarios…</div>
-        ) : scenarios.length === 0 ? (
-          <div className="empty">No saved scenarios for this customer yet.</div>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Updated</th>
-                  <th>Subs</th>
-                  <th>Group</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {scenarios.map((s) => (
-                  <tr key={s.id} className={activeScenarioId === s.id ? 'is-selected-row' : ''}>
-                    <td>
-                      <button
-                        type="button"
-                        className="linkish"
-                        onClick={() => applyScenario(s)}
-                      >
-                        {s.name}
-                      </button>
-                      {s.notes ? <div className="muted">{s.notes}</div> : null}
-                    </td>
-                    <td>{formatDate(s.updatedAt)}</td>
-                    <td>{s.subscriptionIds?.length || 0}</td>
-                    <td>{s.groupBy}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="btn btn-ghost"
-                        title="Delete"
-                        onClick={() => void onDeleteScenario(s.id)}
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </div>
-        )}
+
+          {loadingScenarios ? (
+            <div className="muted">Loading scenarios…</div>
+          ) : scenarios.length === 0 ? (
+            <div className="empty">No saved scenarios for this customer yet.</div>
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Updated</th>
+                    <th>Subs</th>
+                    <th>Group</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {scenarios.map((s) => (
+                    <tr key={s.id} className={activeScenarioId === s.id ? 'is-selected-row' : ''}>
+                      <td>
+                        <button
+                          type="button"
+                          className="linkish"
+                          onClick={() => applyScenario(s)}
+                        >
+                          {s.name}
+                        </button>
+                        {s.notes ? <div className="muted">{s.notes}</div> : null}
+                      </td>
+                      <td>{formatDate(s.updatedAt)}</td>
+                      <td>{s.subscriptionIds?.length || 0}</td>
+                      <td>{s.groupBy}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          title="Delete"
+                          onClick={() => void onDeleteScenario(s.id)}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </section>
     </div>
   )
