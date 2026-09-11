@@ -34,18 +34,56 @@ type AvailabilityGap = {
   sourceRegions: string[]
   status: RegionEvalStatus
   reason: string
+  /** True when one or more open capacity constraints match this row/region. */
+  constrained: boolean
 }
 
-function collectAvailabilityGaps(evaluation: SavedRegionEvaluation): AvailabilityGap[] {
-  const gaps: AvailabilityGap[] = []
+function gapKey(gap: Pick<AvailabilityGap, 'regionId' | 'resourceType' | 'sku' | 'size'>) {
+  return `${gap.regionId}|${gap.resourceType}|${gap.sku}|${gap.size || ''}`
+}
+
+/** Azure availability gaps plus open capacity-constraint gaps for target regions. */
+function collectEvaluationGaps(
+  evaluation: SavedRegionEvaluation,
+  constraints: CapacityConstraint[],
+): AvailabilityGap[] {
+  const byKey = new Map<string, AvailabilityGap>()
+
   for (const row of evaluation.results || []) {
     for (const region of evaluation.targetRegions || []) {
       const cell = row.byRegion?.[region.id]
       const status = (cell?.status || 'unknown') as RegionEvalStatus
-      if (status === 'available') continue
-      gaps.push({
+      const regionLabel = region.label || region.id
+      const matchingConstraints = findMatchingConstraintsForEval({
+        constraints,
+        resourceType: row.resourceType,
+        sku: row.sku,
+        size: row.size,
+        family: row.family,
+        targetRegionId: region.id,
+        targetRegionLabel: regionLabel,
+      })
+      const availabilityGap = status !== 'available'
+      const constrained = matchingConstraints.length > 0
+      if (!availabilityGap && !constrained) continue
+
+      const reasonParts: string[] = []
+      if (availabilityGap) {
+        reasonParts.push(cell?.reason || 'No availability reason recorded')
+      }
+      if (constrained) {
+        reasonParts.push(
+          `${matchingConstraints.length} open capacity constraint${
+            matchingConstraints.length === 1 ? '' : 's'
+          }: ${matchingConstraints
+            .map((c) => `${c.sku} (${c.severity})`)
+            .join(', ')}`,
+        )
+      }
+
+      const gap: AvailabilityGap = {
         regionId: region.id,
-        regionLabel: region.label || region.id,
+        regionLabel,
         resourceType: row.resourceType,
         sku: row.sku,
         size: row.size ?? null,
@@ -53,11 +91,14 @@ function collectAvailabilityGaps(evaluation: SavedRegionEvaluation): Availabilit
         resourceCount: row.resourceCount,
         sourceRegions: row.sourceRegions || [],
         status,
-        reason: cell?.reason || 'No availability reason recorded',
-      })
+        reason: reasonParts.join(' · '),
+        constrained,
+      }
+      byKey.set(gapKey(gap), gap)
     }
   }
-  return gaps.sort(
+
+  return [...byKey.values()].sort(
     (a, b) =>
       a.regionLabel.localeCompare(b.regionLabel) ||
       a.resourceType.localeCompare(b.resourceType) ||
@@ -76,7 +117,10 @@ function EvaluationGapsPanel({
     constraints: CapacityConstraint[]
     contextLabel: string
   } | null>(null)
-  const gaps = useMemo(() => collectAvailabilityGaps(evaluation), [evaluation])
+  const gaps = useMemo(
+    () => collectEvaluationGaps(evaluation, constraints),
+    [evaluation, constraints],
+  )
   const byRegion = useMemo(() => {
     const map = new Map<string, AvailabilityGap[]>()
     for (const gap of gaps) {
@@ -91,10 +135,14 @@ function EvaluationGapsPanel({
     }))
   }, [gaps])
 
+  const constrainedCount = gaps.filter((gap) => gap.constrained).length
+  const availabilityCount = gaps.filter((gap) => gap.status !== 'available').length
+
   if (gaps.length === 0) {
     return (
       <div className="empty" style={{ margin: '0.75rem 0' }}>
-        All evaluated SKUs/services are available in every selected target region.
+        All evaluated SKUs/services are available in every selected target region, with no open
+        capacity constraints matching those targets.
       </div>
     )
   }
@@ -103,13 +151,20 @@ function EvaluationGapsPanel({
     <div className="stack" style={{ gap: '0.85rem', padding: '0.85rem 0 0.25rem' }}>
       <div className="banner banner-error" style={{ margin: 0 }}>
         {gaps.length} resource gap{gaps.length === 1 ? '' : 's'} across {byRegion.length} target
-        region{byRegion.length === 1 ? '' : 's'} (unavailable, restricted, or unknown).
+        region{byRegion.length === 1 ? '' : 's'}
+        {availabilityCount > 0
+          ? ` · ${availabilityCount} availability`
+          : ''}
+        {constrainedCount > 0
+          ? ` · ${constrainedCount} capacity-constrained`
+          : ''}
+        .
       </div>
       {byRegion.map((group) => (
         <div key={group.regionId} className="quota-provider-block">
           <div className="quota-provider-title">
             <h5>{group.regionLabel}</h5>
-            <span className="muted">{group.items.length} not available</span>
+            <span className="muted">{group.items.length} gap{group.items.length === 1 ? '' : 's'}</span>
           </div>
           <div className="table-wrap">
             <table className="data">
@@ -125,17 +180,19 @@ function EvaluationGapsPanel({
               </thead>
               <tbody>
                 {group.items.map((gap) => {
-                  const matchingConstraints = findMatchingConstraintsForEval({
-                    constraints,
-                    resourceType: gap.resourceType,
-                    sku: gap.sku,
-                    size: gap.size,
-                    family: gap.family,
-                    targetRegionId: gap.regionId,
-                    targetRegionLabel: gap.regionLabel,
-                  })
+                  const matchingConstraints = gap.constrained
+                    ? findMatchingConstraintsForEval({
+                        constraints,
+                        resourceType: gap.resourceType,
+                        sku: gap.sku,
+                        size: gap.size,
+                        family: gap.family,
+                        targetRegionId: gap.regionId,
+                        targetRegionLabel: gap.regionLabel,
+                      })
+                    : []
                   return (
-                    <tr key={`${gap.regionId}-${gap.resourceType}-${gap.sku}-${gap.size || ''}`}>
+                    <tr key={gapKey(gap)}>
                       <td>{gap.resourceType}</td>
                       <td>
                         <strong>{gap.sku}</strong>
@@ -276,8 +333,8 @@ export function RegionEvaluationsPage() {
         <div>
           <h3>Evaluations</h3>
           <p>
-            Saved region evaluations grouped by customer. Expand a run to see which resources are
-            not available in each target region.
+            Saved region evaluations grouped by customer. Expand a run to see availability gaps and
+            matching open capacity constraints per target region.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -334,16 +391,19 @@ export function RegionEvaluationsPage() {
                     <th>Target regions</th>
                     <th>SKU/services</th>
                     <th>Availability</th>
-                    <th>Not available</th>
+                    <th>Gaps</th>
                     <th>By</th>
                     <th />
                   </tr>
                 </thead>
                 <tbody>
                   {group.items.map((evaluation) => {
-                    const gaps = collectAvailabilityGaps(evaluation)
+                    const gaps = collectEvaluationGaps(evaluation, constraints)
                     const expanded = expandedIds.has(evaluation.id)
                     const gapRegions = new Set(gaps.map((gap) => gap.regionId)).size
+                    const hasAvailabilityGap = gaps.some((gap) => gap.status !== 'available')
+                    const constrainedOnly =
+                      gaps.length > 0 && gaps.every((gap) => gap.status === 'available' && gap.constrained)
                     return (
                       <Fragment key={evaluation.id}>
                         <tr>
@@ -354,8 +414,8 @@ export function RegionEvaluationsPage() {
                               aria-expanded={expanded}
                               title={
                                 expanded
-                                  ? 'Hide unavailable resources'
-                                  : 'Show unavailable resources'
+                                  ? 'Hide evaluation gaps'
+                                  : 'Show availability and constraint gaps'
                               }
                               onClick={() => toggleExpanded(evaluation.id)}
                             >
@@ -388,7 +448,13 @@ export function RegionEvaluationsPage() {
                             ) : (
                               <button
                                 type="button"
-                                className="pill pill-critical"
+                                className={`pill ${
+                                  constrainedOnly
+                                    ? 'pill-high'
+                                    : hasAvailabilityGap
+                                      ? 'pill-critical'
+                                      : 'pill-high'
+                                }`}
                                 style={{ cursor: 'pointer', border: 'none' }}
                                 onClick={() => toggleExpanded(evaluation.id)}
                               >
