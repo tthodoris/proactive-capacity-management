@@ -2589,9 +2589,19 @@ button.region-eval-constraint-tag:hover {
 }
 
 .strategy-dep-regions,
-.strategy-dep-pairs {
-  font-size: 0.85rem;
-  line-height: 1.35;
+.strategy-dep-service-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.strategy-dep-service-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .strategy-dep-card p {

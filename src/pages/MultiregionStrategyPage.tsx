@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import {
   Compass,
   Download,
@@ -33,6 +33,8 @@ import {
   filterInventoryForStrategy,
   filterLinkableEvaluations,
   pruneLinkedEvaluationIds,
+  resolveStrategyRegionIds,
+  type StrategyEvalLaunchState,
   type StrategyGroupBy,
   type StrategyScenario,
 } from '../lib/multiregionStrategy'
@@ -59,6 +61,7 @@ function gradePillClass(grade: string) {
 }
 
 export function MultiregionStrategyPage() {
+  const navigate = useNavigate()
   const {
     customers,
     subscriptions,
@@ -196,7 +199,47 @@ export function MultiregionStrategyPage() {
     [workloadItems, constraints, shortlist],
   )
 
-  const dependencyNodes = useMemo(() => buildDependencyMap(workloadItems), [workloadItems])
+  const effectiveSubscriptionIds = useMemo(() => {
+    if (selectedSubscriptionIds.length > 0) return selectedSubscriptionIds
+    return customerSubs.map((s) => s.id)
+  }, [selectedSubscriptionIds, customerSubs])
+
+  const dependencySlices = useMemo(
+    () => buildDependencyMap(workloadItems, customerSubs),
+    [workloadItems, customerSubs],
+  )
+
+  const evaluationTargetRegionIds = useMemo(() => {
+    const currentRegions = workloadItems.map((item) => item.region).filter(Boolean)
+    const candidateIds = candidateRegions.map((r) => r.id)
+    return resolveStrategyRegionIds([...currentRegions, ...candidateIds], regionOptions)
+  }, [workloadItems, candidateRegions, regionOptions])
+
+  const canLaunchEvaluation =
+    Boolean(customerId) &&
+    effectiveSubscriptionIds.length > 0 &&
+    evaluationTargetRegionIds.length > 0
+
+  const launchRegionEvaluation = useCallback(() => {
+    if (!customerId || effectiveSubscriptionIds.length === 0) {
+      setError('Select a customer and at least one subscription before running evaluation.')
+      return
+    }
+    if (evaluationTargetRegionIds.length === 0) {
+      setError(
+        'Select candidate regions (or ensure the workload has current regions) before running evaluation.',
+      )
+      return
+    }
+    const state: StrategyEvalLaunchState = {
+      fromStrategy: true,
+      customerId,
+      subscriptionIds: effectiveSubscriptionIds,
+      targetRegionIds: evaluationTargetRegionIds,
+      autoEvaluate: true,
+    }
+    navigate('/region-evaluation', { state })
+  }, [customerId, effectiveSubscriptionIds, evaluationTargetRegionIds, navigate])
 
   const whatIfTarget = shortlist.find((s) => s.role === 'Secondary') || shortlist[1] || shortlist[0]
 
@@ -214,11 +257,6 @@ export function MultiregionStrategyPage() {
         : null,
     [workloadItems, whatIfPercent, customerId, quotas, whatIfTarget],
   )
-
-  const effectiveSubscriptionIds = useMemo(() => {
-    if (selectedSubscriptionIds.length > 0) return selectedSubscriptionIds
-    return customerSubs.map((s) => s.id)
-  }, [selectedSubscriptionIds, customerSubs])
 
   const strategyRegionIds = useMemo(
     () => candidateRegions.map((r) => r.id),
@@ -515,21 +553,23 @@ export function MultiregionStrategyPage() {
       {
         name: 'Dependencies',
         columns: [
+          { key: 'subscriptionName', label: 'Subscription' },
+          { key: 'regionLabel', label: 'Region' },
           { key: 'resourceType', label: 'Service' },
-          { key: 'present', label: 'Present' },
           { key: 'count', label: 'Count' },
-          { key: 'regions', label: 'Regions' },
-          { key: 'pairedWith', label: 'Paired with' },
+          { key: 'pairedWithPresent', label: 'Paired present' },
           { key: 'note', label: 'Note' },
         ],
-        rows: dependencyNodes.map((n) => ({
-          resourceType: n.resourceType,
-          present: n.present ? 'Yes' : 'No',
-          count: n.count,
-          regions: n.regions.map(prettyRegion).join(', '),
-          pairedWith: n.pairedWith.join(', '),
-          note: n.note,
-        })),
+        rows: dependencySlices.flatMap((slice) =>
+          slice.services.map((service) => ({
+            subscriptionName: slice.subscriptionName,
+            regionLabel: slice.regionLabel,
+            resourceType: service.resourceType,
+            count: service.count,
+            pairedWithPresent: service.pairedWithPresent.join(', '),
+            note: service.note,
+          })),
+        ),
       },
       {
         name: 'What-if',
@@ -621,11 +661,10 @@ export function MultiregionStrategyPage() {
           },
           {
             owner: 'CSA + customer',
-            action: `Confirm paired services (${dependencyNodes
-              .filter((n) => n.present)
-              .slice(0, 4)
-              .map((n) => n.resourceType)
-              .join(', ')}) can land in the secondary region.`,
+            action: `Confirm paired services in each subscription/region slice (${dependencySlices
+              .slice(0, 3)
+              .map((s) => `${s.subscriptionName}/${s.regionLabel}`)
+              .join(', ') || 'current scope'}).`,
           },
           {
             owner: 'CSA',
@@ -667,10 +706,15 @@ export function MultiregionStrategyPage() {
             <Download size={16} />
             Briefing pack
           </button>
-          <Link className="btn btn-secondary" to="/region-evaluation">
+          <button
+            className="btn btn-secondary"
+            type="button"
+            disabled={!canLaunchEvaluation}
+            onClick={launchRegionEvaluation}
+          >
             <MapPinned size={16} />
-            Region evaluation
-          </Link>
+            Run evaluation
+          </button>
         </div>
       </div>
 
@@ -930,36 +974,48 @@ export function MultiregionStrategyPage() {
         <div className="panel-header">
           <div>
             <h4>Dependency &amp; paired-service map</h4>
-            <p>Services that typically must move or replicate together.</p>
+            <p>
+              Only services found in each selected subscription + region pair. Pairing hints are
+              limited to other services present in that same pair.
+            </p>
           </div>
         </div>
         <div className="panel-body">
-          {dependencyNodes.length === 0 ? (
-            <div className="empty">No dependency signal until inventory is scoped.</div>
+          {dependencySlices.length === 0 ? (
+            <div className="empty">No inventory services in the current subscription / region scope.</div>
           ) : (
             <div className="strategy-dep-grid">
-              {dependencyNodes.slice(0, 12).map((node) => (
-                <div
-                  key={node.resourceType}
-                  className={`strategy-dep-card${node.present ? '' : ' is-missing'}`}
-                >
+              {dependencySlices.map((slice) => (
+                <div key={slice.key} className="strategy-dep-card">
                   <div className="strategy-dep-top">
-                    <strong>{node.resourceType}</strong>
-                    <span className={`pill ${node.present ? 'pill-ok' : 'pill-neutral'}`}>
-                      {node.present ? `${node.count} present` : 'Not in scope'}
+                    <strong>
+                      {slice.subscriptionName}
+                      <span className="muted"> · {slice.regionLabel}</span>
+                    </strong>
+                    <span className="pill pill-ok">
+                      {slice.services.length} service{slice.services.length === 1 ? '' : 's'}
                     </span>
                   </div>
-                  {node.regions.length > 0 && (
-                    <div className="muted strategy-dep-regions">
-                      {node.regions.map(prettyRegion).join(' · ')}
-                    </div>
-                  )}
-                  {node.pairedWith.length > 0 && (
-                    <div className="strategy-dep-pairs">
-                      Pairs with: {node.pairedWith.slice(0, 4).join(', ')}
-                    </div>
-                  )}
-                  <p className="muted">{node.note}</p>
+                  <div className="muted strategy-dep-regions">
+                    {slice.itemCount} resource{slice.itemCount === 1 ? '' : 's'} in this pair
+                  </div>
+                  <ul className="strategy-dep-service-list">
+                    {slice.services.map((service) => (
+                      <li key={service.resourceType}>
+                        <div className="strategy-dep-service-row">
+                          <strong>{service.resourceType}</strong>
+                          <span className="muted">×{service.count}</span>
+                        </div>
+                        {service.pairedWithPresent.length > 0 ? (
+                          <div className="strategy-dep-pairs">
+                            Pairs with here: {service.pairedWithPresent.join(', ')}
+                          </div>
+                        ) : (
+                          <div className="muted strategy-dep-pairs">No paired services in this pair</div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               ))}
             </div>
@@ -1063,10 +1119,15 @@ export function MultiregionStrategyPage() {
               quotas / quota groups to surface unavailability, constraints, and quota raises.
             </p>
           </div>
-          <Link className="btn btn-secondary" to="/region-evaluation">
+          <button
+            className="btn btn-secondary"
+            type="button"
+            disabled={!canLaunchEvaluation}
+            onClick={launchRegionEvaluation}
+          >
             <MapPinned size={16} />
             Run evaluation
-          </Link>
+          </button>
         </div>
         <div className="panel-body stack">
           {!customerId ? (

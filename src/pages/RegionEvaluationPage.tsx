@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Loader2, MapPinned, PlugZap, RefreshCw, X } from 'lucide-react'
 import { CheckboxMultiSelect } from '../components/CheckboxMultiSelect'
 import { ConstraintBriefModal } from '../components/ConstraintBriefModal'
@@ -28,6 +28,7 @@ import {
   useSortedRows,
 } from '../lib/tableSort'
 import type { CapacityConstraint } from '../types'
+import type { StrategyEvalLaunchState } from '../lib/multiregionStrategy'
 
 function statusTone(status: RegionEvalStatus) {
   if (status === 'available') return 'pill-ok'
@@ -83,6 +84,8 @@ function renderCostBlock(
 type ResultSortKey = string
 
 export function RegionEvaluationPage() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const {
     customers,
     subscriptions,
@@ -100,13 +103,28 @@ export function RegionEvaluationPage() {
     user,
   } = useApp()
 
-  const [customerId, setCustomerId] = useState('')
-  const [selectedSubscriptionIds, setSelectedSubscriptionIds] = useState<string[]>([])
-  const [targetRegionIds, setTargetRegionIds] = useState<string[]>([])
+  const initialLaunch =
+    (location.state as StrategyEvalLaunchState | null)?.fromStrategy
+      ? (location.state as StrategyEvalLaunchState)
+      : null
+  const autoEvaluatePendingRef = useRef(Boolean(initialLaunch?.autoEvaluate))
+  const evaluateFnRef = useRef<(() => Promise<void>) | null>(null)
+
+  const [customerId, setCustomerId] = useState(initialLaunch?.customerId || '')
+  const [selectedSubscriptionIds, setSelectedSubscriptionIds] = useState<string[]>(
+    initialLaunch?.subscriptionIds || [],
+  )
+  const [targetRegionIds, setTargetRegionIds] = useState<string[]>(
+    initialLaunch?.targetRegionIds || [],
+  )
   const [resumingSession, setResumingSession] = useState(false)
   const [evaluating, setEvaluating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [statusNote, setStatusNote] = useState<string | null>(null)
+  const [statusNote, setStatusNote] = useState<string | null>(
+    initialLaunch
+      ? 'Scope prefilled from Multiregion strategy (selected subscriptions + current/candidate regions).'
+      : null,
+  )
   const [result, setResult] = useState<RegionEvaluationResponse | null>(null)
   const [savedEvaluationId, setSavedEvaluationId] = useState<string | null>(null)
   const [constraintPopup, setConstraintPopup] = useState<{
@@ -322,19 +340,30 @@ export function RegionEvaluationPage() {
   }, [])
 
   useEffect(() => {
+    if (!initialLaunch) return
+    navigate(location.pathname, { replace: true, state: null })
+    // Clear one-shot navigation state so refresh does not re-run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const onCustomerChange = (nextCustomerId: string) => {
+    autoEvaluatePendingRef.current = false
+    setCustomerId(nextCustomerId)
     setSelectedSubscriptionIds(
-      subscriptions.filter((s) => s.customerId === customerId).map((s) => s.id),
+      nextCustomerId
+        ? subscriptions.filter((s) => s.customerId === nextCustomerId).map((s) => s.id)
+        : [],
     )
     setResult(null)
     setError(null)
     setStatusNote(null)
     setSavedEvaluationId(null)
-  }, [customerId, subscriptions])
+  }
 
   useEffect(() => {
     setResult(null)
     setError(null)
-    setStatusNote(null)
+    if (!autoEvaluatePendingRef.current) setStatusNote(null)
     setSavedEvaluationId(null)
   }, [selectedSubscriptionIds, targetRegionIds])
 
@@ -503,6 +532,39 @@ export function RegionEvaluationPage() {
     }
   }
 
+  evaluateFnRef.current = onEvaluate
+
+  useEffect(() => {
+    if (!autoEvaluatePendingRef.current) return
+    if (evaluating || result) return
+    if (!customerId || selectedSubscriptionIds.length === 0 || targetRegionIds.length === 0) return
+    if (inventoryFingerprint.length === 0) {
+      autoEvaluatePendingRef.current = false
+      setError(
+        'No inventory found for the selected subscriptions. Collect inventory from Azure Connect first.',
+      )
+      return
+    }
+    if (!azureSessionReady) {
+      setStatusNote(
+        'Scope prefilled from Multiregion strategy. Resume Azure session to auto-start evaluation, or click Evaluate.',
+      )
+      return
+    }
+    if (locationOptions.length === 0) return
+    autoEvaluatePendingRef.current = false
+    void evaluateFnRef.current?.()
+  }, [
+    azureSessionReady,
+    customerId,
+    selectedSubscriptionIds,
+    targetRegionIds,
+    inventoryFingerprint.length,
+    locationOptions.length,
+    evaluating,
+    result,
+  ])
+
   const selectedCustomer = visibleCustomers.find((c) => c.id === customerId)
   const sessionLabel =
     azureConnection?.account?.user?.name ||
@@ -567,7 +629,7 @@ export function RegionEvaluationPage() {
             <select
               id="region-eval-customer"
               value={customerId}
-              onChange={(e) => setCustomerId(e.target.value)}
+              onChange={(e) => onCustomerChange(e.target.value)}
             >
               <option value="">Select customer…</option>
               {visibleCustomers.map((customer) => (

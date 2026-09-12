@@ -54,6 +54,31 @@ export interface DependencyNode {
   note: string
 }
 
+/** Services present for a single subscription + region inventory slice. */
+export interface DependencyPairSlice {
+  key: string
+  subscriptionId: string
+  subscriptionName: string
+  region: string
+  regionLabel: string
+  itemCount: number
+  services: Array<{
+    resourceType: string
+    count: number
+    pairedWithPresent: string[]
+    note: string
+  }>
+}
+
+/** Navigation state used to launch Region evaluation from Multiregion strategy. */
+export type StrategyEvalLaunchState = {
+  fromStrategy: true
+  customerId: string
+  subscriptionIds: string[]
+  targetRegionIds: string[]
+  autoEvaluate?: boolean
+}
+
 export interface WhatIfPlan {
   percent: number
   sourceItemCount: number
@@ -473,42 +498,87 @@ export function buildFailoverScorecard(input: {
   return { score, grade, pattern, checks }
 }
 
-export function buildDependencyMap(workloadItems: InventoryItem[]): DependencyNode[] {
-  const counts = new Map<string, { count: number; regions: Set<string> }>()
-  for (const item of workloadItems) {
-    const cur = counts.get(item.resourceType) || { count: 0, regions: new Set<string>() }
-    cur.count += 1
-    cur.regions.add(item.region)
-    counts.set(item.resourceType, cur)
-  }
-
-  const presentTypes = new Set(counts.keys())
-  const nodes: DependencyNode[] = DEPENDENCY_GRAPH.map((dep) => {
-    const found = counts.get(dep.type)
-    return {
-      resourceType: dep.type,
-      present: Boolean(found),
-      count: found?.count || 0,
-      regions: found ? [...found.regions].sort() : [],
-      pairedWith: dep.pairedWith.filter((t) => presentTypes.has(t) || DEPENDENCY_GRAPH.some((d) => d.type === t)),
-      note: dep.note,
+export function buildDependencyMap(
+  workloadItems: InventoryItem[],
+  subscriptions: Subscription[] = [],
+): DependencyPairSlice[] {
+  const byPair = new Map<
+    string,
+    {
+      subscriptionId: string
+      region: string
+      itemCount: number
+      types: Map<string, number>
     }
-  })
+  >()
 
-  // Include any other present types not in the graph as informational nodes.
-  for (const [type, meta] of counts) {
-    if (nodes.some((n) => n.resourceType === type)) continue
-    nodes.push({
-      resourceType: type,
-      present: true,
-      count: meta.count,
-      regions: [...meta.regions].sort(),
-      pairedWith: [],
-      note: 'Present in workload inventory — include in region parity checks.',
-    })
+  for (const item of workloadItems) {
+    const subscriptionId = item.subscriptionId || 'unknown'
+    const region = item.region || 'Unknown region'
+    const key = `${subscriptionId}::${normalizeRegionKey(region) || region}`
+    const cur = byPair.get(key) || {
+      subscriptionId,
+      region,
+      itemCount: 0,
+      types: new Map<string, number>(),
+    }
+    cur.itemCount += 1
+    cur.types.set(item.resourceType, (cur.types.get(item.resourceType) || 0) + 1)
+    byPair.set(key, cur)
   }
 
-  return nodes.sort((a, b) => Number(b.present) - Number(a.present) || b.count - a.count)
+  const graphNote = (type: string) =>
+    DEPENDENCY_GRAPH.find((d) => d.type === type)?.note ||
+    'Present in this subscription / region — include in region parity checks.'
+
+  const graphPairs = (type: string) =>
+    DEPENDENCY_GRAPH.find((d) => d.type === type)?.pairedWith || []
+
+  return [...byPair.entries()]
+    .map(([key, slice]) => {
+      const presentTypes = new Set(slice.types.keys())
+      const services = [...slice.types.entries()]
+        .map(([resourceType, count]) => ({
+          resourceType,
+          count,
+          pairedWithPresent: graphPairs(resourceType).filter((t) => presentTypes.has(t)),
+          note: graphNote(resourceType),
+        }))
+        .sort((a, b) => b.count - a.count || a.resourceType.localeCompare(b.resourceType))
+
+      return {
+        key,
+        subscriptionId: slice.subscriptionId,
+        subscriptionName: subscriptionLabel(subscriptions, slice.subscriptionId),
+        region: slice.region,
+        regionLabel: prettyRegion(slice.region),
+        itemCount: slice.itemCount,
+        services,
+      }
+    })
+    .sort(
+      (a, b) =>
+        a.subscriptionName.localeCompare(b.subscriptionName) ||
+        a.regionLabel.localeCompare(b.regionLabel),
+    )
+}
+
+/** Resolve inventory / strategy region labels to Azure region option ids. */
+export function resolveStrategyRegionIds(
+  regionValues: string[],
+  regionOptions: Array<{ value: string; label: string }>,
+) {
+  const out = new Set<string>()
+  for (const raw of regionValues) {
+    const key = normalizeRegionKey(raw)
+    if (!key) continue
+    const match = regionOptions.find(
+      (opt) =>
+        normalizeRegionKey(opt.value) === key || normalizeRegionKey(opt.label) === key,
+    )
+    out.add(match?.value || raw)
+  }
+  return [...out]
 }
 
 export function buildWhatIfPlan(input: {
