@@ -2,6 +2,7 @@ import type {
   CapacityConstraint,
   InventoryItem,
   Quota,
+  QuotaGroupLimit,
   Subscription,
 } from '../types'
 import {
@@ -590,4 +591,354 @@ export function subscriptionLabel(
   subscriptionId: string,
 ) {
   return subscriptions.find((s) => s.id === subscriptionId)?.name || subscriptionId
+}
+
+/** Minimal evaluation shape needed for strategy linking / gap analysis. */
+export type StrategyEvaluationLike = {
+  id: string
+  customerId: string
+  subscriptionIds?: string[]
+  subscriptionNames?: string[]
+  targetRegions?: Array<{ id: string; label?: string }>
+  results?: Array<{
+    resourceType: string
+    sku: string
+    size?: string | null
+    family?: string | null
+    resourceCount: number
+    sourceRegions?: string[]
+    byRegion?: Record<
+      string,
+      {
+        status?: string
+        reason?: string
+      }
+    >
+  }>
+  createdAt?: string
+}
+
+export type StrategySkuGap = {
+  evaluationId: string
+  regionId: string
+  regionLabel: string
+  resourceType: string
+  sku: string
+  size: string | null
+  family: string | null
+  resourceCount: number
+  status: string
+  constrained: boolean
+  reason: string
+}
+
+export type StrategyQuotaRecommendation = {
+  source: 'quota' | 'quotaGroup'
+  name: string
+  region: string
+  usage: number
+  limit: number
+  usagePct: number
+  suggestedLimit: number
+  increaseBy: number
+  priority: 'critical' | 'high' | 'medium'
+  unit: string
+  rationale: string
+  subscriptionHint?: string
+}
+
+export type StrategyEvalCoverage = {
+  hasMatchingEvaluation: boolean
+  matchingCount: number
+  linkedMatchingCount: number
+  uncoveredSubscriptions: string[]
+  uncoveredRegions: string[]
+  coveredSubscriptions: string[]
+  coveredRegions: string[]
+}
+
+function regionInSet(regionIdOrLabel: string, keys: Set<string>) {
+  const normalized = normalizeRegionKey(regionIdOrLabel)
+  if (!normalized) return false
+  if (keys.has(normalized)) return true
+  return keys.has(normalizeRegionKey(prettyRegion(regionIdOrLabel)))
+}
+
+/**
+ * An evaluation is linkable when it shares at least one selected subscription
+ * and at least one candidate region with the strategy scope.
+ */
+export function evaluationMatchesStrategyScope(
+  evaluation: StrategyEvaluationLike,
+  scope: {
+    customerId: string
+    subscriptionIds: string[]
+    regionIds: string[]
+  },
+): boolean {
+  if (!scope.customerId || evaluation.customerId !== scope.customerId) return false
+  if (!scope.subscriptionIds.length || !scope.regionIds.length) return false
+
+  const evalSubs = new Set((evaluation.subscriptionIds || []).map(String))
+  const subMatch = scope.subscriptionIds.some((id) => evalSubs.has(id))
+  if (!subMatch) return false
+
+  const regionKeys = new Set(scope.regionIds.map((id) => normalizeRegionKey(id)).filter(Boolean))
+  return (evaluation.targetRegions || []).some(
+    (region) =>
+      regionInSet(region.id, regionKeys) || regionInSet(region.label || '', regionKeys),
+  )
+}
+
+export function filterLinkableEvaluations<T extends StrategyEvaluationLike>(
+  evaluations: T[],
+  scope: {
+    customerId: string
+    subscriptionIds: string[]
+    regionIds: string[]
+  },
+): T[] {
+  return evaluations
+    .filter((evaluation) => evaluationMatchesStrategyScope(evaluation, scope))
+    .slice()
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+}
+
+export function pruneLinkedEvaluationIds(
+  linkedIds: string[],
+  linkableEvaluations: Array<{ id: string }>,
+) {
+  const allowed = new Set(linkableEvaluations.map((e) => e.id))
+  return linkedIds.filter((id) => allowed.has(id))
+}
+
+export function buildStrategyEvalCoverage(input: {
+  subscriptionIds: string[]
+  regionIds: Array<{ id: string; label: string }>
+  matchingEvaluations: StrategyEvaluationLike[]
+  linkedEvaluationIds: string[]
+}): StrategyEvalCoverage {
+  const matching = input.matchingEvaluations
+  const linkedSet = new Set(input.linkedEvaluationIds)
+  const linkedMatchingCount = matching.filter((e) => linkedSet.has(e.id)).length
+
+  const coveredSubs = new Set<string>()
+  const coveredRegions = new Set<string>()
+  for (const evaluation of matching) {
+    for (const subId of evaluation.subscriptionIds || []) coveredSubs.add(subId)
+    for (const region of evaluation.targetRegions || []) {
+      coveredRegions.add(normalizeRegionKey(region.id))
+      if (region.label) coveredRegions.add(normalizeRegionKey(region.label))
+    }
+  }
+
+  const uncoveredSubscriptions = input.subscriptionIds.filter((id) => !coveredSubs.has(id))
+  const uncoveredRegions = input.regionIds
+    .filter(
+      (region) =>
+        !regionInSet(region.id, coveredRegions) && !regionInSet(region.label, coveredRegions),
+    )
+    .map((region) => region.label || region.id)
+
+  return {
+    hasMatchingEvaluation: matching.length > 0,
+    matchingCount: matching.length,
+    linkedMatchingCount,
+    uncoveredSubscriptions,
+    uncoveredRegions,
+    coveredSubscriptions: input.subscriptionIds.filter((id) => coveredSubs.has(id)),
+    coveredRegions: input.regionIds
+      .filter(
+        (region) =>
+          regionInSet(region.id, coveredRegions) || regionInSet(region.label, coveredRegions),
+      )
+      .map((region) => region.label || region.id),
+  }
+}
+
+function gapKey(gap: Pick<StrategySkuGap, 'evaluationId' | 'regionId' | 'resourceType' | 'sku' | 'size'>) {
+  return `${gap.evaluationId}|${gap.regionId}|${gap.resourceType}|${gap.sku}|${gap.size || ''}`
+}
+
+/** SKU unavailability + constraint gaps from evaluations that match strategy scope. */
+export function collectStrategySkuGaps(input: {
+  evaluations: StrategyEvaluationLike[]
+  constraints: CapacityConstraint[]
+  regionIds: Array<{ id: string; label: string }>
+}): StrategySkuGap[] {
+  const open = filterListableConstraints(input.constraints)
+  const regionKeys = new Set(
+    input.regionIds.flatMap((r) => [normalizeRegionKey(r.id), normalizeRegionKey(r.label)]),
+  )
+  const byKey = new Map<string, StrategySkuGap>()
+
+  for (const evaluation of input.evaluations) {
+    for (const row of evaluation.results || []) {
+      for (const region of evaluation.targetRegions || []) {
+        if (!regionInSet(region.id, regionKeys) && !regionInSet(region.label || '', regionKeys)) {
+          continue
+        }
+        const cell = row.byRegion?.[region.id]
+        const status = String(cell?.status || 'unknown')
+        const regionLabel = region.label || region.id
+        const matchingConstraints = findMatchingConstraintsForEval({
+          constraints: open,
+          resourceType: row.resourceType,
+          sku: row.sku,
+          size: row.size,
+          family: row.family,
+          targetRegionId: region.id,
+          targetRegionLabel: regionLabel,
+        })
+        const availabilityGap = status !== 'available'
+        const constrained = matchingConstraints.length > 0
+        if (!availabilityGap && !constrained) continue
+
+        const reasonParts: string[] = []
+        if (availabilityGap) reasonParts.push(cell?.reason || 'No availability reason recorded')
+        if (constrained) {
+          reasonParts.push(
+            `${matchingConstraints.length} open capacity constraint${
+              matchingConstraints.length === 1 ? '' : 's'
+            }: ${matchingConstraints.map((c) => `${c.sku} (${c.severity})`).join(', ')}`,
+          )
+        }
+
+        const gap: StrategySkuGap = {
+          evaluationId: evaluation.id,
+          regionId: region.id,
+          regionLabel,
+          resourceType: row.resourceType,
+          sku: row.sku,
+          size: row.size ?? null,
+          family: row.family ?? null,
+          resourceCount: row.resourceCount,
+          status,
+          constrained,
+          reason: reasonParts.join(' · '),
+        }
+        byKey.set(gapKey(gap), gap)
+      }
+    }
+  }
+
+  return [...byKey.values()].sort(
+    (a, b) =>
+      a.regionLabel.localeCompare(b.regionLabel) ||
+      a.resourceType.localeCompare(b.resourceType) ||
+      a.sku.localeCompare(b.sku),
+  )
+}
+
+function quotaPriority(usagePct: number): StrategyQuotaRecommendation['priority'] {
+  if (usagePct >= 95) return 'critical'
+  if (usagePct >= 80) return 'high'
+  return 'medium'
+}
+
+/** Recommend quota / quota-group increases for strategy subscriptions + candidate regions. */
+export function buildStrategyQuotaRecommendations(input: {
+  customerId: string
+  subscriptionIds: string[]
+  regionIds: Array<{ id: string; label: string }>
+  quotas: Quota[]
+  quotaGroupLimits: QuotaGroupLimit[]
+  projectedExtraVcpu?: number
+  minUsagePct?: number
+  targetUsagePct?: number
+  limit?: number
+}): StrategyQuotaRecommendation[] {
+  const minUsagePct = input.minUsagePct ?? 60
+  const targetUsagePct = input.targetUsagePct ?? 70
+  const maxRows = input.limit ?? 20
+  const targetRatio = targetUsagePct / 100
+  const subSet = new Set(input.subscriptionIds)
+  const regionKeys = new Set(
+    input.regionIds.flatMap((r) => [normalizeRegionKey(r.id), normalizeRegionKey(r.label)]),
+  )
+  const projectedExtra = Math.max(0, Number(input.projectedExtraVcpu || 0))
+  const recommendations: StrategyQuotaRecommendation[] = []
+
+  for (const quota of input.quotas) {
+    if (quota.customerId && quota.customerId !== input.customerId) continue
+    if (quota.subscriptionId && !subSet.has(quota.subscriptionId)) continue
+    if (!regionInSet(quota.region, regionKeys)) continue
+    if (isQuotaExcludedFromScoring(quota)) continue
+    const limit = Number(quota.limit)
+    const usage = Number(quota.usage)
+    if (!(limit > 0) || !(usage >= 0)) continue
+
+    const isVcpu = /vcpu/i.test(`${quota.name} ${quota.unit || ''}`)
+    const effectiveUsage = usage + (isVcpu ? projectedExtra : 0)
+    const usagePct = Math.round((effectiveUsage / limit) * 1000) / 10
+    if (usagePct < minUsagePct && effectiveUsage <= limit * 0.85) continue
+
+    const suggestedLimit = Math.max(limit, Math.ceil(effectiveUsage / targetRatio))
+    const increaseBy = suggestedLimit - limit
+    if (increaseBy <= 0 && usagePct < minUsagePct) continue
+
+    recommendations.push({
+      source: 'quota',
+      name: quota.name,
+      region: prettyRegion(quota.region),
+      usage: effectiveUsage,
+      limit,
+      usagePct,
+      suggestedLimit,
+      increaseBy,
+      priority: quotaPriority(usagePct),
+      unit: quota.unit || '',
+      subscriptionHint: quota.subscriptionName || quota.subscriptionId || undefined,
+      rationale:
+        projectedExtra > 0 && isVcpu
+          ? `Including projected +${projectedExtra} vCPU from what-if, raise limit from ${limit} to ≥${suggestedLimit} so usage sits near ${targetUsagePct}%.`
+          : `Raise limit from ${limit} to ≥${suggestedLimit} so usage (${usage}) sits near ${targetUsagePct}%.`,
+    })
+  }
+
+  for (const group of input.quotaGroupLimits) {
+    if (group.customerId && group.customerId !== input.customerId) continue
+    const groupSubs = group.subscriptionIds || []
+    if (!groupSubs.some((id) => subSet.has(id))) continue
+    if (!regionInSet(group.region, regionKeys)) continue
+    if (isQuotaExcludedFromScoring({ name: group.name, nameValue: group.nameValue })) continue
+
+    const limit = Number(group.limit)
+    const allocated = Number(group.allocated)
+    if (!(limit > 0) || !(allocated >= 0)) continue
+
+    const isVcpu = /vcpu/i.test(`${group.name} ${group.unit || ''}`)
+    const effectiveUsage = allocated + (isVcpu ? projectedExtra : 0)
+    const usagePct = Math.round((effectiveUsage / limit) * 1000) / 10
+    if (usagePct < minUsagePct && effectiveUsage <= limit * 0.85) continue
+
+    const suggestedLimit = Math.max(limit, Math.ceil(effectiveUsage / targetRatio))
+    const increaseBy = suggestedLimit - limit
+    if (increaseBy <= 0 && usagePct < minUsagePct) continue
+
+    recommendations.push({
+      source: 'quotaGroup',
+      name: group.groupDisplayName || group.name,
+      region: prettyRegion(group.region),
+      usage: effectiveUsage,
+      limit,
+      usagePct,
+      suggestedLimit,
+      increaseBy,
+      priority: quotaPriority(usagePct),
+      unit: group.unit || '',
+      subscriptionHint: `${groupSubs.filter((id) => subSet.has(id)).length} matching subscription(s)`,
+      rationale:
+        projectedExtra > 0 && isVcpu
+          ? `Quota group pressure with projected +${projectedExtra} vCPU — raise shared limit from ${limit} to ≥${suggestedLimit}.`
+          : `Quota group allocated ${allocated}/${limit}; raise shared limit to ≥${suggestedLimit} (~${targetUsagePct}% target).`,
+    })
+  }
+
+  return recommendations
+    .sort((a, b) => {
+      const order = { critical: 0, high: 1, medium: 2 }
+      return order[a.priority] - order[b.priority] || b.usagePct - a.usagePct
+    })
+    .slice(0, maxRows)
 }

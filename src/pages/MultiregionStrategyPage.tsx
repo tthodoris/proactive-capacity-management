@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom'
 import {
   Compass,
   Download,
+  Link2,
   Loader2,
   MapPinned,
   Save,
+  ShieldAlert,
   Trash2,
 } from 'lucide-react'
 import { CheckboxMultiSelect } from '../components/CheckboxMultiSelect'
@@ -23,9 +25,14 @@ import {
   buildDependencyMap,
   buildFailoverScorecard,
   buildRegionShortlist,
+  buildStrategyEvalCoverage,
+  buildStrategyQuotaRecommendations,
   buildWhatIfPlan,
   buildWorkloadGroups,
+  collectStrategySkuGaps,
   filterInventoryForStrategy,
+  filterLinkableEvaluations,
+  pruneLinkedEvaluationIds,
   type StrategyGroupBy,
   type StrategyScenario,
 } from '../lib/multiregionStrategy'
@@ -58,6 +65,7 @@ export function MultiregionStrategyPage() {
     inventory,
     constraints,
     quotas,
+    quotaGroupLimits,
     portfolioCustomerIds,
     canSeeAllPortfolios,
     azureLocations,
@@ -207,6 +215,85 @@ export function MultiregionStrategyPage() {
     [workloadItems, whatIfPercent, customerId, quotas, whatIfTarget],
   )
 
+  const effectiveSubscriptionIds = useMemo(() => {
+    if (selectedSubscriptionIds.length > 0) return selectedSubscriptionIds
+    return customerSubs.map((s) => s.id)
+  }, [selectedSubscriptionIds, customerSubs])
+
+  const strategyRegionIds = useMemo(
+    () => candidateRegions.map((r) => r.id),
+    [candidateRegions],
+  )
+
+  const linkableEvaluations = useMemo(
+    () =>
+      customerId
+        ? filterLinkableEvaluations(evaluations, {
+            customerId,
+            subscriptionIds: effectiveSubscriptionIds,
+            regionIds: strategyRegionIds,
+          })
+        : [],
+    [evaluations, customerId, effectiveSubscriptionIds, strategyRegionIds],
+  )
+
+  useEffect(() => {
+    setLinkedEvaluationIds((prev) => {
+      const next = pruneLinkedEvaluationIds(prev, linkableEvaluations)
+      if (next.length === prev.length && next.every((id, i) => id === prev[i])) return prev
+      return next
+    })
+  }, [linkableEvaluations])
+
+  const linkedMatchingEvaluations = useMemo(() => {
+    const linked = new Set(linkedEvaluationIds)
+    const fromLinked = linkableEvaluations.filter((e) => linked.has(e.id))
+    return fromLinked.length > 0 ? fromLinked : linkableEvaluations.slice(0, 3)
+  }, [linkableEvaluations, linkedEvaluationIds])
+
+  const evalCoverage = useMemo(
+    () =>
+      buildStrategyEvalCoverage({
+        subscriptionIds: effectiveSubscriptionIds,
+        regionIds: candidateRegions,
+        matchingEvaluations: linkableEvaluations,
+        linkedEvaluationIds,
+      }),
+    [effectiveSubscriptionIds, candidateRegions, linkableEvaluations, linkedEvaluationIds],
+  )
+
+  const skuGaps = useMemo(
+    () =>
+      collectStrategySkuGaps({
+        evaluations: linkedMatchingEvaluations,
+        constraints,
+        regionIds: candidateRegions,
+      }),
+    [linkedMatchingEvaluations, constraints, candidateRegions],
+  )
+
+  const quotaRecommendations = useMemo(
+    () =>
+      customerId
+        ? buildStrategyQuotaRecommendations({
+            customerId,
+            subscriptionIds: effectiveSubscriptionIds,
+            regionIds: candidateRegions,
+            quotas,
+            quotaGroupLimits,
+            projectedExtraVcpu: whatIfPlan?.projectedVcpu,
+          })
+        : [],
+    [
+      customerId,
+      effectiveSubscriptionIds,
+      candidateRegions,
+      quotas,
+      quotaGroupLimits,
+      whatIfPlan?.projectedVcpu,
+    ],
+  )
+
   const refreshScenarios = useCallback(async () => {
     if (!customerId) {
       setScenarios([])
@@ -266,6 +353,7 @@ export function MultiregionStrategyPage() {
       return
     }
     const name = scenarioName.trim() || `Strategy ${formatDate(new Date().toISOString())}`
+    const safeLinkedIds = pruneLinkedEvaluationIds(linkedEvaluationIds, linkableEvaluations)
     setSaving(true)
     setError(null)
     try {
@@ -280,12 +368,13 @@ export function MultiregionStrategyPage() {
         selectedGroupKey,
         candidateRegionIds,
         whatIfPercent,
-        linkedEvaluationIds,
+        linkedEvaluationIds: safeLinkedIds,
         createdByUserId: user?.id || null,
         createdByName: user?.name || null,
       })
       setActiveScenarioId(scenario.id)
       setScenarioName(scenario.name)
+      setLinkedEvaluationIds(scenario.linkedEvaluationIds || safeLinkedIds)
       setStatusNote(`Saved scenario “${scenario.name}”.`)
       await refreshScenarios()
     } catch (err) {
@@ -348,6 +437,18 @@ export function MultiregionStrategyPage() {
             value: whatIfPlan
               ? `${whatIfPlan.percent}% into ${whatIfTarget?.regionLabel || 'n/a'} ≈ ${whatIfPlan.projectedItemCount} resources / ${whatIfPlan.projectedVcpu} vCPU`
               : 'n/a',
+          },
+          {
+            field: 'Matching evaluations',
+            value: `${evalCoverage.matchingCount} match · ${evalCoverage.linkedMatchingCount} linked`,
+          },
+          {
+            field: 'SKU gaps',
+            value: `${skuGaps.filter((g) => g.status !== 'available').length} unavailable/restricted · ${skuGaps.filter((g) => g.constrained).length} constrained`,
+          },
+          {
+            field: 'Quota recommendations',
+            value: quotaRecommendations.length,
           },
           { field: 'Scenario', value: scenarioName || '(unsaved)' },
           { field: 'Notes', value: scenarioNotes || '' },
@@ -456,12 +557,64 @@ export function MultiregionStrategyPage() {
           : [{ field: 'Status', value: 'No what-if plan available' }],
       },
       {
+        name: 'SKU gaps',
+        columns: [
+          { key: 'regionLabel', label: 'Region' },
+          { key: 'resourceType', label: 'Resource type' },
+          { key: 'sku', label: 'SKU' },
+          { key: 'status', label: 'Availability' },
+          { key: 'constrained', label: 'Constrained' },
+          { key: 'resourceCount', label: 'Count' },
+          { key: 'reason', label: 'Reason' },
+        ],
+        rows: skuGaps.map((g) => ({
+          regionLabel: g.regionLabel,
+          resourceType: g.resourceType,
+          sku: g.sku,
+          status: g.status,
+          constrained: g.constrained ? 'Yes' : 'No',
+          resourceCount: g.resourceCount,
+          reason: g.reason,
+        })),
+      },
+      {
+        name: 'Quota recommendations',
+        columns: [
+          { key: 'priority', label: 'Priority' },
+          { key: 'source', label: 'Source' },
+          { key: 'name', label: 'Quota' },
+          { key: 'region', label: 'Region' },
+          { key: 'usagePct', label: 'Usage %' },
+          { key: 'limit', label: 'Current limit' },
+          { key: 'suggestedLimit', label: 'Suggested limit' },
+          { key: 'increaseBy', label: 'Increase by' },
+          { key: 'rationale', label: 'Rationale' },
+        ],
+        rows: quotaRecommendations.map((r) => ({
+          priority: r.priority,
+          source: r.source === 'quotaGroup' ? 'Quota group' : 'Quota',
+          name: r.name,
+          region: r.region,
+          usagePct: r.usagePct,
+          limit: r.limit,
+          suggestedLimit: r.suggestedLimit,
+          increaseBy: r.increaseBy,
+          rationale: r.rationale,
+        })),
+      },
+      {
         name: 'Next actions',
         columns: [
           { key: 'owner', label: 'Owner' },
           { key: 'action', label: 'Action' },
         ],
         rows: [
+          {
+            owner: 'CSA',
+            action: evalCoverage.hasMatchingEvaluation
+              ? `Link matching evaluation(s) covering ${evalCoverage.coveredRegions.join(', ') || 'candidate regions'}.`
+              : 'Run Region evaluation for the selected subscriptions and candidate regions, then link it here.',
+          },
           {
             owner: 'CSA',
             action: `Review shortlist with customer; validate ${shortlist[1]?.regionLabel || 'secondary'} as DR/expansion target.`,
@@ -476,7 +629,13 @@ export function MultiregionStrategyPage() {
           },
           {
             owner: 'CSA',
-            action: 'Run Region evaluation for primary + secondary candidates and attach to this scenario.',
+            action:
+              quotaRecommendations.length > 0
+                ? `Request quota adjustments: ${quotaRecommendations
+                    .slice(0, 3)
+                    .map((r) => `${r.name} in ${r.region} → ${r.suggestedLimit}`)
+                    .join('; ')}.`
+                : 'Confirm quota headroom in candidate regions before expansion.',
           },
           {
             owner: 'Customer',
@@ -896,6 +1055,219 @@ export function MultiregionStrategyPage() {
         <div className="panel-header">
           <div>
             <h4 className="strategy-panel-title">
+              <ShieldAlert size={18} />
+              Evaluation, quotas &amp; SKU gaps
+            </h4>
+            <p>
+              Strategies use matching region evaluations (same subscription + candidate region) plus
+              quotas / quota groups to surface unavailability, constraints, and quota raises.
+            </p>
+          </div>
+          <Link className="btn btn-secondary" to="/region-evaluation">
+            <MapPinned size={16} />
+            Run evaluation
+          </Link>
+        </div>
+        <div className="panel-body stack">
+          {!customerId ? (
+            <div className="empty">Select a customer and subscriptions to assess evaluation coverage.</div>
+          ) : (
+            <>
+              <div className="strategy-stat-row">
+                <div className="strategy-stat-card">
+                  <span className="muted">Matching evaluations</span>
+                  <strong>{evalCoverage.matchingCount}</strong>
+                </div>
+                <div className="strategy-stat-card">
+                  <span className="muted">Linked (matching)</span>
+                  <strong>{evalCoverage.linkedMatchingCount}</strong>
+                </div>
+                <div className="strategy-stat-card">
+                  <span className="muted">SKU gaps</span>
+                  <strong>{skuGaps.length}</strong>
+                </div>
+                <div className="strategy-stat-card">
+                  <span className="muted">Quota raises</span>
+                  <strong>{quotaRecommendations.length}</strong>
+                </div>
+              </div>
+
+              <div
+                className={`banner ${
+                  evalCoverage.hasMatchingEvaluation ? 'banner-ok' : 'banner-error'
+                }`}
+              >
+                {evalCoverage.hasMatchingEvaluation ? (
+                  <>
+                    {evalCoverage.matchingCount} evaluation
+                    {evalCoverage.matchingCount === 1 ? '' : 's'} match this strategy’s subscriptions
+                    and candidate regions
+                    {evalCoverage.linkedMatchingCount === 0
+                      ? ' — link one below to pin it to the scenario.'
+                      : '.'}
+                    {evalCoverage.uncoveredRegions.length > 0
+                      ? ` Uncovered regions: ${evalCoverage.uncoveredRegions.join(', ')}.`
+                      : ''}
+                    {evalCoverage.uncoveredSubscriptions.length > 0
+                      ? ` Uncovered subscriptions: ${evalCoverage.uncoveredSubscriptions.length}.`
+                      : ''}
+                  </>
+                ) : (
+                  <>
+                    No saved evaluation matches the selected subscription(s) and candidate region(s).
+                    Run a region evaluation for this scope, then link it here.
+                  </>
+                )}
+              </div>
+
+              <CheckboxMultiSelect
+                label="Linked evaluations (subscription + region match only)"
+                options={linkableEvaluations.map((ev) => ({
+                  value: ev.id,
+                  label: `${formatDate(ev.createdAt)} · ${(ev.subscriptionNames || [])
+                    .slice(0, 2)
+                    .join(', ') || `${ev.subscriptionIds?.length || 0} sub(s)`} · ${(
+                    ev.targetRegions || []
+                  )
+                    .map((r) => r.label || r.id)
+                    .slice(0, 3)
+                    .join(', ')}`,
+                }))}
+                value={linkedEvaluationIds}
+                onChange={setLinkedEvaluationIds}
+                placeholder={
+                  !customerId
+                    ? 'Select customer first'
+                    : linkableEvaluations.length === 0
+                      ? 'No matching evaluations'
+                      : 'None linked yet'
+                }
+                disabled={!customerId || linkableEvaluations.length === 0}
+                emptyLabel="No evaluations match this subscription + region scope"
+              />
+
+              <div className="strategy-detail-cols">
+                <div>
+                  <h6 className="strategy-section-heading">
+                    <Link2 size={14} /> SKU unavailability &amp; constraints
+                  </h6>
+                  {skuGaps.length === 0 ? (
+                    <p className="muted">
+                      {evalCoverage.hasMatchingEvaluation
+                        ? 'No availability or constraint gaps in matching evaluation results for candidate regions.'
+                        : 'Gaps appear after a matching evaluation exists for this scope.'}
+                    </p>
+                  ) : (
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Region</th>
+                            <th>SKU</th>
+                            <th>Status</th>
+                            <th>Issue</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {skuGaps.slice(0, 12).map((gap) => (
+                            <tr key={`${gap.evaluationId}-${gap.regionId}-${gap.sku}-${gap.size || ''}`}>
+                              <td>{gap.regionLabel}</td>
+                              <td>
+                                <strong>{gap.sku}</strong>
+                                <div className="muted">{gap.resourceType}</div>
+                              </td>
+                              <td>
+                                <span
+                                  className={`pill ${
+                                    gap.status === 'available' ? 'pill-ok' : 'pill-critical'
+                                  }`}
+                                >
+                                  {gap.status}
+                                </span>
+                                {gap.constrained ? (
+                                  <span className="pill pill-high" style={{ marginLeft: '0.35rem' }}>
+                                    Constrained
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className="muted">{gap.reason}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <h6 className="strategy-section-heading">Quota &amp; quota-group adjustments</h6>
+                  {quotaRecommendations.length === 0 ? (
+                    <p className="muted">
+                      No elevated quota or quota-group pressure for the selected subscriptions and
+                      candidate regions
+                      {whatIfPlan ? ' (including what-if projection)' : ''}.
+                    </p>
+                  ) : (
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Priority</th>
+                            <th>Quota</th>
+                            <th>Usage</th>
+                            <th>Suggest</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {quotaRecommendations.slice(0, 10).map((rec) => (
+                            <tr key={`${rec.source}-${rec.name}-${rec.region}`}>
+                              <td>
+                                <span
+                                  className={`pill ${
+                                    rec.priority === 'critical'
+                                      ? 'pill-critical'
+                                      : rec.priority === 'high'
+                                        ? 'pill-high'
+                                        : 'pill-neutral'
+                                  }`}
+                                >
+                                  {rec.priority}
+                                </span>
+                              </td>
+                              <td>
+                                <strong>{rec.name}</strong>
+                                <div className="muted">
+                                  {rec.source === 'quotaGroup' ? 'Quota group' : 'Quota'} ·{' '}
+                                  {rec.region}
+                                  {rec.subscriptionHint ? ` · ${rec.subscriptionHint}` : ''}
+                                </div>
+                              </td>
+                              <td>
+                                {rec.usage}/{rec.limit} ({rec.usagePct}%)
+                              </td>
+                              <td>
+                                → {rec.suggestedLimit}
+                                {rec.increaseBy > 0 ? (
+                                  <span className="muted"> (+{rec.increaseBy})</span>
+                                ) : null}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h4 className="strategy-panel-title">
               <Compass size={18} />
               Strategy scenarios library
             </h4>
@@ -929,21 +1301,6 @@ export function MultiregionStrategyPage() {
                 placeholder="Workshop context, customer decisions…"
               />
             </label>
-            <CheckboxMultiSelect
-              label="Linked region evaluations"
-              options={evaluations.map((ev) => ({
-                value: ev.id,
-                label: `${formatDate(ev.createdAt)} · ${(ev.targetRegions || [])
-                  .map((r) => r.label || r.id)
-                  .slice(0, 3)
-                  .join(', ')}`,
-              }))}
-              value={linkedEvaluationIds}
-              onChange={setLinkedEvaluationIds}
-              placeholder={customerId ? 'None linked' : 'Select customer first'}
-              disabled={!customerId}
-              emptyLabel="No saved evaluations"
-            />
           </div>
 
           {loadingScenarios ? (
@@ -958,6 +1315,7 @@ export function MultiregionStrategyPage() {
                     <th>Name</th>
                     <th>Updated</th>
                     <th>Subs</th>
+                    <th>Linked evals</th>
                     <th>Group</th>
                     <th />
                   </tr>
@@ -977,6 +1335,7 @@ export function MultiregionStrategyPage() {
                       </td>
                       <td>{formatDate(s.updatedAt)}</td>
                       <td>{s.subscriptionIds?.length || 0}</td>
+                      <td>{s.linkedEvaluationIds?.length || 0}</td>
                       <td>{s.groupBy}</td>
                       <td>
                         <button
