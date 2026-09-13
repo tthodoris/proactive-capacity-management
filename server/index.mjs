@@ -1283,21 +1283,135 @@ function locationAliases(displayNames) {
   return aliases
 }
 
-async function fetchComputeSkus(subscriptionId) {
+/** In-memory Compute SKU cache — full catalog is huge and OOMs `az rest` in ACA. */
+const computeSkuCache = new Map()
+const COMPUTE_SKU_CACHE_TTL_MS = 30 * 60 * 1000
+
+async function getArmAccessToken() {
   const { stdout } = await runAz(
-    [
-      'rest',
-      '--method',
-      'get',
-      '--url',
-      `https://management.azure.com/subscriptions/${subscriptionId}/providers/Microsoft.Compute/skus?api-version=2021-07-01`,
-      '-o',
-      'json',
-    ],
-    { timeoutMs: 180_000 },
+    ['account', 'get-access-token', '--resource', 'https://management.azure.com/', '-o', 'json'],
+    { timeoutMs: 30_000 },
   )
-  const payload = JSON.parse(stdout)
-  return Array.isArray(payload.value) ? payload.value : Array.isArray(payload) ? payload : []
+  const parsed = JSON.parse(stdout)
+  if (!parsed?.accessToken) throw new Error('Failed to acquire Azure ARM access token')
+  return String(parsed.accessToken)
+}
+
+async function armGetJson(url, token) {
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+    },
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`ARM ${res.status} for Compute/skus: ${text.slice(0, 400) || res.statusText}`)
+  }
+  return res.json()
+}
+
+async function armListAllValues(url, token) {
+  const values = []
+  let next = url
+  while (next) {
+    const payload = await armGetJson(next, token)
+    if (Array.isArray(payload?.value)) values.push(...payload.value)
+    else if (Array.isArray(payload)) values.push(...payload)
+    next = payload?.nextLink || null
+  }
+  return values
+}
+
+function filterComputeSkusForInventory(rows, skuNames = []) {
+  if (!skuNames.length) {
+    return rows.filter((row) => String(row.resourceType || '') === 'virtualMachines')
+  }
+  const wanted = new Set()
+  for (const name of skuNames) {
+    const raw = String(name || '').trim()
+    if (!raw) continue
+    wanted.add(raw.toLowerCase())
+    const family = toSkuFamily(raw)
+    if (family) wanted.add(String(family).toLowerCase())
+  }
+  return rows.filter((row) => {
+    if (String(row.resourceType || '') !== 'virtualMachines') return false
+    const name = String(row.name || '').toLowerCase()
+    if (wanted.has(name)) return true
+    const family = toSkuFamily(row.name)
+    return Boolean(family && wanted.has(String(family).toLowerCase()))
+  })
+}
+
+async function mapPool(items, concurrency, fn) {
+  const results = new Array(items.length)
+  let index = 0
+  async function worker() {
+    while (index < items.length) {
+      const current = index++
+      results[current] = await fn(items[current], current)
+    }
+  }
+  const workers = Array.from({ length: Math.min(concurrency, Math.max(items.length, 1)) }, () =>
+    worker(),
+  )
+  await Promise.all(workers)
+  return results
+}
+
+/**
+ * Fetch Compute VM SKUs for the target regions only (via ARM token + $filter).
+ * Avoids `az rest` materializing the full multi-region catalog, which gets OOM-killed in ACA.
+ */
+async function fetchComputeSkus(subscriptionId, { regionIds = [], skuNames = [] } = {}) {
+  const uniqueRegions = [
+    ...new Set(
+      (regionIds || [])
+        .map((id) => String(id || '').toLowerCase().replace(/\s+/g, ''))
+        .filter(Boolean),
+    ),
+  ]
+  const cacheKey = `${subscriptionId}|${uniqueRegions.slice().sort().join(',') || '*'}`
+  const cached = computeSkuCache.get(cacheKey)
+  if (cached && Date.now() - cached.at < COMPUTE_SKU_CACHE_TTL_MS) {
+    return filterComputeSkusForInventory(cached.rows, skuNames)
+  }
+
+  const token = await getArmAccessToken()
+  const merged = []
+  const seen = new Set()
+
+  const ingest = (list) => {
+    for (const row of list || []) {
+      if (String(row.resourceType || '') !== 'virtualMachines') continue
+      const key = `${row.name}|${(row.locations || []).join(',')}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      merged.push(row)
+    }
+  }
+
+  if (uniqueRegions.length > 0) {
+    const batches = await mapPool(uniqueRegions, 3, async (regionId) => {
+      const filter = encodeURIComponent(`location eq '${regionId}'`)
+      const url = `https://management.azure.com/subscriptions/${subscriptionId}/providers/Microsoft.Compute/skus?api-version=2021-07-01&$filter=${filter}`
+      return armListAllValues(url, token)
+    })
+    for (const batch of batches) ingest(batch)
+  } else {
+    // Last resort: unfiltered catalog (can be large). Prefer region-scoped callers.
+    const url = `https://management.azure.com/subscriptions/${subscriptionId}/providers/Microsoft.Compute/skus?api-version=2021-07-01`
+    ingest(await armListAllValues(url, token))
+  }
+
+  computeSkuCache.set(cacheKey, { at: Date.now(), rows: merged })
+  if (computeSkuCache.size > 24) {
+    const oldestKey = [...computeSkuCache.entries()].sort((a, b) => a[1].at - b[1].at)[0]?.[0]
+    if (oldestKey) computeSkuCache.delete(oldestKey)
+  }
+
+  return filterComputeSkusForInventory(merged, skuNames)
 }
 
 async function fetchProviderResourceTypeLocations(namespace, typeName) {
@@ -1416,7 +1530,13 @@ async function evaluateInventoryForRegions({
   const errors = []
   if (needsComputeSkus) {
     try {
-      computeSkus = await fetchComputeSkus(azureSubscriptionId)
+      const skuNames = items.flatMap((item) =>
+        [item.sku, item.size].map((v) => String(v || '').trim()).filter(Boolean),
+      )
+      computeSkus = await fetchComputeSkus(azureSubscriptionId, {
+        regionIds: normalizedTargets.map((region) => region.id),
+        skuNames,
+      })
     } catch (err) {
       errors.push({
         scope: 'Microsoft.Compute/skus',
