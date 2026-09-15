@@ -151,6 +151,25 @@ a {
   box-shadow: inset 0 0 0 1px rgba(25, 179, 191, 0.28);
 }
 
+.nav-link.disabled,
+.nav-link:disabled,
+.nav-group.nav-locked .nav-group-trigger:disabled {
+  opacity: 0.38;
+  color: #8fa3b5;
+  cursor: not-allowed;
+  pointer-events: none;
+  transform: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.nav-link.disabled:hover,
+.nav-link:disabled:hover {
+  background: transparent;
+  color: #8fa3b5;
+  transform: none;
+}
+
 .nav-link .badge {
   margin-left: auto;
   background: #19b3bf;
@@ -3331,6 +3350,82 @@ tr.is-selected-row td {
   .forecast-agent-layout.history-collapsed .forecast-history-rail {
     order: -1;
   }
+}
+
+.logout-btn {
+  margin-top: 0.75rem;
+  width: 100%;
+  justify-content: center;
+  color: #d7e8f2 !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+.login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background:
+    radial-gradient(1000px 500px at 85% -10%, rgba(14, 124, 134, 0.18), transparent 55%),
+    radial-gradient(800px 420px at 0% 100%, rgba(31, 95, 191, 0.12), transparent 50%),
+    linear-gradient(165deg, #0b1b2b 0%, #123149 55%, #0e3a45 100%);
+}
+
+.login-card {
+  width: min(26rem, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  padding: 1.4rem 1.4rem 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.login-brand h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  color: var(--ink);
+}
+
+.login-brand p {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.login-submit {
+  width: 100%;
+  justify-content: center;
+  margin-top: 0.25rem;
+}
+
+.login-error {
+  color: var(--danger);
+  font-size: 0.88rem;
+}
+
+.login-hint {
+  border-top: 1px solid var(--line);
+  padding-top: 0.85rem;
+  font-size: 0.82rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
 }
 
 

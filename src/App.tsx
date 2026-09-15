@@ -1,6 +1,8 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './components/AppLayout'
+import { RequireAuth } from './components/RequireAuth'
 import { AppProvider } from './context/AppContext'
+import { AuthProvider } from './context/AuthContext'
 import { AdminPage } from './pages/AdminPage'
 import { AlertsPage } from './pages/AlertsPage'
 import { CapacityCalendarPage } from './pages/CapacityCalendarPage'
@@ -12,6 +14,7 @@ import { CustomerRiskPage } from './pages/CustomerRiskPage'
 import { CustomerRiskDetailPage } from './pages/CustomerRiskDetailPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { InventoryPage } from './pages/InventoryPage'
+import { LoginPage } from './pages/LoginPage'
 import { NewConstraintPage } from './pages/NewConstraintPage'
 import { QuotaGroupsPage } from './pages/QuotaGroupsPage'
 import { QuotasPage } from './pages/QuotasPage'
@@ -26,35 +29,40 @@ import { RewardsPage } from './pages/RewardsPage'
 export default function App() {
   return (
     <AppProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route element={<AppLayout />}>
-            <Route index element={<DashboardPage />} />
-            <Route path="connect" element={<ConnectPage />} />
-            <Route path="constraints" element={<ConstraintsPage />} />
-            <Route path="constraints/calendar" element={<CapacityCalendarPage />} />
-            <Route path="constraints/new" element={<NewConstraintPage />} />
-            <Route path="constraints/:id" element={<ConstraintDetailPage />} />
-            <Route path="customers" element={<CustomersPage />} />
-            <Route path="customers/risk" element={<CustomerRiskPage />} />
-            <Route path="customers/risk/:id" element={<CustomerRiskDetailPage />} />
-            <Route path="customers/:id" element={<CustomerDetailPage />} />
-            <Route path="inventory" element={<InventoryPage />} />
-            <Route path="quotas" element={<QuotasPage />} />
-            <Route path="quota-groups" element={<QuotaGroupsPage />} />
-            <Route path="region-evaluation" element={<RegionEvaluationPage />} />
-            <Route path="region-evaluation/strategy" element={<MultiregionStrategyPage />} />
-            <Route path="region-evaluation/history" element={<RegionEvaluationsPage />} />
-            <Route path="region-evaluation/cost-analysis" element={<RegionCostAnalysisPage />} />
-            <Route path="forecast" element={<ForecastAgentPage />} />
-            <Route path="reports" element={<ReportsPage />} />
-            <Route path="alerts" element={<AlertsPage />} />
-            <Route path="rewards" element={<RewardsPage />} />
-            <Route path="admin" element={<AdminPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+      <AuthProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="login" element={<LoginPage />} />
+            <Route element={<RequireAuth />}>
+              <Route element={<AppLayout />}>
+                <Route index element={<DashboardPage />} />
+                <Route path="connect" element={<ConnectPage />} />
+                <Route path="constraints" element={<ConstraintsPage />} />
+                <Route path="constraints/calendar" element={<CapacityCalendarPage />} />
+                <Route path="constraints/new" element={<NewConstraintPage />} />
+                <Route path="constraints/:id" element={<ConstraintDetailPage />} />
+                <Route path="customers" element={<CustomersPage />} />
+                <Route path="customers/risk" element={<CustomerRiskPage />} />
+                <Route path="customers/risk/:id" element={<CustomerRiskDetailPage />} />
+                <Route path="customers/:id" element={<CustomerDetailPage />} />
+                <Route path="inventory" element={<InventoryPage />} />
+                <Route path="quotas" element={<QuotasPage />} />
+                <Route path="quota-groups" element={<QuotaGroupsPage />} />
+                <Route path="region-evaluation" element={<RegionEvaluationPage />} />
+                <Route path="region-evaluation/strategy" element={<MultiregionStrategyPage />} />
+                <Route path="region-evaluation/history" element={<RegionEvaluationsPage />} />
+                <Route path="region-evaluation/cost-analysis" element={<RegionCostAnalysisPage />} />
+                <Route path="forecast" element={<ForecastAgentPage />} />
+                <Route path="reports" element={<ReportsPage />} />
+                <Route path="alerts" element={<AlertsPage />} />
+                <Route path="rewards" element={<RewardsPage />} />
+                <Route path="admin" element={<AdminPage />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Route>
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
     </AppProvider>
   )
 }

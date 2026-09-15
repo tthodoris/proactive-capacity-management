@@ -20,6 +20,7 @@ import {
   Users,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { useAuth } from '../context/AuthContext'
 import { useApp } from '../context/AppContext'
 import { RewardToast } from './RewardToast'
 import type { UserRole } from '../types'
@@ -29,6 +30,10 @@ type NavItem = {
   label: string
   icon: typeof LayoutDashboard
   children?: Array<{ to: string; label: string; icon: typeof LayoutDashboard }>
+}
+
+function navItemAllowedForGuest(to: string) {
+  return to === '/forecast'
 }
 
 const nav: NavItem[] = [
@@ -209,6 +214,7 @@ function isGroupPath(item: NavItem, pathname: string) {
 
 export function AppLayout() {
   const { user, setRole, alerts, getUserPoints } = useApp()
+  const { isGuest, logout, session } = useAuth()
   const location = useLocation()
   const meta = resolveTitle(location.pathname)
   const unread = alerts.filter((a) => !a.read && a.csaOwnerId === user.id).length
@@ -244,18 +250,25 @@ export function AppLayout() {
           <div className="nav-label">Workspace</div>
           {nav.map((item) => {
             const Icon = item.icon
+            const locked = isGuest && !navItemAllowedForGuest(item.to)
             if (item.children?.length) {
               const sectionActive = isGroupPath(item, location.pathname)
-              const menuOpen = Boolean(openGroups[item.to])
+              const menuOpen = Boolean(openGroups[item.to]) && !locked
               return (
-                <div key={item.to} className="nav-group">
+                <div key={item.to} className={`nav-group${locked ? ' nav-locked' : ''}`}>
                   <button
                     type="button"
-                    className={`nav-link nav-group-trigger${sectionActive ? ' active' : ''}`}
+                    className={`nav-link nav-group-trigger${sectionActive && !locked ? ' active' : ''}${
+                      locked ? ' disabled' : ''
+                    }`}
                     aria-expanded={menuOpen}
-                    onClick={() =>
+                    aria-disabled={locked}
+                    disabled={locked}
+                    title={locked ? 'Available to admin users only' : undefined}
+                    onClick={() => {
+                      if (locked) return
                       setOpenGroups((prev) => ({ ...prev, [item.to]: !prev[item.to] }))
-                    }
+                    }}
                   >
                     <Icon size={18} />
                     <span>{item.label}</span>
@@ -289,6 +302,22 @@ export function AppLayout() {
               )
             }
 
+            if (locked) {
+              return (
+                <span
+                  key={item.to}
+                  className="nav-link disabled"
+                  aria-disabled="true"
+                  title="Available to admin users only"
+                >
+                  <Icon size={18} />
+                  <span>{item.label}</span>
+                  {item.to === '/alerts' && unread > 0 ? <span className="badge">{unread}</span> : null}
+                  {item.to === '/rewards' ? <span className="badge">{points}</span> : null}
+                </span>
+              )
+            }
+
             return (
               <NavLink
                 key={item.to}
@@ -317,11 +346,17 @@ export function AppLayout() {
             className="role-select"
             value={user.role}
             onChange={(e) => setRole(e.target.value as UserRole)}
+            disabled={isGuest}
           >
             <option>CSA</option>
             <option>Capacity Manager</option>
             <option>Administrator</option>
           </select>
+          {session ? (
+            <button type="button" className="btn btn-ghost logout-btn" onClick={logout}>
+              Sign out ({session.username})
+            </button>
+          ) : null}
         </div>
       </aside>
 
