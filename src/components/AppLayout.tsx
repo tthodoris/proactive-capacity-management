@@ -12,6 +12,7 @@ import {
   Layers,
   LayoutDashboard,
   MapPinned,
+  MessageSquareText,
   PlugZap,
   Settings2,
   ShieldAlert,
@@ -65,6 +66,7 @@ const nav: NavItem[] = [
       { to: '/region-evaluation/cost-analysis', label: 'Cost analysis', icon: BarChart3 },
     ],
   },
+  { to: '/forecast', label: 'Capacity forecast', icon: MessageSquareText },
   { to: '/reports', label: 'Reports', icon: BarChart3 },
   { to: '/alerts', label: 'Alerts & Engagement', icon: Bell },
   { to: '/rewards', label: 'Rewards', icon: Trophy },
@@ -133,6 +135,11 @@ const titles: Record<string, { title: string; subtitle: string }> = {
     title: 'Cost analysis',
     subtitle:
       'Detailed source vs target retail cost comparison, subscription totals, and bar charts.',
+  },
+  '/forecast': {
+    title: 'Capacity forecasting agent',
+    subtitle:
+      'Ask natural-language questions about customer capacity outlook using MSX, Stratus, and CXObserve.',
   },
   '/reports': {
     title: 'Reports',

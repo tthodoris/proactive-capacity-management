@@ -8,6 +8,8 @@ Built from the PCM Business Requirements Document (v0.1 draft).
 
 ```bash
 npm install
+npm install --prefix capacity-forecasting-agent
+npm run build:agent
 npm run db:up
 npm run dev
 ```
@@ -49,6 +51,7 @@ Step-by-step (OIDC, secrets, Bicep): see [docs/azure-deploy.md](docs/azure-deplo
 - **Impact analysis** — automatic customer/subscription matching on create and on demand
 - **Customers / Inventory / Quotas** — portfolio views with CSA ownership filtering
 - **Alerts & engagement** — in-app/Teams/email-style alerts and Capacity-team engagement logging
+- **Capacity forecast** — Copilot agent chat over MSX / Stratus / CXObserve Excel datasources (`/forecast`; needs `GH_TOKEN` and `npm run build:agent`)
 - **Admin** — RBAC preview, data-source status, sync jobs
 
 Use the sidebar **Demo identity** control to switch between CSA, Capacity Manager, and Administrator.

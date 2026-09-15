@@ -19,6 +19,7 @@ import { RegionCostAnalysisPage } from './pages/RegionCostAnalysisPage'
 import { RegionEvaluationPage } from './pages/RegionEvaluationPage'
 import { RegionEvaluationsPage } from './pages/RegionEvaluationsPage'
 import { MultiregionStrategyPage } from './pages/MultiregionStrategyPage'
+import { ForecastAgentPage } from './pages/ForecastAgentPage'
 import { ReportsPage } from './pages/ReportsPage'
 import { RewardsPage } from './pages/RewardsPage'
 
@@ -45,6 +46,7 @@ export default function App() {
             <Route path="region-evaluation/strategy" element={<MultiregionStrategyPage />} />
             <Route path="region-evaluation/history" element={<RegionEvaluationsPage />} />
             <Route path="region-evaluation/cost-analysis" element={<RegionCostAnalysisPage />} />
+            <Route path="forecast" element={<ForecastAgentPage />} />
             <Route path="reports" element={<ReportsPage />} />
             <Route path="alerts" element={<AlertsPage />} />
             <Route path="rewards" element={<RewardsPage />} />

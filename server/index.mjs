@@ -45,6 +45,11 @@ import {
   upsertConstraint,
   upsertEngagement,
 } from './domain-db.mjs'
+import {
+  askCapacityAgent,
+  getCapacityAgentStatus,
+  resetCapacitySession,
+} from './agentChat.mjs'
 
 const app = express()
 const PORT = Number(process.env.PCM_API_PORT || 8787)
@@ -2882,6 +2887,48 @@ app.delete('/api/data/strategy-scenarios/:id', async (req, res) => {
     res.json({ ok: true })
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+app.get('/api/agent/status', async (_req, res) => {
+  try {
+    const status = await getCapacityAgentStatus()
+    res.status(status.ok === false ? 503 : 200).json(status)
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Capacity agent status failed')
+  }
+})
+
+app.post('/api/agent/chat', async (req, res) => {
+  try {
+    const message = String(req.body?.message || '').trim()
+    if (!message) return res.status(400).json({ error: 'message is required' })
+    const sessionId = String(req.body?.sessionId || randomUUID())
+    const result = await askCapacityAgent(sessionId, message)
+    res.json({
+      sessionId: result.sessionId,
+      reply:
+        result.answer ||
+        'I could not produce an answer. Try naming a sample customer (e.g. Hellenic Bank of Attica).',
+    })
+  } catch (err) {
+    sendRouteError(
+      res,
+      500,
+      err,
+      'Capacity agent chat failed. Ensure GH_TOKEN is set and capacity-forecasting-agent is built.',
+    )
+  }
+})
+
+app.post('/api/agent/reset', async (req, res) => {
+  try {
+    const sessionId = String(req.body?.sessionId || '').trim()
+    if (!sessionId) return res.status(400).json({ error: 'sessionId is required' })
+    await resetCapacitySession(sessionId)
+    res.json({ ok: true, sessionId })
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Capacity agent reset failed')
   }
 })
 

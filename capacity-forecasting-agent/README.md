@@ -6,6 +6,8 @@ Natural-language capacity forecasting agent built with:
 - **GitHub Copilot SDK** (`@github/copilot-sdk`) for model reasoning + tool calling
 - Excel datasources under `./datasources`
 
+> **PCM UI:** The same agent is available in the main app under **Capacity forecast** (`/forecast`), via `POST /api/agent/chat` on the PCM API (loads `dist/chatCore.js`).
+
 ## Datasources
 
 | File | Role |
@@ -14,7 +16,7 @@ Natural-language capacity forecasting agent built with:
 | `Stratus_Capacity_Availability.xlsx` | Current capacity, forecast, buildout plan, SKU alternatives |
 | `CXObserve_Inventory_ACR_Analysis.xlsx` | Inventory + 3-year ACR trend by Azure service |
 
-> **Note:** `CXObserve_Inventory_ACR_Analysis.xlsx` is currently **encrypted**. Until an unencrypted copy is provided, the agent generates **synthetic ACR trend rows** aligned to the MSX customer list and reports that in tool/datasource warnings.
+Sheets used from CXObserve: `Customer_Summary`, `Deployed_Inventory`, `Service_Growth_Ratio`.
 
 ## What the agent can answer
 
@@ -31,6 +33,7 @@ Natural-language capacity forecasting agent built with:
 - `get_capacity_availability`
 - `get_capacity_forecast`
 - `get_customer_acr_trend`
+- `get_customer_deployed_inventory`
 - `analyze_customer_capacity_risk`
 - `get_datasource_status`
 

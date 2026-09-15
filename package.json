@@ -6,10 +6,11 @@
   "scripts": {
     "dev": "concurrently -k -n api,web -c teal,cyan \"npm run dev:api\" \"npm run dev:web\"",
     "dev:web": "vite",
-    "dev:api": "node --env-file=.env server/index.mjs",
+    "dev:api": "npm run build:agent && node --env-file=.env server/index.mjs",
+    "build:agent": "npm run build --prefix capacity-forecasting-agent",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
-    "build": "tsc -b && vite build",
+    "build": "npm run build:agent && tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"
   },
