@@ -179,6 +179,27 @@ export async function initDb() {
       ON strategy_scenarios(customer_id);
     CREATE INDEX IF NOT EXISTS idx_strategy_scenarios_updated
       ON strategy_scenarios(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_chats (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT 'New chat',
+      model TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_chat_messages (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL REFERENCES agent_chats(id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_chats_updated
+      ON agent_chats(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_chat_messages_chat
+      ON agent_chat_messages(chat_id, created_at ASC);
   `)
 
   const { initDomainTables } = await import('./domain-db.mjs')
@@ -1155,4 +1176,159 @@ export async function deleteStrategyScenario(id) {
     [id],
   )
   return result.rowCount > 0
+}
+
+function mapAgentChat(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    model: row.model || null,
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+    preview: row.preview || null,
+    messageCount: row.message_count != null ? Number(row.message_count) : undefined,
+  }
+}
+
+function mapAgentChatMessage(row) {
+  return {
+    id: row.id,
+    role: row.role,
+    content: row.content,
+    at: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+  }
+}
+
+function titleFromPrompt(prompt) {
+  const cleaned = String(prompt || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!cleaned) return 'New chat'
+  return cleaned.length > 80 ? `${cleaned.slice(0, 77)}…` : cleaned
+}
+
+export async function listAgentChats({ limit = 20 } = {}) {
+  const capped = Math.min(Math.max(Number(limit) || 20, 1), 50)
+  const result = await pool.query(
+    `
+    SELECT
+      c.id,
+      c.title,
+      c.model,
+      c.created_at,
+      c.updated_at,
+      (
+        SELECT m.content
+        FROM agent_chat_messages m
+        WHERE m.chat_id = c.id AND m.role = 'user'
+        ORDER BY m.created_at ASC
+        LIMIT 1
+      ) AS preview,
+      (
+        SELECT COUNT(*)::int
+        FROM agent_chat_messages m
+        WHERE m.chat_id = c.id
+      ) AS message_count
+    FROM agent_chats c
+    ORDER BY c.updated_at DESC
+    LIMIT $1
+    `,
+    [capped],
+  )
+  return result.rows.map(mapAgentChat)
+}
+
+export async function getAgentChat(id) {
+  const chatResult = await pool.query(
+    `
+    SELECT id, title, model, created_at, updated_at
+    FROM agent_chats
+    WHERE id = $1
+    `,
+    [id],
+  )
+  if (!chatResult.rows[0]) return null
+  const messagesResult = await pool.query(
+    `
+    SELECT id, role, content, created_at
+    FROM agent_chat_messages
+    WHERE chat_id = $1
+    ORDER BY created_at ASC, id ASC
+    `,
+    [id],
+  )
+  return {
+    ...mapAgentChat(chatResult.rows[0]),
+    messages: messagesResult.rows.map(mapAgentChatMessage),
+  }
+}
+
+export async function appendAgentChatTurn({
+  chatId,
+  model,
+  userContent,
+  assistantContent,
+}) {
+  const id = String(chatId || '').trim()
+  if (!id) throw new Error('chatId is required')
+  const userText = String(userContent || '').trim()
+  const assistantText = String(assistantContent || '').trim()
+  if (!userText) throw new Error('userContent is required')
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const existing = await client.query(`SELECT id, title FROM agent_chats WHERE id = $1`, [id])
+    if (!existing.rows[0]) {
+      await client.query(
+        `
+        INSERT INTO agent_chats (id, title, model, created_at, updated_at)
+        VALUES ($1, $2, $3, NOW(), NOW())
+        `,
+        [id, titleFromPrompt(userText), model || null],
+      )
+    } else {
+      await client.query(
+        `
+        UPDATE agent_chats
+        SET
+          model = COALESCE($2, model),
+          updated_at = NOW(),
+          title = CASE
+            WHEN title = 'New chat' OR title IS NULL OR BTRIM(title) = ''
+              THEN $3
+            ELSE title
+          END
+        WHERE id = $1
+        `,
+        [id, model || null, titleFromPrompt(userText)],
+      )
+    }
+
+    const userId = randomUUID()
+    const assistantId = randomUUID()
+    await client.query(
+      `
+      INSERT INTO agent_chat_messages (id, chat_id, role, content, created_at)
+      VALUES ($1, $2, 'user', $3, NOW())
+      `,
+      [userId, id, userText],
+    )
+    if (assistantText) {
+      await client.query(
+        `
+        INSERT INTO agent_chat_messages (id, chat_id, role, content, created_at)
+        VALUES ($1, $2, 'assistant', $3, NOW())
+        `,
+        [assistantId, id, assistantText],
+      )
+    }
+    await client.query('COMMIT')
+    return getAgentChat(id)
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
 }

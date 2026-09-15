@@ -53,12 +53,43 @@ export type CapacityAgentChatResponse = {
   model?: string
 }
 
+export type CapacityAgentChatSummary = {
+  id: string
+  title: string
+  model?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  preview?: string | null
+  messageCount?: number
+}
+
+export type CapacityAgentChatMessage = {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  at: string
+}
+
+export type CapacityAgentChatDetail = CapacityAgentChatSummary & {
+  messages: CapacityAgentChatMessage[]
+}
+
 export function getCapacityAgentStatus() {
   return api<CapacityAgentStatus>('/api/agent/status')
 }
 
 export function getCapacityAgentModels() {
   return api<CapacityAgentModelsResponse>('/api/agent/models')
+}
+
+export function listCapacityAgentChats(limit = 20) {
+  return api<{ chats: CapacityAgentChatSummary[]; limit: number }>(
+    `/api/agent/chats?limit=${encodeURIComponent(String(limit))}`,
+  )
+}
+
+export function getCapacityAgentChat(chatId: string) {
+  return api<CapacityAgentChatDetail>(`/api/agent/chats/${encodeURIComponent(chatId)}`)
 }
 
 export function chatWithCapacityAgent(

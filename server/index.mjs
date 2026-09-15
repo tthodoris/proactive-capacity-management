@@ -31,6 +31,9 @@ import {
   listStrategyScenarios,
   upsertStrategyScenario,
   deleteStrategyScenario,
+  listAgentChats,
+  getAgentChat,
+  appendAgentChatTurn,
 } from './db.mjs'
 import { toSkuFamily } from './skuFamily.mjs'
 import { enrichResultsWithRetailPrices } from './retailPrices.mjs'
@@ -2921,12 +2924,23 @@ app.post('/api/agent/chat', async (req, res) => {
     const sessionId = String(req.body?.sessionId || randomUUID())
     const model = req.body?.model != null ? String(req.body.model) : undefined
     const result = await askCapacityAgent(sessionId, message, model)
+    const reply =
+      result.answer ||
+      'I could not produce an answer. Try naming a sample customer (e.g. Hellenic Bank of Attica).'
+    try {
+      await appendAgentChatTurn({
+        chatId: result.sessionId,
+        model: result.model,
+        userContent: message,
+        assistantContent: reply,
+      })
+    } catch (persistErr) {
+      console.error('Failed to persist agent chat turn:', persistErr)
+    }
     res.json({
       sessionId: result.sessionId,
       model: result.model,
-      reply:
-        result.answer ||
-        'I could not produce an answer. Try naming a sample customer (e.g. Hellenic Bank of Attica).',
+      reply,
     })
   } catch (err) {
     sendRouteError(
@@ -2935,6 +2949,26 @@ app.post('/api/agent/chat', async (req, res) => {
       err,
       'Capacity agent chat failed. Ensure GH_TOKEN is set and capacity-forecasting-agent is built.',
     )
+  }
+})
+
+app.get('/api/agent/chats', async (req, res) => {
+  try {
+    const limit = req.query.limit != null ? Number(req.query.limit) : 20
+    const chats = await listAgentChats({ limit })
+    res.json({ chats, limit: Math.min(Math.max(limit || 20, 1), 50) })
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Failed to list agent chats')
+  }
+})
+
+app.get('/api/agent/chats/:id', async (req, res) => {
+  try {
+    const chat = await getAgentChat(req.params.id)
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+    res.json(chat)
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Failed to load agent chat')
   }
 })
 

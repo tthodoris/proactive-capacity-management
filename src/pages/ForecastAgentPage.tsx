@@ -1,13 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AgentMarkdown } from '../components/AgentMarkdown'
 import {
   chatWithCapacityAgent,
+  getCapacityAgentChat,
   getCapacityAgentModels,
   getCapacityAgentStatus,
+  listCapacityAgentChats,
   resetCapacityAgentSession,
+  type CapacityAgentChatSummary,
   type CapacityAgentModel,
   type CapacityAgentStatus,
 } from '../lib/agentApi'
+import { formatRelative } from '../lib/format'
 
 type ChatRole = 'user' | 'assistant' | 'system'
 
@@ -21,6 +25,14 @@ type ChatMessage = {
 const SESSION_KEY = 'pcm.capacityAgent.sessionId'
 const MODEL_KEY = 'pcm.capacityAgent.model'
 
+const WELCOME_MESSAGE: ChatMessage = {
+  id: 'welcome',
+  role: 'assistant',
+  content:
+    'I am the Capacity Forecasting Agent. Ask about a customer’s opportunities, Stratus capacity risk, or CXObserve ACR growth — for example Hellenic Bank of Attica or CUST-002.',
+  at: new Date().toISOString(),
+}
+
 const SUGGESTIONS = [
   'What is the capacity forecast for Hellenic Bank of Attica?',
   'Where are we constrained for Aegean Retail Group VM SKUs?',
@@ -33,15 +45,7 @@ function newId() {
 }
 
 export function ForecastAgentPage() {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      content:
-        'I am the Capacity Forecasting Agent. Ask about a customer’s opportunities, Stratus capacity risk, or CXObserve ACR growth — for example Hellenic Bank of Attica or CUST-002.',
-      at: new Date().toISOString(),
-    },
-  ])
+  const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE])
   const [input, setInput] = useState('')
   const [sessionId, setSessionId] = useState<string | null>(() =>
     typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(SESSION_KEY) : null,
@@ -52,20 +56,39 @@ export function ForecastAgentPage() {
   )
   const [modelsWarning, setModelsWarning] = useState<string | null>(null)
   const [modelsSource, setModelsSource] = useState<'copilot' | 'fallback' | null>(null)
+  const [history, setHistory] = useState<CapacityAgentChatSummary[]>([])
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [loadingChatId, setLoadingChatId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<CapacityAgentStatus | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
+  const refreshHistory = useCallback(async () => {
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const result = await listCapacityAgentChats(20)
+      setHistory(result.chats)
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
-    Promise.all([getCapacityAgentStatus(), getCapacityAgentModels()])
-      .then(([s, modelList]) => {
+    Promise.all([getCapacityAgentStatus(), getCapacityAgentModels(), listCapacityAgentChats(20)])
+      .then(([s, modelList, chatList]) => {
         if (cancelled) return
         setStatus(s)
         setModels(modelList.models)
         setModelsSource(modelList.source)
         setModelsWarning(modelList.warning || null)
+        setHistory(chatList.chats)
+        setHistoryLoading(false)
         setSelectedModel((prev) => {
           const saved = prev || sessionStorage.getItem(MODEL_KEY) || ''
           const next =
@@ -84,6 +107,8 @@ export function ForecastAgentPage() {
             ok: false,
             error: err instanceof Error ? err.message : String(err),
           })
+          setHistoryLoading(false)
+          setHistoryError(err instanceof Error ? err.message : String(err))
         }
       })
     return () => {
@@ -98,6 +123,35 @@ export function ForecastAgentPage() {
   function onModelChange(nextModel: string) {
     setSelectedModel(nextModel)
     sessionStorage.setItem(MODEL_KEY, nextModel)
+  }
+
+  async function openChat(chatId: string) {
+    if (busy || loadingChatId) return
+    setLoadingChatId(chatId)
+    setError(null)
+    try {
+      const chat = await getCapacityAgentChat(chatId)
+      setSessionId(chat.id)
+      sessionStorage.setItem(SESSION_KEY, chat.id)
+      if (chat.model) {
+        setSelectedModel(chat.model)
+        sessionStorage.setItem(MODEL_KEY, chat.model)
+      }
+      setMessages(
+        chat.messages.length
+          ? chat.messages.map((m) => ({
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              at: m.at,
+            }))
+          : [WELCOME_MESSAGE],
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingChatId(null)
+    }
   }
 
   async function send(text: string) {
@@ -127,6 +181,7 @@ export function ForecastAgentPage() {
           at: new Date().toISOString(),
         },
       ])
+      void refreshHistory()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setError(message)
@@ -156,8 +211,8 @@ export function ForecastAgentPage() {
     setError(null)
     setMessages([
       {
+        ...WELCOME_MESSAGE,
         id: newId(),
-        role: 'assistant',
         content: 'Conversation cleared. Ask a new capacity forecast question.',
         at: new Date().toISOString(),
       },
@@ -227,81 +282,130 @@ export function ForecastAgentPage() {
         </div>
       </section>
 
-      <section className="panel forecast-agent-chat">
-        <div className="panel-body forecast-agent-thread">
-          {messages.map((m) => (
-            <div key={m.id} className={`forecast-bubble forecast-bubble-${m.role}`}>
-              <div className="forecast-bubble-label">
-                {m.role === 'user' ? 'You' : m.role === 'assistant' ? 'Agent' : 'System'}
-              </div>
-              <div className="forecast-bubble-body">
-                {m.role === 'assistant' ? (
-                  <AgentMarkdown content={m.content} />
-                ) : (
-                  <AgentMarkdown content={m.content} plain />
-                )}
-              </div>
+      <div className="forecast-agent-layout">
+        <aside className="panel forecast-history-panel">
+          <div className="panel-header">
+            <div>
+              <h4>Recent chats</h4>
+              <p>Last 20 conversations</p>
             </div>
-          ))}
-          {busy ? (
-            <div className="forecast-bubble forecast-bubble-assistant">
-              <div className="forecast-bubble-label">Agent</div>
-              <div className="forecast-bubble-body muted">
-                Analyzing opportunities, capacity, and ACR trends…
-              </div>
-            </div>
-          ) : null}
-          <div ref={bottomRef} />
-        </div>
-
-        <div className="forecast-agent-composer">
-          <div className="forecast-suggestions">
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                type="button"
-                className="btn btn-ghost forecast-suggestion"
-                disabled={busy || !status?.ok}
-                onClick={() => void send(s)}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-          <form
-            className="forecast-agent-form"
-            onSubmit={(e) => {
-              e.preventDefault()
-              void send(input)
-            }}
-          >
-            <label className="field full" style={{ margin: 0, flex: 1 }}>
-              <span className="sr-only">Message</span>
-              <textarea
-                rows={3}
-                value={input}
-                disabled={busy || status?.ok === false}
-                placeholder="Ask about a customer capacity outlook…"
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    void send(input)
-                  }
-                }}
-              />
-            </label>
             <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={busy || !input.trim() || status?.ok === false}
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => void refreshHistory()}
+              disabled={historyLoading || busy}
             >
-              {busy ? 'Working…' : 'Send'}
+              Refresh
             </button>
-          </form>
-          {error ? <div className="forecast-agent-error">{error}</div> : null}
-        </div>
-      </section>
+          </div>
+          <div className="panel-body forecast-history-list">
+            {historyLoading ? <div className="muted">Loading history…</div> : null}
+            {historyError ? <div className="forecast-agent-error">{historyError}</div> : null}
+            {!historyLoading && !historyError && history.length === 0 ? (
+              <div className="empty">No saved chats yet. Send a message to start one.</div>
+            ) : null}
+            {history.map((chat) => {
+              const active = chat.id === sessionId
+              return (
+                <button
+                  key={chat.id}
+                  type="button"
+                  className={`forecast-history-item${active ? ' active' : ''}`}
+                  disabled={busy || loadingChatId === chat.id}
+                  onClick={() => void openChat(chat.id)}
+                >
+                  <strong>{chat.title || 'Untitled chat'}</strong>
+                  <span className="muted">
+                    {chat.updatedAt ? formatRelative(chat.updatedAt) : 'Unknown time'}
+                    {chat.model ? ` · ${chat.model}` : ''}
+                    {chat.messageCount != null ? ` · ${chat.messageCount} msgs` : ''}
+                  </span>
+                  {chat.preview ? <span className="forecast-history-preview">{chat.preview}</span> : null}
+                  {loadingChatId === chat.id ? (
+                    <span className="muted">Opening…</span>
+                  ) : null}
+                </button>
+              )
+            })}
+          </div>
+        </aside>
+
+        <section className="panel forecast-agent-chat">
+          <div className="panel-body forecast-agent-thread">
+            {messages.map((m) => (
+              <div key={m.id} className={`forecast-bubble forecast-bubble-${m.role}`}>
+                <div className="forecast-bubble-label">
+                  {m.role === 'user' ? 'You' : m.role === 'assistant' ? 'Agent' : 'System'}
+                </div>
+                <div className="forecast-bubble-body">
+                  {m.role === 'assistant' ? (
+                    <AgentMarkdown content={m.content} />
+                  ) : (
+                    <AgentMarkdown content={m.content} plain />
+                  )}
+                </div>
+              </div>
+            ))}
+            {busy ? (
+              <div className="forecast-bubble forecast-bubble-assistant">
+                <div className="forecast-bubble-label">Agent</div>
+                <div className="forecast-bubble-body muted">
+                  Analyzing opportunities, capacity, and ACR trends…
+                </div>
+              </div>
+            ) : null}
+            <div ref={bottomRef} />
+          </div>
+
+          <div className="forecast-agent-composer">
+            <div className="forecast-suggestions">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className="btn btn-ghost forecast-suggestion"
+                  disabled={busy || !status?.ok}
+                  onClick={() => void send(s)}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            <form
+              className="forecast-agent-form"
+              onSubmit={(e) => {
+                e.preventDefault()
+                void send(input)
+              }}
+            >
+              <label className="field full" style={{ margin: 0, flex: 1 }}>
+                <span className="sr-only">Message</span>
+                <textarea
+                  rows={3}
+                  value={input}
+                  disabled={busy || status?.ok === false}
+                  placeholder="Ask about a customer capacity outlook…"
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      void send(input)
+                    }
+                  }}
+                />
+              </label>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={busy || !input.trim() || status?.ok === false}
+              >
+                {busy ? 'Working…' : 'Send'}
+              </button>
+            </form>
+            {error ? <div className="forecast-agent-error">{error}</div> : null}
+          </div>
+        </section>
+      </div>
     </div>
   )
 }
