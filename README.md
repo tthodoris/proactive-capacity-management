@@ -51,7 +51,7 @@ Step-by-step (OIDC, secrets, Bicep): see [docs/azure-deploy.md](docs/azure-deplo
 - **Impact analysis** — automatic customer/subscription matching on create and on demand
 - **Customers / Inventory / Quotas** — portfolio views with CSA ownership filtering
 - **Alerts & engagement** — in-app/Teams/email-style alerts and Capacity-team engagement logging
-- **Capacity forecast** — Copilot agent chat over MSX / Stratus / CXObserve Excel datasources (`/forecast`; needs `GH_TOKEN` and `npm run build:agent`)
+- **Capacity forecast** — Copilot agent chat over MSX / Stratus / CXObserve Excel datasources (`/forecast`; needs `GH_TOKEN` on the API and `npm run build:agent` locally)
 - **Admin** — RBAC preview, data-source status, sync jobs
 
 Use the sidebar **Demo identity** control to switch between CSA, Capacity Manager, and Administrator.

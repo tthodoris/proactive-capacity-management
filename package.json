@@ -10,7 +10,8 @@
     "build:agent": "npm run build --prefix capacity-forecasting-agent",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
-    "build": "npm run build:agent && tsc -b && vite build",
+    "build": "tsc -b && vite build",
+    "build:all": "npm run build:agent && npm run build",
     "lint": "oxlint",
     "preview": "vite preview"
   },
