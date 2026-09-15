@@ -2858,6 +2858,11 @@ tr.is-selected-row td {
   gap: 1rem;
   align-items: stretch;
   min-height: 28rem;
+  transition: grid-template-columns 180ms ease;
+}
+
+.forecast-agent-layout.history-collapsed {
+  grid-template-columns: 2.75rem minmax(0, 1fr);
 }
 
 .forecast-history-panel {
@@ -2865,6 +2870,58 @@ tr.is-selected-row td {
   flex-direction: column;
   min-height: 28rem;
   max-height: calc(100vh - 16rem);
+  min-width: 0;
+  overflow: hidden;
+  transition:
+    opacity 160ms ease,
+    transform 180ms ease;
+}
+
+.forecast-agent-layout.history-collapsed .forecast-history-panel {
+  display: none;
+}
+
+.forecast-history-header-actions {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.forecast-history-toggle {
+  padding: 0.35rem 0.45rem;
+  line-height: 0;
+}
+
+.forecast-history-rail {
+  display: none;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  width: 100%;
+  min-height: 28rem;
+  max-height: calc(100vh - 16rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink-soft);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  padding: 0.85rem 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.forecast-history-rail:hover {
+  border-color: rgba(14, 124, 134, 0.4);
+  background: var(--accent-soft);
+}
+
+.forecast-agent-layout.history-collapsed .forecast-history-rail {
+  display: inline-flex;
 }
 
 .forecast-history-panel .panel-header {
@@ -3248,9 +3305,31 @@ tr.is-selected-row td {
     grid-template-columns: 1fr;
   }
 
+  .forecast-agent-layout.history-collapsed {
+    grid-template-columns: 1fr;
+  }
+
   .forecast-history-panel {
     max-height: 18rem;
     min-height: 14rem;
+  }
+
+  .forecast-agent-layout.history-collapsed .forecast-history-panel {
+    display: none;
+  }
+
+  .forecast-history-rail {
+    writing-mode: horizontal-tb;
+    transform: none;
+    min-height: 0;
+    max-height: none;
+    flex-direction: row;
+    padding: 0.65rem 0.85rem;
+    width: 100%;
+  }
+
+  .forecast-agent-layout.history-collapsed .forecast-history-rail {
+    order: -1;
   }
 }
 

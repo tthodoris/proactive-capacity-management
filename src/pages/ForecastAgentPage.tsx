@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { ChevronLeft, ChevronRight, History } from 'lucide-react'
 import { AgentMarkdown } from '../components/AgentMarkdown'
 import {
   chatWithCapacityAgent,
@@ -24,6 +25,7 @@ type ChatMessage = {
 
 const SESSION_KEY = 'pcm.capacityAgent.sessionId'
 const MODEL_KEY = 'pcm.capacityAgent.model'
+const HISTORY_COLLAPSED_KEY = 'pcm.capacityAgent.historyCollapsed'
 
 const WELCOME_MESSAGE: ChatMessage = {
   id: 'welcome',
@@ -63,6 +65,11 @@ export function ForecastAgentPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<CapacityAgentStatus | null>(null)
+  const [historyCollapsed, setHistoryCollapsed] = useState(() =>
+    typeof localStorage !== 'undefined'
+      ? localStorage.getItem(HISTORY_COLLAPSED_KEY) === '1'
+      : false,
+  )
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
   const refreshHistory = useCallback(async () => {
@@ -123,6 +130,14 @@ export function ForecastAgentPage() {
   function onModelChange(nextModel: string) {
     setSelectedModel(nextModel)
     sessionStorage.setItem(MODEL_KEY, nextModel)
+  }
+
+  function toggleHistoryCollapsed() {
+    setHistoryCollapsed((prev) => {
+      const next = !prev
+      localStorage.setItem(HISTORY_COLLAPSED_KEY, next ? '1' : '0')
+      return next
+    })
   }
 
   async function openChat(chatId: string) {
@@ -282,23 +297,36 @@ export function ForecastAgentPage() {
         </div>
       </section>
 
-      <div className="forecast-agent-layout">
-        <aside className="panel forecast-history-panel">
+      <div className={`forecast-agent-layout${historyCollapsed ? ' history-collapsed' : ''}`}>
+        <aside className="panel forecast-history-panel" aria-hidden={historyCollapsed}>
           <div className="panel-header">
             <div>
               <h4>Recent chats</h4>
               <p>Last 20 conversations</p>
             </div>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={() => void refreshHistory()}
-              disabled={historyLoading || busy}
-            >
-              Refresh
-            </button>
+            <div className="forecast-history-header-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => void refreshHistory()}
+                disabled={historyLoading || busy || historyCollapsed}
+              >
+                Refresh
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost forecast-history-toggle"
+                onClick={toggleHistoryCollapsed}
+                aria-expanded={!historyCollapsed}
+                aria-controls="forecast-history-list"
+                title="Collapse recent chats"
+              >
+                <ChevronLeft size={16} aria-hidden />
+                <span className="sr-only">Collapse recent chats</span>
+              </button>
+            </div>
           </div>
-          <div className="panel-body forecast-history-list">
+          <div id="forecast-history-list" className="panel-body forecast-history-list">
             {historyLoading ? <div className="muted">Loading history…</div> : null}
             {historyError ? <div className="forecast-agent-error">{historyError}</div> : null}
             {!historyLoading && !historyError && history.length === 0 ? (
@@ -329,6 +357,18 @@ export function ForecastAgentPage() {
             })}
           </div>
         </aside>
+
+        <button
+          type="button"
+          className="forecast-history-rail"
+          onClick={toggleHistoryCollapsed}
+          aria-expanded={!historyCollapsed}
+          title="Expand recent chats"
+        >
+          <ChevronRight size={16} aria-hidden />
+          <History size={16} aria-hidden />
+          <span>Recent chats</span>
+        </button>
 
         <section className="panel forecast-agent-chat">
           <div className="panel-body forecast-agent-thread">
