@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { AgentMarkdown } from '../components/AgentMarkdown'
 import {
   chatWithCapacityAgent,
+  getCapacityAgentModels,
   getCapacityAgentStatus,
   resetCapacityAgentSession,
+  type CapacityAgentModel,
   type CapacityAgentStatus,
 } from '../lib/agentApi'
 
@@ -17,6 +19,7 @@ type ChatMessage = {
 }
 
 const SESSION_KEY = 'pcm.capacityAgent.sessionId'
+const MODEL_KEY = 'pcm.capacityAgent.model'
 
 const SUGGESTIONS = [
   'What is the capacity forecast for Hellenic Bank of Attica?',
@@ -43,6 +46,12 @@ export function ForecastAgentPage() {
   const [sessionId, setSessionId] = useState<string | null>(() =>
     typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(SESSION_KEY) : null,
   )
+  const [models, setModels] = useState<CapacityAgentModel[]>([])
+  const [selectedModel, setSelectedModel] = useState<string>(() =>
+    typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(MODEL_KEY) || '' : '',
+  )
+  const [modelsWarning, setModelsWarning] = useState<string | null>(null)
+  const [modelsSource, setModelsSource] = useState<'copilot' | 'fallback' | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<CapacityAgentStatus | null>(null)
@@ -50,9 +59,24 @@ export function ForecastAgentPage() {
 
   useEffect(() => {
     let cancelled = false
-    getCapacityAgentStatus()
-      .then((s) => {
-        if (!cancelled) setStatus(s)
+    Promise.all([getCapacityAgentStatus(), getCapacityAgentModels()])
+      .then(([s, modelList]) => {
+        if (cancelled) return
+        setStatus(s)
+        setModels(modelList.models)
+        setModelsSource(modelList.source)
+        setModelsWarning(modelList.warning || null)
+        setSelectedModel((prev) => {
+          const saved = prev || sessionStorage.getItem(MODEL_KEY) || ''
+          const next =
+            (saved && modelList.models.some((m) => m.id === saved) && saved) ||
+            modelList.defaultModel ||
+            s.defaultModel ||
+            s.model ||
+            ''
+          if (next) sessionStorage.setItem(MODEL_KEY, next)
+          return next
+        })
       })
       .catch((err) => {
         if (!cancelled) {
@@ -71,6 +95,11 @@ export function ForecastAgentPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages, busy])
 
+  function onModelChange(nextModel: string) {
+    setSelectedModel(nextModel)
+    sessionStorage.setItem(MODEL_KEY, nextModel)
+  }
+
   async function send(text: string) {
     const prompt = text.trim()
     if (!prompt || busy) return
@@ -82,9 +111,13 @@ export function ForecastAgentPage() {
     ])
     setBusy(true)
     try {
-      const result = await chatWithCapacityAgent(prompt, sessionId)
+      const result = await chatWithCapacityAgent(prompt, sessionId, selectedModel || undefined)
       setSessionId(result.sessionId)
       sessionStorage.setItem(SESSION_KEY, result.sessionId)
+      if (result.model) {
+        setSelectedModel(result.model)
+        sessionStorage.setItem(MODEL_KEY, result.model)
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -142,6 +175,23 @@ export function ForecastAgentPage() {
           </p>
         </div>
         <div className="forecast-agent-actions">
+          <label className="forecast-model-picker">
+            <span>Model</span>
+            <select
+              value={selectedModel}
+              disabled={busy || !models.length || status?.ok === false}
+              onChange={(e) => onModelChange(e.target.value)}
+              aria-label="Copilot model"
+            >
+              {!models.length ? <option value="">Loading models…</option> : null}
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                  {m.id === (status?.defaultModel || status?.model) ? ' (default)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
           <button type="button" className="btn btn-ghost" onClick={onReset} disabled={busy}>
             New chat
           </button>
@@ -159,12 +209,18 @@ export function ForecastAgentPage() {
           {status?.ok ? (
             <span className="muted">
               {status.counts?.customers ?? 0} customers · {status.counts?.opportunities ?? 0}{' '}
-              opportunities · {status.counts?.inventoryAcr ?? 0} ACR rows · model{' '}
-              {status.model || 'gpt-4.1'}
+              opportunities · {status.counts?.inventoryAcr ?? 0} ACR rows · using{' '}
+              {selectedModel || status.defaultModel || status.model || 'default model'}
+              {modelsSource === 'copilot' ? ' · org/account model list' : null}
             </span>
           ) : (
             <span className="muted">{status?.error || 'Checking agent…'}</span>
           )}
+          {modelsWarning ? (
+            <span className="pill pill-medium" title={modelsWarning}>
+              Model list fallback
+            </span>
+          ) : null}
           {status?.warnings?.length ? (
             <span className="pill pill-medium">{status.warnings.length} datasource warning(s)</span>
           ) : null}

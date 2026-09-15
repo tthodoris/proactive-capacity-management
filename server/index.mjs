@@ -48,6 +48,7 @@ import {
 import {
   askCapacityAgent,
   getCapacityAgentStatus,
+  listCapacityModels,
   resetCapacitySession,
 } from './agentChat.mjs'
 
@@ -2899,14 +2900,30 @@ app.get('/api/agent/status', async (_req, res) => {
   }
 })
 
+app.get('/api/agent/models', async (_req, res) => {
+  try {
+    const models = await listCapacityModels()
+    res.json(models)
+  } catch (err) {
+    sendRouteError(
+      res,
+      500,
+      err,
+      'Could not list Copilot models. Ensure GH_TOKEN is set for an account with Copilot access.',
+    )
+  }
+})
+
 app.post('/api/agent/chat', async (req, res) => {
   try {
     const message = String(req.body?.message || '').trim()
     if (!message) return res.status(400).json({ error: 'message is required' })
     const sessionId = String(req.body?.sessionId || randomUUID())
-    const result = await askCapacityAgent(sessionId, message)
+    const model = req.body?.model != null ? String(req.body.model) : undefined
+    const result = await askCapacityAgent(sessionId, message, model)
     res.json({
       sessionId: result.sessionId,
+      model: result.model,
       reply:
         result.answer ||
         'I could not produce an answer. Try naming a sample customer (e.g. Hellenic Bank of Attica).',

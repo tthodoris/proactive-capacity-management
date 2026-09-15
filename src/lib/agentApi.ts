@@ -17,6 +17,7 @@ export type CapacityAgentStatus = {
   error?: string
   hasGitHubToken?: boolean
   model?: string
+  defaultModel?: string
   loadedAt?: string
   sources?: string[]
   warnings?: string[]
@@ -31,19 +32,47 @@ export type CapacityAgentStatus = {
   activeSessions?: number
 }
 
+export type CapacityAgentModel = {
+  id: string
+  name: string
+  policyState?: string
+  supportsReasoningEffort?: boolean
+  billingMultiplier?: number
+}
+
+export type CapacityAgentModelsResponse = {
+  models: CapacityAgentModel[]
+  defaultModel: string
+  source: 'copilot' | 'fallback'
+  warning?: string
+}
+
 export type CapacityAgentChatResponse = {
   sessionId: string
   reply: string
+  model?: string
 }
 
 export function getCapacityAgentStatus() {
   return api<CapacityAgentStatus>('/api/agent/status')
 }
 
-export function chatWithCapacityAgent(message: string, sessionId?: string | null) {
+export function getCapacityAgentModels() {
+  return api<CapacityAgentModelsResponse>('/api/agent/models')
+}
+
+export function chatWithCapacityAgent(
+  message: string,
+  sessionId?: string | null,
+  model?: string | null,
+) {
   return api<CapacityAgentChatResponse>('/api/agent/chat', {
     method: 'POST',
-    body: JSON.stringify({ message, sessionId: sessionId || undefined }),
+    body: JSON.stringify({
+      message,
+      sessionId: sessionId || undefined,
+      model: model || undefined,
+    }),
   })
 }
 

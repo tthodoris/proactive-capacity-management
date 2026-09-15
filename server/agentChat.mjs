@@ -42,9 +42,14 @@ export async function getCapacityAgentStatus() {
   }
 }
 
-export async function askCapacityAgent(sessionId, message) {
+export async function listCapacityModels() {
   const core = await loadChatCore()
-  return core.askCapacityAgent(sessionId, message)
+  return core.listCapacityModels()
+}
+
+export async function askCapacityAgent(sessionId, message, model) {
+  const core = await loadChatCore()
+  return core.askCapacityAgent(sessionId, message, { model })
 }
 
 export async function resetCapacitySession(sessionId) {
