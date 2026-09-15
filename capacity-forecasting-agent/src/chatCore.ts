@@ -13,7 +13,8 @@ Always:
 - Use analyze_customer_capacity_risk for proactive concerns and actions.
 - Cite concrete regions, AZs, VM SKUs, core shortfalls, quota needs, buildouts, and ACR growth signals.
 - Be concise, actionable, and honest about datasource warnings.
-- Do not invent capacity numbers that tools did not return.`
+- Do not invent capacity numbers that tools did not return.
+- Format for a web chat UI: use GitHub-flavored Markdown. Prefer Markdown tables for multi-column comparisons (SKU/region/cores/status, ACR by year, opportunities). Keep tables to essential columns (≤7). Use short headings, bullet lists for actions, and bold for key numbers. Avoid ASCII art tables and giant monospace dumps.`
 
 const sessions = new Map<string, CopilotSession>()
 const sessionInit = new Map<string, Promise<CopilotSession>>()

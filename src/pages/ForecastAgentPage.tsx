@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { AgentMarkdown } from '../components/AgentMarkdown'
 import {
   chatWithCapacityAgent,
   getCapacityAgentStatus,
@@ -177,13 +178,21 @@ export function ForecastAgentPage() {
               <div className="forecast-bubble-label">
                 {m.role === 'user' ? 'You' : m.role === 'assistant' ? 'Agent' : 'System'}
               </div>
-              <div className="forecast-bubble-body">{m.content}</div>
+              <div className="forecast-bubble-body">
+                {m.role === 'assistant' ? (
+                  <AgentMarkdown content={m.content} />
+                ) : (
+                  <AgentMarkdown content={m.content} plain />
+                )}
+              </div>
             </div>
           ))}
           {busy ? (
             <div className="forecast-bubble forecast-bubble-assistant">
               <div className="forecast-bubble-label">Agent</div>
-              <div className="forecast-bubble-body muted">Analyzing opportunities, capacity, and ACR trends…</div>
+              <div className="forecast-bubble-body muted">
+                Analyzing opportunities, capacity, and ACR trends…
+              </div>
             </div>
           ) : null}
           <div ref={bottomRef} />

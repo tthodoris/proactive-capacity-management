@@ -2886,7 +2886,7 @@ tr.is-selected-row td {
 }
 
 .forecast-bubble {
-  max-width: min(48rem, 92%);
+  max-width: min(56rem, 96%);
   padding: 0.75rem 0.95rem;
   border-radius: 14px;
   border: 1px solid var(--line);
@@ -2897,10 +2897,13 @@ tr.is-selected-row td {
   align-self: flex-end;
   background: var(--accent-soft);
   border-color: rgba(14, 124, 134, 0.25);
+  max-width: min(40rem, 92%);
 }
 
 .forecast-bubble-assistant {
-  align-self: flex-start;
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
 }
 
 .forecast-bubble-system {
@@ -2920,9 +2923,150 @@ tr.is-selected-row td {
 }
 
 .forecast-bubble-body {
-  white-space: pre-wrap;
   line-height: 1.45;
   font-size: 0.95rem;
+}
+
+.forecast-md-plain {
+  white-space: pre-wrap;
+}
+
+.forecast-md > *:first-child {
+  margin-top: 0;
+}
+
+.forecast-md > *:last-child {
+  margin-bottom: 0;
+}
+
+.forecast-md p,
+.forecast-md ul,
+.forecast-md ol,
+.forecast-md pre,
+.forecast-md blockquote,
+.forecast-md .forecast-table-scroll {
+  margin: 0.55rem 0;
+}
+
+.forecast-md h1,
+.forecast-md h2,
+.forecast-md h3,
+.forecast-md h4 {
+  font-family: var(--font-display);
+  font-weight: 650;
+  line-height: 1.25;
+  margin: 0.85rem 0 0.4rem;
+  color: var(--ink);
+}
+
+.forecast-md h1 {
+  font-size: 1.15rem;
+}
+.forecast-md h2 {
+  font-size: 1.05rem;
+}
+.forecast-md h3,
+.forecast-md h4 {
+  font-size: 0.98rem;
+}
+
+.forecast-md ul,
+.forecast-md ol {
+  padding-left: 1.25rem;
+}
+
+.forecast-md li + li {
+  margin-top: 0.25rem;
+}
+
+.forecast-md strong {
+  font-weight: 650;
+  color: var(--ink-soft);
+}
+
+.forecast-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+  background: rgba(11, 27, 43, 0.06);
+  border-radius: 4px;
+  padding: 0.08rem 0.28rem;
+}
+
+.forecast-md pre {
+  overflow-x: auto;
+  background: rgba(11, 27, 43, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem 0.85rem;
+}
+
+.forecast-md pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.forecast-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  -webkit-overflow-scrolling: touch;
+}
+
+.forecast-md table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.forecast-md thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-soft);
+  font-weight: 650;
+  text-align: left;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.forecast-md th,
+.forecast-md td {
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.forecast-md tbody tr:nth-child(even) td {
+  background: rgba(243, 247, 251, 0.65);
+}
+
+.forecast-md tbody tr:hover td {
+  background: var(--accent-soft);
+}
+
+.forecast-md td:first-child,
+.forecast-md th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: inherit;
+  box-shadow: 4px 0 8px -6px rgba(11, 27, 43, 0.25);
+}
+
+.forecast-md thead th:first-child {
+  z-index: 2;
+  background: var(--panel-soft);
+}
+
+.forecast-md a {
+  color: var(--accent-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .forecast-agent-composer {
