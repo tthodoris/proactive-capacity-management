@@ -364,3 +364,38 @@ export function evaluateRegions(payload: {
     body: JSON.stringify(payload),
   })
 }
+
+export const ADX_DEFAULT_CLUSTER =
+  'https://reliabilityrptwus3prod.westus3.kusto.windows.net'
+export const ADX_DEFAULT_DATABASE = 'customerdomdata'
+export const ADX_VALIDATION_QUERY = `CustomerResourceModel
+| where TPID == "5572428" and ResourceGroup == 'ia28-rg01'
+| order by Type`
+
+export type AdxColumn = { name: string; type?: string }
+
+export type AdxValidateResponse = {
+  ok: boolean
+  account: AzureConnection['account']
+  cluster: string
+  database: string
+  query: string
+  columns: AdxColumn[]
+  rowCount: number
+  rows: Array<Record<string, unknown>>
+  previewLimit: number
+  fetchedAt: string
+  message: string
+}
+
+export function validateAdxConnection(payload?: {
+  clusterUri?: string
+  database?: string
+  query?: string
+  previewLimit?: number
+}) {
+  return api<AdxValidateResponse>('/api/azure/adx/validate', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  })
+}

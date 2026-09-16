@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Database,
   Gauge,
   Layers,
   Link2,
@@ -16,6 +17,9 @@ import { CheckboxMultiSelect } from './CheckboxMultiSelect'
 import { RetrievalLogEntryView } from './RetrievalLogEntryView'
 import { useApp } from '../context/AppContext'
 import {
+  ADX_DEFAULT_CLUSTER,
+  ADX_DEFAULT_DATABASE,
+  ADX_VALIDATION_QUERY,
   cancelAzureLogin,
   connectTenant,
   disconnectTenant,
@@ -24,6 +28,8 @@ import {
   fetchTenantInfo,
   getAzureStatus,
   setSubscription,
+  validateAdxConnection,
+  type AdxValidateResponse,
   type AzureConnection,
   type AzureRegionOption,
   type AzureSubscriptionOption,
@@ -33,6 +39,17 @@ import { formatDate, formatHoursAgo, isWithinDays, maxIsoDate } from '../lib/for
 import type { Customer } from '../types'
 
 const RECENT_RETRIEVAL_DAYS = 2
+
+function formatAdxCell(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
 
 export function TenantConnectPanel() {
   const {
@@ -97,6 +114,8 @@ export function TenantConnectPanel() {
   const [startingInventory, setStartingInventory] = useState(false)
   const [startingQuotas, setStartingQuotas] = useState(false)
   const [startingQuotaGroups, setStartingQuotaGroups] = useState(false)
+  const [validatingAdx, setValidatingAdx] = useState(false)
+  const [adxResult, setAdxResult] = useState<AdxValidateResponse | null>(null)
   const [activityExpanded, setActivityExpanded] = useState(false)
   const pollRef = useRef<number | null>(null)
   const restoreAttemptedRef = useRef(false)
@@ -754,6 +773,28 @@ export function TenantConnectPanel() {
     }
   }
 
+  async function onValidateAdx() {
+    if (validatingAdx || !connected) return
+    setValidatingAdx(true)
+    setError(null)
+    setAdxResult(null)
+    try {
+      await ensureAzureSession()
+      const result = await validateAdxConnection({
+        clusterUri: ADX_DEFAULT_CLUSTER,
+        database: ADX_DEFAULT_DATABASE,
+        query: ADX_VALIDATION_QUERY,
+        previewLimit: 50,
+      })
+      setAdxResult(result)
+      setStatusNote(result.message)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setValidatingAdx(false)
+    }
+  }
+
   async function copyCode() {
     if (!connection?.deviceCode) return
     await navigator.clipboard.writeText(connection.deviceCode)
@@ -1081,6 +1122,85 @@ export function TenantConnectPanel() {
                   </Link>
                 </div>
               ) : null}
+
+              <section className="adx-connect-panel">
+                <div className="panel-header" style={{ paddingInline: 0 }}>
+                  <div>
+                    <h4>ADX inventory source</h4>
+                    <p>
+                      Connect to Azure Data Explorer and run a validation query. Full customer
+                      inventory collection queries will be wired next.
+                    </p>
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={() => void onValidateAdx()}
+                    disabled={validatingAdx || busy}
+                    aria-busy={validatingAdx}
+                  >
+                    {validatingAdx ? (
+                      <LoaderCircle size={16} className="spin" />
+                    ) : (
+                      <Database size={16} />
+                    )}
+                    {validatingAdx ? 'Validating ADX…' : 'Validate ADX query'}
+                  </button>
+                </div>
+                <div className="stack">
+                  <div className="muted" style={{ fontSize: '0.88rem' }}>
+                    <div>
+                      <strong>Cluster:</strong> {ADX_DEFAULT_CLUSTER}
+                    </div>
+                    <div>
+                      <strong>Database:</strong> {ADX_DEFAULT_DATABASE}
+                    </div>
+                    <div style={{ marginTop: '0.35rem' }}>
+                      <strong>Validation query</strong>
+                      <pre className="adx-query-preview">{ADX_VALIDATION_QUERY}</pre>
+                    </div>
+                  </div>
+
+                  {adxResult ? (
+                    <div className="stack">
+                      <div className="list-row">
+                        <div style={{ flex: 1 }}>
+                          <strong>{adxResult.message}</strong>
+                          <div className="muted">
+                            {adxResult.rowCount} row(s) · showing up to {adxResult.previewLimit} ·{' '}
+                            {adxResult.fetchedAt ? formatDate(adxResult.fetchedAt) : 'just now'}
+                          </div>
+                        </div>
+                        <span className={`pill ${adxResult.rowCount > 0 ? 'pill-ok' : 'pill-medium'}`}>
+                          {adxResult.rowCount > 0 ? 'query ok' : '0 rows'}
+                        </span>
+                      </div>
+                      {adxResult.rows.length > 0 ? (
+                        <div className="adx-result-scroll">
+                          <table className="adx-result-table">
+                            <thead>
+                              <tr>
+                                {adxResult.columns.map((col) => (
+                                  <th key={col.name}>{col.name}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {adxResult.rows.map((row, idx) => (
+                                <tr key={idx}>
+                                  {adxResult.columns.map((col) => (
+                                    <td key={col.name}>{formatAdxCell(row[col.name])}</td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </section>
 
               {customerJobs.length > 0 || customerLog.length > 0 ? (
                 <div className="collapsible-block">

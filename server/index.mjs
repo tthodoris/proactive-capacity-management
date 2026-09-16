@@ -1306,6 +1306,93 @@ async function getArmAccessToken() {
   return String(parsed.accessToken)
 }
 
+const ADX_DEFAULT_CLUSTER = 'https://reliabilityrptwus3prod.westus3.kusto.windows.net'
+const ADX_DEFAULT_DATABASE = 'customerdomdata'
+const ADX_VALIDATION_QUERY = `CustomerResourceModel
+| where TPID == "5572428" and ResourceGroup == 'ia28-rg01'
+| order by Type`
+
+async function getKustoAccessToken(clusterUri) {
+  const resource = String(clusterUri || ADX_DEFAULT_CLUSTER).replace(/\/+$/, '')
+  const { stdout } = await runAz(
+    ['account', 'get-access-token', '--resource', resource, '-o', 'json'],
+    { timeoutMs: 30_000 },
+  )
+  const parsed = JSON.parse(stdout)
+  if (!parsed?.accessToken) {
+    throw new Error(`Failed to acquire ADX access token for ${resource}`)
+  }
+  return String(parsed.accessToken)
+}
+
+function parseKustoV1Tables(payload) {
+  const tables = Array.isArray(payload?.Tables) ? payload.Tables : []
+  // Prefer PrimaryResult; otherwise first table with rows.
+  const primary =
+    tables.find((t) => String(t?.TableName || '') === 'PrimaryResult') ||
+    tables.find((t) => Array.isArray(t?.Rows) && t.Rows.length > 0) ||
+    tables[0]
+  if (!primary) {
+    return { columns: [], rows: [], rowCount: 0 }
+  }
+  const columns = (primary.Columns || []).map((c) => ({
+    name: String(c.ColumnName || c.ColumnType || 'col'),
+    type: c.ColumnType ? String(c.ColumnType) : undefined,
+  }))
+  const rows = (primary.Rows || []).map((row) => {
+    if (Array.isArray(row)) {
+      const obj = {}
+      columns.forEach((col, i) => {
+        obj[col.name] = row[i]
+      })
+      return obj
+    }
+    return row && typeof row === 'object' ? row : { value: row }
+  })
+  return { columns, rows, rowCount: rows.length }
+}
+
+async function runAdxQuery({ clusterUri, database, query }) {
+  const cluster = String(clusterUri || ADX_DEFAULT_CLUSTER).replace(/\/+$/, '')
+  const db = String(database || ADX_DEFAULT_DATABASE).trim()
+  const csl = String(query || '').trim()
+  if (!csl) throw new Error('ADX query (csl) is required')
+
+  const token = await getKustoAccessToken(cluster)
+  const url = `${cluster}/v1/rest/query`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=utf-8',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ db, csl }),
+  })
+  const text = await res.text()
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = null
+  }
+  if (!res.ok) {
+    const detail =
+      payload?.error?.message ||
+      payload?.Message ||
+      (typeof payload === 'string' ? payload : text).slice(0, 600)
+    throw new Error(`ADX query failed (${res.status}): ${detail || res.statusText}`)
+  }
+  const parsed = parseKustoV1Tables(payload)
+  return {
+    cluster,
+    database: db,
+    query: csl,
+    ...parsed,
+    fetchedAt: new Date().toISOString(),
+  }
+}
+
 async function armGetJson(url, token) {
   const res = await fetch(url, {
     headers: {
@@ -1886,6 +1973,52 @@ function formatWorkloadProfileSize(profile) {
   }
   return type
 }
+
+app.post('/api/azure/adx/validate', async (req, res) => {
+  try {
+    const account = await getAccount()
+    const clusterUri = String(req.body?.clusterUri || ADX_DEFAULT_CLUSTER).trim()
+    const database = String(req.body?.database || ADX_DEFAULT_DATABASE).trim()
+    const query = String(req.body?.query || ADX_VALIDATION_QUERY).trim()
+    const previewLimit = Math.min(
+      Math.max(Number(req.body?.previewLimit) || 50, 1),
+      200,
+    )
+
+    const result = await runAdxQuery({ clusterUri, database, query })
+    res.json({
+      ok: true,
+      account,
+      cluster: result.cluster,
+      database: result.database,
+      query: result.query,
+      columns: result.columns,
+      rowCount: result.rowCount,
+      rows: result.rows.slice(0, previewLimit),
+      previewLimit,
+      fetchedAt: result.fetchedAt,
+      message:
+        result.rowCount === 0
+          ? 'Connected to ADX and ran the validation query, but it returned 0 rows.'
+          : `Connected to ADX. Validation query returned ${result.rowCount} row(s).`,
+    })
+  } catch (err) {
+    sendRouteError(
+      res,
+      400,
+      err,
+      'ADX validation failed. Ensure az login is connected and your account can query the cluster/database.',
+    )
+  }
+})
+
+app.get('/api/azure/adx/config', async (_req, res) => {
+  res.json({
+    clusterUri: ADX_DEFAULT_CLUSTER,
+    database: ADX_DEFAULT_DATABASE,
+    validationQuery: ADX_VALIDATION_QUERY,
+  })
+})
 
 app.get('/api/azure/inventory', async (req, res) => {
   try {
