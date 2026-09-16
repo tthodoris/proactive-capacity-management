@@ -116,6 +116,7 @@ export function TenantConnectPanel() {
   const [startingQuotaGroups, setStartingQuotaGroups] = useState(false)
   const [validatingAdx, setValidatingAdx] = useState(false)
   const [adxResult, setAdxResult] = useState<AdxValidateResponse | null>(null)
+  const [adxTenantId, setAdxTenantId] = useState('')
   const [activityExpanded, setActivityExpanded] = useState(false)
   const pollRef = useRef<number | null>(null)
   const restoreAttemptedRef = useRef(false)
@@ -784,6 +785,7 @@ export function TenantConnectPanel() {
         clusterUri: ADX_DEFAULT_CLUSTER,
         database: ADX_DEFAULT_DATABASE,
         query: ADX_VALIDATION_QUERY,
+        tenantId: adxTenantId.trim() || undefined,
         previewLimit: 50,
       })
       setAdxResult(result)
@@ -1155,6 +1157,21 @@ export function TenantConnectPanel() {
                     <div>
                       <strong>Database:</strong> {ADX_DEFAULT_DATABASE}
                     </div>
+                    <div className="field" style={{ marginTop: '0.65rem', maxWidth: '28rem' }}>
+                      <label htmlFor="adxTenantId">ADX tenant ID (optional)</label>
+                      <input
+                        id="adxTenantId"
+                        value={adxTenantId}
+                        onChange={(e) => setAdxTenantId(e.target.value)}
+                        placeholder="Leave blank to use current az tenant"
+                        pattern="[0-9a-fA-F-]{36}"
+                        title="Entra tenant GUID that owns the ADX cluster"
+                      />
+                      <p className="muted" style={{ margin: '0.35rem 0 0' }}>
+                        Use this when the ADX cluster is in a different directory than the Azure
+                        Connect customer tenant.
+                      </p>
+                    </div>
                     <div style={{ marginTop: '0.35rem' }}>
                       <strong>Validation query</strong>
                       <pre className="adx-query-preview">{ADX_VALIDATION_QUERY}</pre>
@@ -1169,6 +1186,9 @@ export function TenantConnectPanel() {
                           <div className="muted">
                             {adxResult.rowCount} row(s) · showing up to {adxResult.previewLimit} ·{' '}
                             {adxResult.fetchedAt ? formatDate(adxResult.fetchedAt) : 'just now'}
+                            {adxResult.tokenResource
+                              ? ` · token audience ${adxResult.tokenResource}`
+                              : ''}
                           </div>
                         </div>
                         <span className={`pill ${adxResult.rowCount > 0 ? 'pill-ok' : 'pill-medium'}`}>

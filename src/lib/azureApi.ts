@@ -380,6 +380,8 @@ export type AdxValidateResponse = {
   cluster: string
   database: string
   query: string
+  tokenResource?: string
+  tokenTenant?: string | null
   columns: AdxColumn[]
   rowCount: number
   rows: Array<Record<string, unknown>>
@@ -392,6 +394,7 @@ export function validateAdxConnection(payload?: {
   clusterUri?: string
   database?: string
   query?: string
+  tenantId?: string
   previewLimit?: number
 }) {
   return api<AdxValidateResponse>('/api/azure/adx/validate', {

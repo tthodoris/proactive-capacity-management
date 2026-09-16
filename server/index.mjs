@@ -1311,18 +1311,60 @@ const ADX_DEFAULT_DATABASE = 'customerdomdata'
 const ADX_VALIDATION_QUERY = `CustomerResourceModel
 | where TPID == "5572428" and ResourceGroup == 'ia28-rg01'
 | order by Type`
+const ADX_TOKEN_RESOURCES = [
+  'https://api.kusto.windows.net',
+  'https://kusto.kusto.windows.net',
+]
 
-async function getKustoAccessToken(clusterUri) {
-  const resource = String(clusterUri || ADX_DEFAULT_CLUSTER).replace(/\/+$/, '')
-  const { stdout } = await runAz(
-    ['account', 'get-access-token', '--resource', resource, '-o', 'json'],
-    { timeoutMs: 30_000 },
-  )
-  const parsed = JSON.parse(stdout)
-  if (!parsed?.accessToken) {
-    throw new Error(`Failed to acquire ADX access token for ${resource}`)
+async function resolveKustoTokenResource(clusterUri) {
+  const cluster = String(clusterUri || ADX_DEFAULT_CLUSTER).replace(/\/+$/, '')
+  try {
+    const res = await fetch(`${cluster}/v1/rest/auth/metadata`, {
+      headers: { Accept: 'application/json' },
+    })
+    if (res.ok) {
+      const meta = await res.json()
+      const resourceId = meta?.AzureAD?.KustoServiceResourceId
+      if (resourceId) return String(resourceId).replace(/\/+$/, '')
+    }
+  } catch {
+    // Fall through to defaults.
   }
-  return String(parsed.accessToken)
+  return ADX_TOKEN_RESOURCES[0]
+}
+
+async function getKustoAccessToken(clusterUri, { tenantId } = {}) {
+  const cluster = String(clusterUri || ADX_DEFAULT_CLUSTER).replace(/\/+$/, '')
+  const preferred = await resolveKustoTokenResource(cluster)
+  const candidates = [
+    preferred,
+    ...ADX_TOKEN_RESOURCES,
+    cluster,
+  ].filter((value, index, all) => value && all.indexOf(value) === index)
+
+  const errors = []
+  for (const resource of candidates) {
+    try {
+      const args = ['account', 'get-access-token', '--resource', resource, '-o', 'json']
+      if (tenantId) args.push('--tenant', String(tenantId))
+      const { stdout } = await runAz(args, { timeoutMs: 30_000 })
+      const parsed = JSON.parse(stdout)
+      if (parsed?.accessToken) {
+        return {
+          accessToken: String(parsed.accessToken),
+          resource,
+          tenant: parsed.tenant || tenantId || null,
+        }
+      }
+      errors.push(`${resource}: no accessToken in az response`)
+    } catch (err) {
+      errors.push(`${resource}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  throw new Error(
+    `Failed to acquire ADX access token. Tried: ${candidates.join(', ')}. ${errors.slice(0, 3).join(' | ')}`,
+  )
 }
 
 function parseKustoV1Tables(payload) {
@@ -1352,18 +1394,18 @@ function parseKustoV1Tables(payload) {
   return { columns, rows, rowCount: rows.length }
 }
 
-async function runAdxQuery({ clusterUri, database, query }) {
+async function runAdxQuery({ clusterUri, database, query, tenantId }) {
   const cluster = String(clusterUri || ADX_DEFAULT_CLUSTER).replace(/\/+$/, '')
   const db = String(database || ADX_DEFAULT_DATABASE).trim()
   const csl = String(query || '').trim()
   if (!csl) throw new Error('ADX query (csl) is required')
 
-  const token = await getKustoAccessToken(cluster)
+  const { accessToken, resource, tenant } = await getKustoAccessToken(cluster, { tenantId })
   const url = `${cluster}/v1/rest/query`
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json; charset=utf-8',
       Accept: 'application/json',
     },
@@ -1378,16 +1420,23 @@ async function runAdxQuery({ clusterUri, database, query }) {
   }
   if (!res.ok) {
     const detail =
+      payload?.error?.['@message'] ||
       payload?.error?.message ||
       payload?.Message ||
       (typeof payload === 'string' ? payload : text).slice(0, 600)
-    throw new Error(`ADX query failed (${res.status}): ${detail || res.statusText}`)
+    const hint =
+      res.status === 401
+        ? ` Unauthorized for token audience "${resource}". If this ADX cluster lives in another tenant than your Azure Connect login, set an ADX tenant ID and retry. Also confirm your account has database viewer/user permission on "${db}".`
+        : ''
+    throw new Error(`ADX query failed (${res.status}): ${detail || res.statusText}.${hint}`)
   }
   const parsed = parseKustoV1Tables(payload)
   return {
     cluster,
     database: db,
     query: csl,
+    tokenResource: resource,
+    tokenTenant: tenant,
     ...parsed,
     fetchedAt: new Date().toISOString(),
   }
@@ -1980,18 +2029,21 @@ app.post('/api/azure/adx/validate', async (req, res) => {
     const clusterUri = String(req.body?.clusterUri || ADX_DEFAULT_CLUSTER).trim()
     const database = String(req.body?.database || ADX_DEFAULT_DATABASE).trim()
     const query = String(req.body?.query || ADX_VALIDATION_QUERY).trim()
+    const tenantId = String(req.body?.tenantId || '').trim() || undefined
     const previewLimit = Math.min(
       Math.max(Number(req.body?.previewLimit) || 50, 1),
       200,
     )
 
-    const result = await runAdxQuery({ clusterUri, database, query })
+    const result = await runAdxQuery({ clusterUri, database, query, tenantId })
     res.json({
       ok: true,
       account,
       cluster: result.cluster,
       database: result.database,
       query: result.query,
+      tokenResource: result.tokenResource,
+      tokenTenant: result.tokenTenant,
       columns: result.columns,
       rowCount: result.rowCount,
       rows: result.rows.slice(0, previewLimit),
@@ -2007,7 +2059,7 @@ app.post('/api/azure/adx/validate', async (req, res) => {
       res,
       400,
       err,
-      'ADX validation failed. Ensure az login is connected and your account can query the cluster/database.',
+      'ADX validation failed. Ensure az login is connected, token audience is correct (api.kusto.windows.net), and your account can query the cluster/database (possibly in a different tenant than Azure Connect).',
     )
   }
 })
