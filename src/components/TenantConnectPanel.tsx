@@ -501,7 +501,7 @@ export function TenantConnectPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function onConnect(e: FormEvent) {
+  async function onConnect(e: FormEvent, loginMode: 'interactive' | 'device_code' = 'interactive') {
     e.preventDefault()
     setBusy(true)
     setError(null)
@@ -516,8 +516,13 @@ export function TenantConnectPanel() {
     setRegions([])
     restoreAttemptedRef.current = false
     try {
-      const status = await connectTenant(tenantId.trim())
+      const status = await connectTenant(tenantId.trim(), loginMode)
       setConnection(status)
+      if (loginMode === 'interactive') {
+        setStatusNote(
+          'Complete the browser or Windows sign-in on the machine running pcm-api, then wait for session ready.',
+        )
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -795,7 +800,9 @@ export function TenantConnectPanel() {
       setError(message)
       const expired =
         /AADSTS70043/i.test(message) ||
+        /AADSTS530036/i.test(message) ||
         /Azure CLI session expired/i.test(message) ||
+        /authentication flow checks/i.test(message) ||
         /refresh token expired/i.test(message) ||
         /sign-in frequency/i.test(message)
       if (expired) {
@@ -808,7 +815,9 @@ export function TenantConnectPanel() {
         setSessionReady(false)
         setAzureSession(null, false)
         setStatusNote(
-          'Azure CLI login expired. Disconnect, Connect again with device code, then retry ADX validation.',
+          /AADSTS530036|authentication flow/i.test(message)
+            ? 'Conditional Access blocked the device-code session. Disconnect, then Connect (browser / WAM) — not device code — and retry ADX.'
+            : 'Azure CLI login expired. Disconnect, Connect (browser / WAM) again, then retry ADX validation.',
         )
       }
     } finally {
@@ -883,7 +892,7 @@ export function TenantConnectPanel() {
 
         <div className="panel-body stack">
           {!connected && !pending ? (
-            <form className="tenant-connect-form" onSubmit={onConnect}>
+            <form className="tenant-connect-form" onSubmit={(e) => void onConnect(e, 'interactive')}>
               <div className="field" style={{ flex: 1 }}>
                 <label htmlFor="tenantId">Tenant ID (directory GUID)</label>
                 <input
@@ -898,7 +907,16 @@ export function TenantConnectPanel() {
               </div>
               <button className="btn btn-primary" type="submit" disabled={busy || !tenantId.trim()}>
                 {busy ? <LoaderCircle size={16} className="spin" /> : <PlugZap size={16} />}
-                Connect with az login
+                Connect (browser / WAM)
+              </button>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={busy || !tenantId.trim()}
+                onClick={(e) => void onConnect(e, 'device_code')}
+                title="Often blocked by Microsoft tenant Conditional Access for ADX"
+              >
+                Connect (device code)
               </button>
               <button
                 className="btn btn-secondary"
@@ -908,6 +926,11 @@ export function TenantConnectPanel() {
               >
                 Use existing az session
               </button>
+              <p className="muted" style={{ margin: 0, fontSize: '0.85rem' }}>
+                Prefer <strong>browser / WAM</strong> for Microsoft tenant (72f988bf…). Device code
+                sessions are blocked by Conditional Access (AADSTS530036) and cannot refresh ADX
+                tokens.
+              </p>
             </form>
           ) : null}
 
@@ -933,31 +956,44 @@ export function TenantConnectPanel() {
           {pending ? (
             <div className="device-code-card">
               <div>
-                <div className="muted">Device code for tenant</div>
+                <div className="muted">
+                  {connection?.loginMode === 'interactive'
+                    ? 'Interactive login for tenant'
+                    : 'Device code for tenant'}
+                </div>
                 <strong style={{ fontSize: '1.05rem' }}>{connection?.tenantId}</strong>
               </div>
-              <div className="device-code-value">
-                <span>{connection?.deviceCode || 'Waiting for Azure CLI…'}</span>
-                {connection?.deviceCode ? (
-                  <button type="button" className="btn btn-ghost" onClick={() => void copyCode()}>
-                    <Copy size={14} /> {copied ? 'Copied' : 'Copy'}
-                  </button>
-                ) : (
+              {connection?.loginMode === 'interactive' ? (
+                <div className="device-code-value">
+                  <span>Waiting for browser / WAM sign-in on the API host…</span>
                   <LoaderCircle size={18} className="spin" />
-                )}
-              </div>
+                </div>
+              ) : (
+                <div className="device-code-value">
+                  <span>{connection?.deviceCode || 'Waiting for Azure CLI…'}</span>
+                  {connection?.deviceCode ? (
+                    <button type="button" className="btn btn-ghost" onClick={() => void copyCode()}>
+                      <Copy size={14} /> {copied ? 'Copied' : 'Copy'}
+                    </button>
+                  ) : (
+                    <LoaderCircle size={18} className="spin" />
+                  )}
+                </div>
+              )}
               <p className="muted" style={{ margin: 0 }}>
                 {connection?.message}
               </p>
               <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap' }}>
-                <a
-                  className="btn btn-primary"
-                  href={connection?.verificationUrl || 'https://microsoft.com/devicelogin'}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <Link2 size={16} /> Open microsoft.com/devicelogin
-                </a>
+                {connection?.loginMode !== 'interactive' ? (
+                  <a
+                    className="btn btn-primary"
+                    href={connection?.verificationUrl || 'https://microsoft.com/devicelogin'}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <Link2 size={16} /> Open microsoft.com/devicelogin
+                  </a>
+                ) : null}
                 <button className="btn btn-secondary" type="button" onClick={() => void onCancel()} disabled={busy}>
                   Cancel login
                 </button>
@@ -1150,9 +1186,9 @@ export function TenantConnectPanel() {
                     <h4>ADX inventory source</h4>
                     <p>
                       Connect to Azure Data Explorer and run a validation query. Full customer
-                      inventory collection queries will be wired next. If validation fails with an
-                      expired refresh token (AADSTS70043), Disconnect and Connect again — Conditional
-                      Access often limits sessions to ~12 hours.
+                      inventory collection queries will be wired next. For Microsoft tenant CA
+                      (AADSTS530036), use Connect (browser / WAM) — device-code refresh tokens cannot
+                      acquire ADX tokens.
                     </p>
                   </div>
                   <button

@@ -11,6 +11,7 @@ export type AzureConnectionStatus =
 export interface AzureConnection {
   status: AzureConnectionStatus
   tenantId: string | null
+  loginMode?: 'device_code' | 'interactive' | null
   deviceCode: string | null
   verificationUrl: string | null
   message: string | null
@@ -114,10 +115,13 @@ export function getAzureStatus() {
   return api<AzureConnection>('/api/azure/status')
 }
 
-export function connectTenant(tenantId: string) {
+export function connectTenant(
+  tenantId: string,
+  loginMode: 'interactive' | 'device_code' = 'interactive',
+) {
   return api<AzureConnection>('/api/azure/connect', {
     method: 'POST',
-    body: JSON.stringify({ tenantId }),
+    body: JSON.stringify({ tenantId, loginMode }),
   })
 }
 
