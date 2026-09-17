@@ -791,7 +791,26 @@ export function TenantConnectPanel() {
       setAdxResult(result)
       setStatusNote(result.message)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      const expired =
+        /AADSTS70043/i.test(message) ||
+        /Azure CLI session expired/i.test(message) ||
+        /refresh token expired/i.test(message) ||
+        /sign-in frequency/i.test(message)
+      if (expired) {
+        try {
+          const status = await getAzureStatus()
+          setConnection(status)
+        } catch {
+          // ignore status refresh failures
+        }
+        setSessionReady(false)
+        setAzureSession(null, false)
+        setStatusNote(
+          'Azure CLI login expired. Disconnect, Connect again with device code, then retry ADX validation.',
+        )
+      }
     } finally {
       setValidatingAdx(false)
     }
@@ -1131,7 +1150,9 @@ export function TenantConnectPanel() {
                     <h4>ADX inventory source</h4>
                     <p>
                       Connect to Azure Data Explorer and run a validation query. Full customer
-                      inventory collection queries will be wired next.
+                      inventory collection queries will be wired next. If validation fails with an
+                      expired refresh token (AADSTS70043), Disconnect and Connect again — Conditional
+                      Access often limits sessions to ~12 hours.
                     </p>
                   </div>
                   <button

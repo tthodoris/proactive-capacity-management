@@ -1333,6 +1333,24 @@ async function resolveKustoTokenResource(clusterUri) {
   return ADX_TOKEN_RESOURCES[0]
 }
 
+function isAzSessionExpiredError(message) {
+  const text = String(message || '')
+  return (
+    /AADSTS70043/i.test(text) ||
+    /refresh token has expired/i.test(text) ||
+    /sign-in frequency/i.test(text) ||
+    /interaction_required/i.test(text)
+  )
+}
+
+function formatAzSessionExpiredError(detail) {
+  return (
+    'Azure CLI session expired (Conditional Access sign-in frequency). ' +
+    'On Azure Connect, click Disconnect, then Connect with az login again (device code), and retry the ADX validation. ' +
+    `Details: ${String(detail || '').slice(0, 280)}`
+  )
+}
+
 async function getKustoAccessToken(clusterUri, { tenantId } = {}) {
   const cluster = String(clusterUri || ADX_DEFAULT_CLUSTER).replace(/\/+$/, '')
   const preferred = await resolveKustoTokenResource(cluster)
@@ -1343,6 +1361,8 @@ async function getKustoAccessToken(clusterUri, { tenantId } = {}) {
   ].filter((value, index, all) => value && all.indexOf(value) === index)
 
   const errors = []
+  let sawExpiredSession = false
+  let expiredDetail = ''
   for (const resource of candidates) {
     try {
       const args = ['account', 'get-access-token', '--resource', resource, '-o', 'json']
@@ -1358,8 +1378,25 @@ async function getKustoAccessToken(clusterUri, { tenantId } = {}) {
       }
       errors.push(`${resource}: no accessToken in az response`)
     } catch (err) {
-      errors.push(`${resource}: ${err instanceof Error ? err.message : String(err)}`)
+      const message = err instanceof Error ? err.message : String(err)
+      if (isAzSessionExpiredError(message)) {
+        sawExpiredSession = true
+        expiredDetail = message
+      }
+      errors.push(`${resource}: ${message}`)
     }
+  }
+
+  if (sawExpiredSession) {
+    try {
+      connection.status = 'error'
+      connection.error = formatAzSessionExpiredError(expiredDetail)
+      connection.message =
+        'Azure CLI login expired. Reconnect with az login before using ADX or other Azure APIs.'
+    } catch {
+      // connection may be unavailable in some contexts
+    }
+    throw new Error(formatAzSessionExpiredError(expiredDetail))
   }
 
   throw new Error(
@@ -2055,11 +2092,15 @@ app.post('/api/azure/adx/validate', async (req, res) => {
           : `Connected to ADX. Validation query returned ${result.rowCount} row(s).`,
     })
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const expired = isAzSessionExpiredError(message)
     sendRouteError(
       res,
-      400,
+      expired ? 401 : 400,
       err,
-      'ADX validation failed. Ensure az login is connected, token audience is correct (api.kusto.windows.net), and your account can query the cluster/database (possibly in a different tenant than Azure Connect).',
+      expired
+        ? 'Your az login refresh token expired (often after ~12 hours due to Conditional Access). Disconnect and Connect again on Azure Connect, then retry.'
+        : 'ADX validation failed. Ensure az login is connected, token audience is correct (api.kusto.windows.net), and your account can query the cluster/database (possibly in a different tenant than Azure Connect).',
     )
   }
 })
