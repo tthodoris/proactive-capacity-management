@@ -276,7 +276,8 @@ export function CostManagementPage() {
           <p>
             Hierarchical Actual Cost from Azure Cost Management — Customer → Subscription →
             Resource group → Service type → SKU (meter) → Resource. Select customers and up to{' '}
-            {MAX_COST_SUBSCRIPTIONS} subscriptions per retrieval.
+            {MAX_COST_SUBSCRIPTIONS} subscriptions per retrieval. If Azure returns 429, wait a minute
+            and retry with fewer subscriptions.
           </p>
         </div>
         <div className="hero-actions">

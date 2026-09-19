@@ -2199,7 +2199,9 @@ app.get('/api/azure/adx/config', async (_req, res) => {
   })
 })
 
-const COST_MANAGEMENT_API_VERSIONS = ['2024-08-01', '2023-11-01', '2023-03-01']
+const COST_MANAGEMENT_API_VERSION = '2023-11-01'
+/** Remember which query shape succeeded so later subscriptions reuse it. */
+let preferredCostQueryVariantLabel = null
 
 function normalizeAzureSubscriptionId(value) {
   const raw = String(value || '').trim()
@@ -2207,6 +2209,31 @@ function normalizeAzureSubscriptionId(value) {
     /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/,
   )
   return match ? match[0] : ''
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isCostManagementThrottleError(message) {
+  const text = String(message || '')
+  return (
+    /\b429\b/.test(text) ||
+    /Too Many Requests/i.test(text) ||
+    /RateLimiting/i.test(text) ||
+    /please retry/i.test(text)
+  )
+}
+
+function isCostManagementBadRequestError(message) {
+  const text = String(message || '')
+  return (
+    /\b400\b/.test(text) ||
+    /BadRequest/i.test(text) ||
+    /InvalidQueryDefinition/i.test(text) ||
+    /Invalid.*grouping/i.test(text) ||
+    /not a valid dimension/i.test(text)
+  )
 }
 
 function costMonthKeyFromUsageDate(value) {
@@ -2400,6 +2427,43 @@ async function postCostManagementQueryAzRest(url, body) {
   }
 }
 
+async function postCostManagementQueryWithRetry(url, body, { maxAttempts = 5 } = {}) {
+  let lastError = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await postCostManagementQueryAzRest(url, body)
+    } catch (err) {
+      lastError = err
+      const message = err instanceof Error ? err.message : String(err)
+      if (!isCostManagementThrottleError(message) || attempt === maxAttempts) {
+        throw err
+      }
+      // Cost Management throttles aggressively; back off before retrying the same request.
+      const delayMs = Math.min(60_000, 4_000 * 2 ** (attempt - 1))
+      await sleep(delayMs)
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
+async function runCostQueryVariant(url, variant) {
+  const all = []
+  let pageUrl = url
+  let guard = 0
+  while (pageUrl && guard < 40) {
+    guard += 1
+    const payload = await postCostManagementQueryWithRetry(pageUrl, variant.body)
+    all.push(...parseCostManagementQueryPayload(payload))
+    const nextLink =
+      payload?.properties?.nextLink ||
+      payload?.nextLink ||
+      payload?.properties?.nextLinkUrl ||
+      null
+    pageUrl = nextLink ? String(nextLink) : null
+  }
+  return all
+}
+
 async function querySubscriptionActualCosts({ subscriptionId, fromIso, toIso }) {
   const subId = normalizeAzureSubscriptionId(subscriptionId)
   if (!subId) {
@@ -2408,35 +2472,33 @@ async function querySubscriptionActualCosts({ subscriptionId, fromIso, toIso }) 
     )
   }
 
+  const url = `https://management.azure.com/subscriptions/${subId}/providers/Microsoft.CostManagement/query?api-version=${COST_MANAGEMENT_API_VERSION}`
   const variants = buildCostQueryBodies(fromIso, toIso)
-  const errors = []
+  const ordered = preferredCostQueryVariantLabel
+    ? [
+        ...variants.filter((v) => v.label === preferredCostQueryVariantLabel),
+        ...variants.filter((v) => v.label !== preferredCostQueryVariantLabel),
+      ]
+    : variants
 
-  for (const apiVersion of COST_MANAGEMENT_API_VERSIONS) {
-    const url = `https://management.azure.com/subscriptions/${subId}/providers/Microsoft.CostManagement/query?api-version=${apiVersion}`
-    for (const variant of variants) {
-      try {
-        const all = []
-        let pageUrl = url
-        let guard = 0
-        let pageBody = variant.body
-        while (pageUrl && guard < 40) {
-          guard += 1
-          const payload = await postCostManagementQueryAzRest(pageUrl, pageBody)
-          all.push(...parseCostManagementQueryPayload(payload))
-          const nextLink =
-            payload?.properties?.nextLink ||
-            payload?.nextLink ||
-            payload?.properties?.nextLinkUrl ||
-            null
-          pageUrl = nextLink ? String(nextLink) : null
-          pageBody = variant.body
-        }
-        return all
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        errors.push(`${apiVersion}/${variant.label}: ${message}`)
-        // Try next variant/version on 404/400/dimension errors.
-        continue
+  const errors = []
+  for (const variant of ordered) {
+    try {
+      const rows = await runCostQueryVariant(url, variant)
+      preferredCostQueryVariantLabel = variant.label
+      return rows
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      errors.push(`${variant.label}: ${message}`)
+      // Throttling: don't burn the remaining quota on alternate shapes.
+      if (isCostManagementThrottleError(message)) {
+        throw new Error(
+          `Cost Management rate-limited subscription ${subId} (HTTP 429). Wait a minute and retry with fewer subscriptions. Details: ${message.slice(0, 220)}`,
+        )
+      }
+      // Only fall through to another grouping/aggregation on bad request / invalid dimension.
+      if (!isCostManagementBadRequestError(message) && !/404|NotFound/i.test(message)) {
+        throw new Error(`Cost Management query failed for subscription ${subId}. ${message}`)
       }
     }
   }
@@ -2507,14 +2569,19 @@ app.post('/api/azure/costs/query', async (req, res) => {
 
     const errors = []
     const leafMap = new Map()
+    const outcomes = []
 
-    const outcomes = await mapPool(subscriptions, 2, async (sub) => {
+    // Sequential queries + pause between subscriptions to avoid Cost Management 429s.
+    for (let i = 0; i < subscriptions.length; i += 1) {
+      const sub = subscriptions[i]
+      if (i > 0) await sleep(1500)
       if (!sub.azureSubscriptionId) {
-        return {
+        outcomes.push({
           sub,
           rows: [],
           error: `Not an Azure subscription GUID: "${sub.rawId}". Re-collect inventory from Azure Connect so PCM stores the real subscription id.`,
-        }
+        })
+        continue
       }
       try {
         const rows = await querySubscriptionActualCosts({
@@ -2522,15 +2589,24 @@ app.post('/api/azure/costs/query', async (req, res) => {
           fromIso,
           toIso,
         })
-        return { sub, rows, error: null }
+        outcomes.push({ sub, rows, error: null })
       } catch (err) {
-        return {
-          sub,
-          rows: [],
-          error: err instanceof Error ? err.message : String(err),
+        const message = err instanceof Error ? err.message : String(err)
+        outcomes.push({ sub, rows: [], error: message })
+        // If throttled, stop hammering remaining subscriptions in this request.
+        if (isCostManagementThrottleError(message)) {
+          for (let j = i + 1; j < subscriptions.length; j += 1) {
+            outcomes.push({
+              sub: subscriptions[j],
+              rows: [],
+              error:
+                'Skipped because Cost Management rate-limited earlier subscriptions in this request. Wait about a minute and retry with fewer subscriptions.',
+            })
+          }
+          break
         }
       }
-    })
+    }
 
     for (const outcome of outcomes) {
       if (outcome.error) {
@@ -2578,10 +2654,14 @@ app.post('/api/azure/costs/query', async (req, res) => {
     })
 
     if (rows.length === 0 && errors.length > 0) {
-      return res.status(502).json({
-        error: `Azure Cost Management returned no data. ${errors[0]?.error || 'Unknown error'}`,
-        hint:
-          'Confirm pcm-api was redeployed with the Cost Management route, the Azure session is connected, subscription IDs are GUIDs, and the account has Cost Management Reader on those subscriptions.',
+      const throttled = errors.some((e) => isCostManagementThrottleError(e.error))
+      return res.status(throttled ? 429 : 502).json({
+        error: throttled
+          ? `Azure Cost Management rate-limited this request (HTTP 429). ${errors[0]?.error || ''}`.trim()
+          : `Azure Cost Management returned no data. ${errors[0]?.error || 'Unknown error'}`,
+        hint: throttled
+          ? 'Wait 1–2 minutes, select fewer subscriptions (1–2), and retrieve again. Avoid rapid repeated refreshes.'
+          : 'Confirm pcm-api was redeployed with the Cost Management route, the Azure session is connected, subscription IDs are GUIDs, and the account has Cost Management Reader on those subscriptions.',
         errors,
         monthColumns,
         rows: [],
