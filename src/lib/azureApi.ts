@@ -460,5 +460,13 @@ export function queryAzureCosts(payload: {
   return api<CostQueryResponse>('/api/azure/costs/query', {
     method: 'POST',
     body: JSON.stringify(payload),
+  }).catch((err) => {
+    const message = err instanceof Error ? err.message : String(err)
+    if (/Request failed \(404\)/i.test(message) || /Cannot POST \/api\/azure\/costs\/query/i.test(message)) {
+      throw new Error(
+        'Cost Management API route not found (404). Redeploy/restart pcm-api so it includes POST /api/azure/costs/query, then retry.',
+      )
+    }
+    throw err
   })
 }

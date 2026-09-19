@@ -2199,7 +2199,15 @@ app.get('/api/azure/adx/config', async (_req, res) => {
   })
 })
 
-const COST_MANAGEMENT_API_VERSION = '2023-11-01'
+const COST_MANAGEMENT_API_VERSIONS = ['2024-08-01', '2023-11-01', '2023-03-01']
+
+function normalizeAzureSubscriptionId(value) {
+  const raw = String(value || '').trim()
+  const match = raw.match(
+    /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/,
+  )
+  return match ? match[0] : ''
+}
 
 function costMonthKeyFromUsageDate(value) {
   if (value == null || value === '') return null
@@ -2302,96 +2310,140 @@ function parseCostManagementQueryPayload(payload) {
   return parsed
 }
 
-async function fetchCostManagementQueryPage(url, token, body) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      ClientType: 'PCM',
-    },
-    body: JSON.stringify(body),
-  })
-  const text = await res.text().catch(() => '')
-  let payload = null
-  try {
-    payload = text ? JSON.parse(text) : null
-  } catch {
-    payload = null
-  }
-  if (!res.ok) {
-    const message =
-      payload?.error?.message ||
-      payload?.message ||
-      text.slice(0, 400) ||
-      res.statusText ||
-      `HTTP ${res.status}`
-    const err = new Error(`Cost Management ${res.status}: ${message}`)
-    err.status = res.status
-    throw err
-  }
-  return payload
-}
-
-async function querySubscriptionActualCosts({
-  subscriptionId,
-  token,
-  fromIso,
-  toIso,
-}) {
-  const scope = `https://management.azure.com/subscriptions/${subscriptionId}`
-  const url = `${scope}/providers/Microsoft.CostManagement/query?api-version=${COST_MANAGEMENT_API_VERSION}`
-  const body = {
-    type: 'ActualCost',
-    timeframe: 'Custom',
-    timePeriod: { from: fromIso, to: toIso },
-    dataset: {
-      granularity: 'Monthly',
-      aggregation: {
-        totalCost: { name: 'Cost', function: 'Sum' },
+function buildCostQueryBodies(fromIso, toIso) {
+  const timePeriod = { from: fromIso, to: toIso }
+  const variants = [
+    {
+      label: 'ResourceId+MeterSubCategory/Cost',
+      body: {
+        type: 'ActualCost',
+        timeframe: 'Custom',
+        timePeriod,
+        dataset: {
+          granularity: 'Monthly',
+          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+          grouping: [
+            { type: 'Dimension', name: 'ResourceId' },
+            { type: 'Dimension', name: 'MeterSubCategory' },
+          ],
+        },
       },
-      grouping: [
-        { type: 'Dimension', name: 'ResourceId' },
-        { type: 'Dimension', name: 'MeterSubCategory' },
-      ],
     },
-  }
-
-  const all = []
-  let pageUrl = url
-  let pageBody = body
-  let guard = 0
-  while (pageUrl && guard < 40) {
-    guard += 1
-    const payload = await fetchCostManagementQueryPage(pageUrl, token, pageBody)
-    all.push(...parseCostManagementQueryPayload(payload))
-    const nextLink =
-      payload?.properties?.nextLink || payload?.nextLink || payload?.properties?.nextLinkUrl
-    if (nextLink) {
-      pageUrl = String(nextLink)
-      // nextLink is a full URL; POST body is still required for Cost Management paging.
-      pageBody = body
-    } else {
-      pageUrl = null
-    }
-  }
-  return all
+    {
+      label: 'ResourceId+MeterSubcategory/PreTaxCost',
+      body: {
+        type: 'ActualCost',
+        timeframe: 'Custom',
+        timePeriod,
+        dataset: {
+          granularity: 'Monthly',
+          aggregation: { totalCost: { name: 'PreTaxCost', function: 'Sum' } },
+          grouping: [
+            { type: 'Dimension', name: 'ResourceId' },
+            { type: 'Dimension', name: 'MeterSubcategory' },
+          ],
+        },
+      },
+    },
+    {
+      label: 'ResourceGroupName+ResourceId/Cost',
+      body: {
+        type: 'ActualCost',
+        timeframe: 'Custom',
+        timePeriod,
+        dataset: {
+          granularity: 'Monthly',
+          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+          grouping: [
+            { type: 'Dimension', name: 'ResourceGroupName' },
+            { type: 'Dimension', name: 'ResourceId' },
+          ],
+        },
+      },
+    },
+    {
+      label: 'ResourceId+ServiceName/Cost',
+      body: {
+        type: 'ActualCost',
+        timeframe: 'Custom',
+        timePeriod,
+        dataset: {
+          granularity: 'Monthly',
+          aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+          grouping: [
+            { type: 'Dimension', name: 'ResourceId' },
+            { type: 'Dimension', name: 'ServiceName' },
+          ],
+        },
+      },
+    },
+  ]
+  return variants
 }
 
-async function mapPool(items, concurrency, worker) {
-  const results = new Array(items.length)
-  let cursor = 0
-  async function run() {
-    while (cursor < items.length) {
-      const index = cursor
-      cursor += 1
-      results[index] = await worker(items[index], index)
+async function postCostManagementQueryAzRest(url, body) {
+  const dir = mkdtempSync(join(tmpdir(), 'pcm-cost-'))
+  const bodyPath = join(dir, 'query.json')
+  writeFileSync(bodyPath, JSON.stringify(body), 'utf8')
+  try {
+    const { stdout } = await runAz(
+      ['rest', '--method', 'post', '--url', url, '--body', `@${bodyPath}`, '-o', 'json'],
+      { timeoutMs: 180_000 },
+    )
+    return JSON.parse(stdout)
+  } finally {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // ignore cleanup errors
     }
   }
-  const n = Math.max(1, Math.min(concurrency, items.length || 1))
-  await Promise.all(Array.from({ length: n }, () => run()))
-  return results
+}
+
+async function querySubscriptionActualCosts({ subscriptionId, fromIso, toIso }) {
+  const subId = normalizeAzureSubscriptionId(subscriptionId)
+  if (!subId) {
+    throw new Error(
+      `Invalid Azure subscription id "${subscriptionId}". Expected a GUID (subscriptions.subscription_id).`,
+    )
+  }
+
+  const variants = buildCostQueryBodies(fromIso, toIso)
+  const errors = []
+
+  for (const apiVersion of COST_MANAGEMENT_API_VERSIONS) {
+    const url = `https://management.azure.com/subscriptions/${subId}/providers/Microsoft.CostManagement/query?api-version=${apiVersion}`
+    for (const variant of variants) {
+      try {
+        const all = []
+        let pageUrl = url
+        let guard = 0
+        let pageBody = variant.body
+        while (pageUrl && guard < 40) {
+          guard += 1
+          const payload = await postCostManagementQueryAzRest(pageUrl, pageBody)
+          all.push(...parseCostManagementQueryPayload(payload))
+          const nextLink =
+            payload?.properties?.nextLink ||
+            payload?.nextLink ||
+            payload?.properties?.nextLinkUrl ||
+            null
+          pageUrl = nextLink ? String(nextLink) : null
+          pageBody = variant.body
+        }
+        return all
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        errors.push(`${apiVersion}/${variant.label}: ${message}`)
+        // Try next variant/version on 404/400/dimension errors.
+        continue
+      }
+    }
+  }
+
+  throw new Error(
+    `Cost Management query failed for subscription ${subId}. ${errors.slice(0, 3).join(' | ')}`,
+  )
 }
 
 app.post('/api/azure/costs/query', async (req, res) => {
@@ -2400,13 +2452,19 @@ app.post('/api/azure/costs/query', async (req, res) => {
     const monthCount = Math.min(Math.max(Number(req.body?.months) || 12, 1), 12)
     const rawSubs = Array.isArray(req.body?.subscriptions) ? req.body.subscriptions : []
     const subscriptions = rawSubs
-      .map((s) => ({
-        azureSubscriptionId: String(s?.azureSubscriptionId || s?.subscriptionId || '').trim(),
-        customerId: String(s?.customerId || '').trim() || null,
-        customerName: String(s?.customerName || '').trim() || null,
-        subscriptionName: String(s?.subscriptionName || s?.name || '').trim() || null,
-      }))
-      .filter((s) => s.azureSubscriptionId)
+      .map((s) => {
+        const azureSubscriptionId = normalizeAzureSubscriptionId(
+          s?.azureSubscriptionId || s?.subscriptionId || '',
+        )
+        return {
+          azureSubscriptionId,
+          rawId: String(s?.azureSubscriptionId || s?.subscriptionId || '').trim(),
+          customerId: String(s?.customerId || '').trim() || null,
+          customerName: String(s?.customerName || '').trim() || null,
+          subscriptionName: String(s?.subscriptionName || s?.name || '').trim() || null,
+        }
+      })
+      .filter((s) => s.rawId)
 
     if (subscriptions.length === 0) {
       return res.status(400).json({
@@ -2441,15 +2499,20 @@ app.post('/api/azure/costs/query', async (req, res) => {
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0),
     ).getUTCDate()
 
-    const token = await getArmAccessToken()
     const errors = []
     const leafMap = new Map()
 
-    const outcomes = await mapPool(subscriptions, 3, async (sub) => {
+    const outcomes = await mapPool(subscriptions, 2, async (sub) => {
+      if (!sub.azureSubscriptionId) {
+        return {
+          sub,
+          rows: [],
+          error: `Not an Azure subscription GUID: "${sub.rawId}". Re-collect inventory from Azure Connect so PCM stores the real subscription id.`,
+        }
+      }
       try {
         const rows = await querySubscriptionActualCosts({
           subscriptionId: sub.azureSubscriptionId,
-          token,
           fromIso,
           toIso,
         })
@@ -2466,7 +2529,7 @@ app.post('/api/azure/costs/query', async (req, res) => {
     for (const outcome of outcomes) {
       if (outcome.error) {
         errors.push({
-          azureSubscriptionId: outcome.sub.azureSubscriptionId,
+          azureSubscriptionId: outcome.sub.azureSubscriptionId || outcome.sub.rawId,
           subscriptionName: outcome.sub.subscriptionName,
           error: outcome.error,
         })
@@ -2507,6 +2570,18 @@ app.post('/api/azure/costs/query', async (req, res) => {
       const projected = (current / dayOfMonth) * daysInMonth
       return { ...leaf, projected }
     })
+
+    if (rows.length === 0 && errors.length > 0) {
+      return res.status(502).json({
+        error: `Azure Cost Management returned no data. ${errors[0]?.error || 'Unknown error'}`,
+        hint:
+          'Confirm pcm-api was redeployed with the Cost Management route, the Azure session is connected, subscription IDs are GUIDs, and the account has Cost Management Reader on those subscriptions.',
+        errors,
+        monthColumns,
+        rows: [],
+        fetchedAt: new Date().toISOString(),
+      })
+    }
 
     res.json({
       ok: true,
