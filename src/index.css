@@ -1386,6 +1386,15 @@ table.data tr.clickable {
   background: rgba(14, 124, 134, 0.08);
 }
 
+.multi-select-option.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.multi-select-option.disabled:hover {
+  background: transparent;
+}
+
 .multi-select-option.select-all {
   font-weight: 650;
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, LoaderCircle, RefreshCw, Search, Star } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { CheckboxMultiSelect } from '../components/CheckboxMultiSelect'
 import { useApp } from '../context/AppContext'
 import { queryAzureCosts, type CostQueryResponse } from '../lib/azureApi'
 import {
@@ -14,6 +15,8 @@ import {
   type CostTreeNode,
 } from '../lib/costHierarchy'
 
+const MAX_COST_SUBSCRIPTIONS = 7
+
 export function CostManagementPage() {
   const {
     inventory,
@@ -24,6 +27,8 @@ export function CostManagementPage() {
     azureSessionReady,
     ensureAzureSession,
   } = useApp()
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<string[]>([])
+  const [selectedSubscriptionIds, setSelectedSubscriptionIds] = useState<string[]>([])
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [loading, setLoading] = useState(false)
@@ -37,27 +42,90 @@ export function CostManagementPage() {
     return customers.filter((c) => canSeeAllPortfolios || portfolioCustomerIds.includes(c.id))
   }, [customers, canSeeAllPortfolios, portfolioCustomerIds])
 
+  const customerOptions = useMemo(
+    () =>
+      visibleCustomers
+        .map((c) => ({ value: c.id, label: c.name }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [visibleCustomers],
+  )
+
+  const customerSubs = useMemo(() => {
+    if (selectedCustomerIds.length === 0) return []
+    const selected = new Set(selectedCustomerIds)
+    return subscriptions.filter(
+      (s) => selected.has(s.customerId) && Boolean(String(s.subscriptionId || '').trim()),
+    )
+  }, [subscriptions, selectedCustomerIds])
+
+  const subscriptionOptions = useMemo(() => {
+    const customerName = new Map(visibleCustomers.map((c) => [c.id, c.name]))
+    return customerSubs
+      .map((s) => ({
+        value: s.id,
+        label: s.name,
+        hint:
+          selectedCustomerIds.length > 1
+            ? customerName.get(s.customerId) || s.subscriptionId
+            : s.subscriptionId,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }, [customerSubs, visibleCustomers, selectedCustomerIds.length])
+
+  const selectedSubscriptions = useMemo(() => {
+    const selected = new Set(selectedSubscriptionIds)
+    return customerSubs.filter((s) => selected.has(s.id))
+  }, [customerSubs, selectedSubscriptionIds])
+
+  // Keep subscription picks valid when customers change.
+  useEffect(() => {
+    const allowed = new Set(customerSubs.map((s) => s.id))
+    setSelectedSubscriptionIds((prev) => {
+      const next = prev.filter((id) => allowed.has(id))
+      return next.length === prev.length ? prev : next
+    })
+  }, [customerSubs])
+
   const visibleInventory = useMemo(() => {
+    const customerSet =
+      selectedCustomerIds.length > 0
+        ? new Set(selectedCustomerIds)
+        : new Set(visibleCustomers.map((c) => c.id))
+    const subSet =
+      selectedSubscriptionIds.length > 0 ? new Set(selectedSubscriptionIds) : null
     return inventory.filter((item) => {
-      if (!canSeeAllPortfolios && !portfolioCustomerIds.includes(item.customerId)) return false
+      if (!customerSet.has(item.customerId)) return false
+      if (subSet && !subSet.has(item.subscriptionId)) return false
       return true
     })
-  }, [inventory, canSeeAllPortfolios, portfolioCustomerIds])
-
-  const scopedSubscriptions = useMemo(() => {
-    const customerIds = new Set(visibleCustomers.map((c) => c.id))
-    return subscriptions.filter((s) => customerIds.has(s.customerId) && s.subscriptionId)
-  }, [subscriptions, visibleCustomers])
+  }, [
+    inventory,
+    selectedCustomerIds,
+    selectedSubscriptionIds,
+    visibleCustomers,
+  ])
 
   const estimateTree = useMemo(
     () =>
       buildCostHierarchy({
         inventory: visibleInventory,
-        customers: visibleCustomers,
-        subscriptions,
+        customers: visibleCustomers.filter(
+          (c) =>
+            selectedCustomerIds.length === 0 || selectedCustomerIds.includes(c.id),
+        ),
+        subscriptions: selectedSubscriptions.length
+          ? selectedSubscriptions
+          : customerSubs,
         monthColumns: fallbackMonths,
       }),
-    [visibleInventory, visibleCustomers, subscriptions, fallbackMonths],
+    [
+      visibleInventory,
+      visibleCustomers,
+      selectedCustomerIds,
+      selectedSubscriptions,
+      customerSubs,
+      fallbackMonths,
+    ],
   )
 
   const actualTree = useMemo(() => {
@@ -73,6 +141,11 @@ export function CostManagementPage() {
   const monthColumns: CostMonthColumn[] =
     usingLive && costResult?.monthColumns?.length ? costResult.monthColumns : fallbackMonths
 
+  const canRetrieve =
+    selectedCustomerIds.length > 0 &&
+    selectedSubscriptionIds.length > 0 &&
+    selectedSubscriptionIds.length <= MAX_COST_SUBSCRIPTIONS
+
   const loadCosts = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -80,18 +153,24 @@ export function CostManagementPage() {
       const ready = await ensureAzureSession()
       if (!ready) {
         throw new Error(
-          'No active Azure CLI session. Connect a tenant on Azure Connect, then refresh costs.',
+          'No active Azure CLI session. Connect a tenant on Azure Connect, then retrieve costs.',
         )
       }
-      if (scopedSubscriptions.length === 0) {
+      if (selectedCustomerIds.length === 0) {
+        throw new Error('Select at least one customer.')
+      }
+      if (selectedSubscriptions.length === 0) {
+        throw new Error('Select at least one subscription.')
+      }
+      if (selectedSubscriptions.length > MAX_COST_SUBSCRIPTIONS) {
         throw new Error(
-          'No subscriptions in scope. Add customers/subscriptions (or collect inventory) first.',
+          `Select at most ${MAX_COST_SUBSCRIPTIONS} subscriptions per cost retrieval.`,
         )
       }
       const customerById = new Map(visibleCustomers.map((c) => [c.id, c]))
       const result = await queryAzureCosts({
         months: 12,
-        subscriptions: scopedSubscriptions.map((s) => ({
+        subscriptions: selectedSubscriptions.map((s) => ({
           azureSubscriptionId: s.subscriptionId,
           customerId: s.customerId,
           customerName: customerById.get(s.customerId)?.name || null,
@@ -106,15 +185,12 @@ export function CostManagementPage() {
     } finally {
       setLoading(false)
     }
-  }, [ensureAzureSession, scopedSubscriptions, visibleCustomers])
-
-  useEffect(() => {
-    if (!azureSessionReady || scopedSubscriptions.length === 0) return
-    if (costResult || loading) return
-    void loadCosts()
-    // Auto-load once when session + subscriptions are ready.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [azureSessionReady, scopedSubscriptions.length])
+  }, [
+    ensureAzureSession,
+    selectedCustomerIds.length,
+    selectedSubscriptions,
+    visibleCustomers,
+  ])
 
   useEffect(() => {
     if (tree.length === 0) return
@@ -199,7 +275,8 @@ export function CostManagementPage() {
           <h3>Cost Management</h3>
           <p>
             Hierarchical Actual Cost from Azure Cost Management — Customer → Subscription →
-            Resource group → Service type → SKU (meter) → Resource.
+            Resource group → Service type → SKU (meter) → Resource. Select customers and up to{' '}
+            {MAX_COST_SUBSCRIPTIONS} subscriptions per retrieval.
           </p>
         </div>
         <div className="hero-actions">
@@ -210,6 +287,90 @@ export function CostManagementPage() {
         </div>
       </div>
 
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h4>Cost scope</h4>
+            <p>
+              Choose customers and subscriptions, then retrieve costs. Maximum{' '}
+              {MAX_COST_SUBSCRIPTIONS} subscriptions per operation.
+            </p>
+          </div>
+        </div>
+        <div className="panel-body">
+          <div className="form-grid">
+            <div className="field">
+              <CheckboxMultiSelect
+                id="cost-mgmt-customers"
+                label="Customers"
+                options={customerOptions}
+                value={selectedCustomerIds}
+                onChange={(next) => {
+                  setSelectedCustomerIds(next)
+                  setError(null)
+                }}
+                placeholder="Select customers"
+                selectAllLabel="Select all customers"
+                emptyLabel="No customers in portfolio"
+              />
+            </div>
+            <div className="field">
+              <CheckboxMultiSelect
+                id="cost-mgmt-subscriptions"
+                label="Subscriptions"
+                options={subscriptionOptions}
+                value={selectedSubscriptionIds}
+                onChange={(next) => {
+                  setSelectedSubscriptionIds(next)
+                  setError(null)
+                }}
+                disabled={selectedCustomerIds.length === 0 || subscriptionOptions.length === 0}
+                placeholder="Select subscriptions"
+                selectAllLabel="Select subscriptions"
+                emptyLabel={
+                  selectedCustomerIds.length === 0
+                    ? 'Select a customer first'
+                    : 'No subscriptions for the selected customers'
+                }
+                maxSelections={MAX_COST_SUBSCRIPTIONS}
+              />
+            </div>
+          </div>
+          <div className="filters" style={{ alignItems: 'center', marginTop: '0.85rem' }}>
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={() => void loadCosts()}
+              disabled={loading || !canRetrieve}
+              aria-busy={loading}
+              title={
+                !canRetrieve
+                  ? `Select customers and 1–${MAX_COST_SUBSCRIPTIONS} subscriptions`
+                  : undefined
+              }
+            >
+              {loading ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={16} />}
+              {loading ? 'Loading costs…' : 'Retrieve costs from Azure'}
+            </button>
+            <span className="muted" style={{ fontSize: '0.88rem' }}>
+              {selectedSubscriptionIds.length}/{MAX_COST_SUBSCRIPTIONS} subscriptions selected
+            </span>
+            {costResult ? (
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => {
+                  setUseEstimates((v) => !v)
+                  setExpanded(new Set())
+                }}
+              >
+                {useEstimates ? 'Show Azure costs' : 'Show estimates'}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </section>
+
       <div className="filters" style={{ alignItems: 'center' }}>
         <div className="search">
           <Search size={16} />
@@ -219,28 +380,6 @@ export function CostManagementPage() {
             placeholder="Filter hierarchy by name"
           />
         </div>
-        <button
-          className="btn btn-primary"
-          type="button"
-          onClick={() => void loadCosts()}
-          disabled={loading}
-          aria-busy={loading}
-        >
-          {loading ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={16} />}
-          {loading ? 'Loading costs…' : 'Refresh from Azure'}
-        </button>
-        {costResult ? (
-          <button
-            className="btn btn-secondary"
-            type="button"
-            onClick={() => {
-              setUseEstimates((v) => !v)
-              setExpanded(new Set())
-            }}
-          >
-            {useEstimates ? 'Show Azure costs' : 'Show estimates'}
-          </button>
-        ) : null}
         <button className="btn btn-secondary" type="button" onClick={expandAll}>
           Expand all
         </button>
@@ -253,7 +392,8 @@ export function CostManagementPage() {
         <div className="panel soft-panel">
           <p className="muted" style={{ margin: 0 }}>
             Connect an Azure tenant on <Link to="/connect">Azure Connect</Link> so PCM can call Cost
-            Management with your session. Until then, inventory-based estimates are shown.
+            Management with your session. Until then, inventory-based estimates are shown for the
+            selected scope.
           </p>
         </div>
       ) : null}
@@ -280,7 +420,7 @@ export function CostManagementPage() {
       {costResult && usingLive ? (
         <div className="muted" style={{ fontSize: '0.88rem' }}>
           {costResult.message} · {new Date(costResult.fetchedAt).toLocaleString()} ·{' '}
-          {scopedSubscriptions.length} subscription(s) queried
+          {selectedSubscriptions.length} subscription(s) queried
         </div>
       ) : null}
 
@@ -292,7 +432,9 @@ export function CostManagementPage() {
               {rows.length} visible row{rows.length === 1 ? '' : 's'}
               {usingLive
                 ? ` · ${costResult?.rowCount ?? 0} cost lines`
-                : ` · ${visibleInventory.length} inventory resources`}
+                : selectedCustomerIds.length === 0
+                  ? ' · select customers to scope estimates'
+                  : ` · ${visibleInventory.length} inventory resources`}
             </p>
           </div>
         </div>
@@ -366,9 +508,11 @@ export function CostManagementPage() {
                         ? 'Loading Azure Cost Management…'
                         : usingLive
                           ? 'No cost rows returned for the selected subscriptions in this period.'
-                          : visibleInventory.length === 0
-                            ? 'No inventory in scope. Collect inventory or refresh costs from Azure.'
-                            : 'No hierarchy rows match the current filter.'}
+                          : selectedCustomerIds.length === 0
+                            ? 'Select customers and subscriptions, then retrieve costs from Azure.'
+                            : visibleInventory.length === 0
+                              ? 'No inventory in the selected scope. Retrieve costs from Azure or collect inventory.'
+                              : 'No hierarchy rows match the current filter.'}
                     </div>
                   </td>
                 </tr>

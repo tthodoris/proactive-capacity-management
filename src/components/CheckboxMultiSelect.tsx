@@ -20,6 +20,8 @@ interface CheckboxMultiSelectProps {
   /** Show search box when option count exceeds this (default 5). Set 0 to always show. */
   searchableFrom?: number
   searchPlaceholder?: string
+  /** Maximum number of selected values allowed. */
+  maxSelections?: number
 }
 
 interface MenuPosition {
@@ -42,6 +44,7 @@ export function CheckboxMultiSelect({
   emptyLabel = 'No options available',
   searchableFrom = 5,
   searchPlaceholder = 'Search…',
+  maxSelections,
 }: CheckboxMultiSelectProps) {
   const reactId = useId()
   const controlId = id || reactId
@@ -55,6 +58,9 @@ export function CheckboxMultiSelect({
 
   const selectedSet = useMemo(() => new Set(value), [value])
   const searchable = options.length >= searchableFrom
+  const limit =
+    typeof maxSelections === 'number' && maxSelections > 0 ? maxSelections : undefined
+  const atLimit = limit != null && value.length >= limit
 
   const visibleOptions = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -73,13 +79,13 @@ export function CheckboxMultiSelect({
 
   const summary = useMemo(() => {
     if (options.length === 0) return emptyLabel
-    if (allSelected) return `All (${options.length})`
+    if (limit == null && allSelected) return `All (${options.length})`
     if (value.length === 0) return placeholder
     if (value.length === 1) {
       return options.find((o) => o.value === value[0])?.label || value[0]
     }
-    return `${value.length} selected`
-  }, [allSelected, emptyLabel, options, placeholder, value])
+    return limit != null ? `${value.length} of ${limit} selected` : `${value.length} selected`
+  }, [allSelected, emptyLabel, limit, options, placeholder, value])
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) {
@@ -152,9 +158,10 @@ export function CheckboxMultiSelect({
   function toggleValue(optionValue: string) {
     if (selectedSet.has(optionValue)) {
       onChange(value.filter((v) => v !== optionValue))
-    } else {
-      onChange([...value, optionValue])
+      return
     }
+    if (limit != null && value.length >= limit) return
+    onChange([...value, optionValue])
   }
 
   function toggleAllVisible() {
@@ -164,14 +171,27 @@ export function CheckboxMultiSelect({
       onChange(value.filter((v) => !drop.has(v)))
       return
     }
-    onChange([...new Set([...value, ...visibleValues])])
+    if (limit == null) {
+      onChange([...new Set([...value, ...visibleValues])])
+      return
+    }
+    const next = [...value]
+    for (const id of visibleValues) {
+      if (next.length >= limit) break
+      if (!next.includes(id)) next.push(id)
+    }
+    onChange(next)
   }
 
   const selectAllText = query.trim()
     ? allVisibleSelected
       ? 'Deselect matching'
-      : 'Select matching'
-    : selectAllLabel
+      : limit != null
+        ? `Select matching (max ${limit})`
+        : 'Select matching'
+    : limit != null
+      ? `${selectAllLabel} (max ${limit})`
+      : selectAllLabel
 
   return (
     <div className={`multi-select${disabled ? ' disabled' : ''}${open ? ' open' : ''}`} ref={rootRef}>
@@ -247,11 +267,21 @@ export function CheckboxMultiSelect({
                 ) : (
                   visibleOptions.map((option) => {
                     const checked = selectedSet.has(option.value)
+                    const optionDisabled = !checked && atLimit
                     return (
-                      <label key={option.value} className="multi-select-option">
+                      <label
+                        key={option.value}
+                        className={`multi-select-option${optionDisabled ? ' disabled' : ''}`}
+                        title={
+                          optionDisabled
+                            ? `Maximum of ${limit} selections allowed`
+                            : undefined
+                        }
+                      >
                         <input
                           type="checkbox"
                           checked={checked}
+                          disabled={optionDisabled}
                           onChange={() => toggleValue(option.value)}
                         />
                         <span className="multi-select-option-text">

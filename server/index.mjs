@@ -2471,6 +2471,12 @@ app.post('/api/azure/costs/query', async (req, res) => {
         error: 'subscriptions[] with azureSubscriptionId is required',
       })
     }
+    if (subscriptions.length > 7) {
+      return res.status(400).json({
+        error: 'Select at most 7 subscriptions per cost retrieval operation',
+        hint: 'Narrow the customer/subscription selection on Cost Management and retry.',
+      })
+    }
 
     const now = new Date()
     const to = new Date(
