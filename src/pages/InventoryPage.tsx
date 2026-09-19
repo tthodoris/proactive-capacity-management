@@ -12,30 +12,32 @@ import {
 } from '../lib/tableSort'
 
 type InventorySortKey =
-  | 'name'
   | 'customer'
   | 'subscription'
-  | 'type'
-  | 'sku'
   | 'region'
+  | 'resourceGroup'
+  | 'type'
+  | 'name'
+  | 'sku'
   | 'source'
   | 'retrieved'
 
 const INVENTORY_COLUMNS: Array<[InventorySortKey, string]> = [
-  ['name', 'Resource'],
   ['customer', 'Customer'],
   ['subscription', 'Subscription'],
-  ['type', 'Type'],
-  ['sku', 'SKU'],
   ['region', 'Region'],
+  ['resourceGroup', 'Resource group'],
+  ['type', 'Type'],
+  ['name', 'Resource'],
+  ['sku', 'SKU'],
   ['source', 'Source'],
-  ['retrieved', 'Retrieved'],
+  ['retrieved', 'Retrieved date'],
 ]
 
 export function InventoryPage() {
   const { inventory, customers, subscriptions, portfolioCustomerIds, canSeeAllPortfolios } = useApp()
   const [query, setQuery] = useState('')
-  const { sortKey, sortDir, toggleSort } = useSortState<InventorySortKey>('name')
+  const { sortKey, sortDir, toggleSort } = useSortState<InventorySortKey>('customer')
   const {
     filters,
     setColumnFilter,
@@ -194,15 +196,15 @@ export function InventoryPage() {
                 const sub = subscriptions.find((s) => s.id === item.subscriptionId)
                 return (
                   <tr key={item.id}>
-                    <td>
-                      <strong>{item.name}</strong>
-                      <div className="muted">{item.resourceGroup}</div>
-                    </td>
                     <td>{customer?.name}</td>
                     <td>{sub?.name}</td>
-                    <td>{item.resourceType}</td>
-                    <td>{item.sku}</td>
                     <td>{item.region}</td>
+                    <td className="muted">{item.resourceGroup}</td>
+                    <td>{item.resourceType}</td>
+                    <td>
+                      <strong>{item.name}</strong>
+                    </td>
+                    <td>{item.sku}</td>
                     <td>
                       <span className="pill pill-neutral">{item.source}</span>
                     </td>
