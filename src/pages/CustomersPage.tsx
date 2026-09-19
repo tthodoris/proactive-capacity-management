@@ -287,22 +287,26 @@ export function CustomersPage() {
 }
 
 type CustomerInventorySortKey =
-  | 'name'
+  | 'customer'
   | 'subscription'
-  | 'type'
-  | 'sku'
   | 'region'
   | 'resourceGroup'
+  | 'type'
+  | 'name'
+  | 'sku'
   | 'source'
+  | 'retrieved'
 
 const CUSTOMER_INVENTORY_COLUMNS: Array<[CustomerInventorySortKey, string]> = [
-  ['name', 'Name'],
+  ['customer', 'Customer'],
   ['subscription', 'Subscription'],
-  ['type', 'Type'],
-  ['sku', 'SKU'],
   ['region', 'Region'],
   ['resourceGroup', 'Resource group'],
+  ['type', 'Type'],
+  ['name', 'Resource'],
+  ['sku', 'SKU'],
   ['source', 'Source'],
+  ['retrieved', 'Retrieved date'],
 ]
 
 export function CustomerDetailPage() {
@@ -321,7 +325,7 @@ export function CustomerDetailPage() {
   const [selectedFamilies, setSelectedFamilies] = useState<string[]>([])
   const [hideUnused, setHideUnused] = useState(true)
   const [quotaSnapshotExpanded, setQuotaSnapshotExpanded] = useState(true)
-  const { sortKey, sortDir, toggleSort } = useSortState<CustomerInventorySortKey>('name')
+  const { sortKey, sortDir, toggleSort } = useSortState<CustomerInventorySortKey>('subscription')
   const {
     filters,
     setColumnFilter,
@@ -350,15 +354,27 @@ export function CustomerDetailPage() {
   const getInventoryValue = useCallback(
     (item: (typeof items)[number], key: string) => {
       switch (key) {
+        case 'customer':
+          return customer?.name || ''
         case 'type':
           return item.resourceType
         case 'subscription':
           return subs.find((s) => s.id === item.subscriptionId)?.name || ''
+        case 'retrieved':
+          return item.collectedAt ? formatDate(item.collectedAt) : '—'
         default:
           return item[key as keyof typeof item]
       }
     },
-    [subs],
+    [subs, customer],
+  )
+
+  const getInventorySortValue = useCallback(
+    (item: (typeof items)[number], key: string) => {
+      if (key === 'retrieved') return item.collectedAt || ''
+      return getInventoryValue(item, key)
+    },
+    [getInventoryValue],
   )
 
   const filteredItems = useMemo(() => {
@@ -367,7 +383,7 @@ export function CustomerDetailPage() {
     )
   }, [items, matchesColumnFilters, getInventoryValue])
 
-  const inventoryRows = useSortedRows(filteredItems, sortKey, sortDir, getInventoryValue)
+  const inventoryRows = useSortedRows(filteredItems, sortKey, sortDir, getInventorySortValue)
 
   const inventoryColumnKeys = CUSTOMER_INVENTORY_COLUMNS.map(([key]) => key)
 
@@ -656,22 +672,24 @@ export function CustomerDetailPage() {
       {
         name: 'Inventory',
         columns: [
-          { key: 'name', label: 'Name' },
+          { key: 'customer', label: 'Customer' },
           { key: 'subscription', label: 'Subscription' },
-          { key: 'type', label: 'Type' },
-          { key: 'sku', label: 'SKU' },
           { key: 'region', label: 'Region' },
           { key: 'resourceGroup', label: 'Resource group' },
+          { key: 'type', label: 'Type' },
+          { key: 'name', label: 'Resource' },
+          { key: 'sku', label: 'SKU' },
           { key: 'source', label: 'Source' },
-          { key: 'retrieved', label: 'Retrieved' },
+          { key: 'retrieved', label: 'Retrieved date' },
         ],
         rows: items.map((item) => ({
-          name: item.name,
+          customer: customer?.name || '',
           subscription: subNameById.get(item.subscriptionId) || item.subscriptionId,
-          type: item.resourceType,
-          sku: item.sku,
           region: item.region,
           resourceGroup: item.resourceGroup,
+          type: item.resourceType,
+          name: item.name,
+          sku: item.sku,
           source: item.source,
           retrieved: item.collectedAt ? formatDate(item.collectedAt) : '',
         })),
@@ -996,16 +1014,20 @@ export function CustomerDetailPage() {
             <tbody>
               {inventoryRows.map((item) => (
                 <tr key={item.id}>
+                  <td>{customer?.name}</td>
+                  <td>{subs.find((s) => s.id === item.subscriptionId)?.name || '—'}</td>
+                  <td>{item.region}</td>
+                  <td className="muted">{item.resourceGroup}</td>
+                  <td>{item.resourceType}</td>
                   <td>
                     <strong>{item.name}</strong>
                   </td>
-                  <td>{subs.find((s) => s.id === item.subscriptionId)?.name || '—'}</td>
-                  <td>{item.resourceType}</td>
                   <td>{item.sku}</td>
-                  <td>{item.region}</td>
-                  <td className="muted">{item.resourceGroup}</td>
                   <td>
                     <span className="pill pill-neutral">{item.source}</span>
+                  </td>
+                  <td className="muted">
+                    {item.collectedAt ? formatDate(item.collectedAt) : '—'}
                   </td>
                 </tr>
               ))}
