@@ -22,6 +22,7 @@ import { RegionCostAnalysisPage } from './pages/RegionCostAnalysisPage'
 import { RegionEvaluationPage } from './pages/RegionEvaluationPage'
 import { RegionEvaluationsPage } from './pages/RegionEvaluationsPage'
 import { MultiregionStrategyPage } from './pages/MultiregionStrategyPage'
+import { CostManagementPage } from './pages/CostManagementPage'
 import { ForecastAgentPage } from './pages/ForecastAgentPage'
 import { ReportsPage } from './pages/ReportsPage'
 import { RewardsPage } from './pages/RewardsPage'
@@ -46,6 +47,7 @@ export default function App() {
                 <Route path="customers/risk/:id" element={<CustomerRiskDetailPage />} />
                 <Route path="customers/:id" element={<CustomerDetailPage />} />
                 <Route path="inventory" element={<InventoryPage />} />
+                <Route path="cost-management" element={<CostManagementPage />} />
                 <Route path="quotas" element={<QuotasPage />} />
                 <Route path="quota-groups" element={<QuotaGroupsPage />} />
                 <Route path="region-evaluation" element={<RegionEvaluationPage />} />

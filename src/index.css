@@ -3483,4 +3483,149 @@ tr.is-selected-row td {
   gap: 0.3rem;
 }
 
+.cost-hierarchy-wrap {
+  overflow-x: auto;
+}
+
+.cost-hierarchy-table {
+  min-width: 1100px;
+}
+
+.cost-hierarchy-table th.cost-service-col {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 280px;
+  background: var(--panel-soft);
+}
+
+.cost-hierarchy-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--panel);
+  min-width: 280px;
+}
+
+.cost-hierarchy-table tbody tr:hover td:first-child {
+  background: #eef5fa;
+}
+
+.cost-service-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.cost-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.cost-expand-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.cost-expand-spacer {
+  width: 1.35rem;
+  flex-shrink: 0;
+}
+
+.cost-level-badge {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0.12rem 0.35rem;
+  border-radius: 4px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.cost-level-badge.level-1 {
+  background: #e8f1ff;
+  color: #1f5fbf;
+  border-color: #c5d8f5;
+}
+
+.cost-level-badge.level-2 {
+  background: #e7f7f4;
+  color: #0a5f67;
+  border-color: #b9e4de;
+}
+
+.cost-level-badge.level-3 {
+  background: #fff4e5;
+  color: #9a5b00;
+  border-color: #f0d4a8;
+}
+
+.cost-level-badge.level-4 {
+  background: #f0e9ff;
+  color: #5b3fa0;
+  border-color: #d4c6f5;
+}
+
+.cost-level-badge.level-5 {
+  background: #e8f6ec;
+  color: #1f7a4d;
+  border-color: #b9e0c8;
+}
+
+.cost-level-badge.level-6 {
+  background: var(--panel-soft);
+  color: var(--ink-soft);
+}
+
+.cost-service-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.cost-row.level-1 .cost-service-name {
+  font-weight: 700;
+}
+
+.cost-month-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.cost-hierarchy-table th.cost-col-current,
+.cost-hierarchy-table td.cost-col-current,
+.cost-hierarchy-table th.cost-col-projected,
+.cost-hierarchy-table td.cost-col-projected {
+  color: var(--info);
+  font-weight: 600;
+}
+
+.cost-hierarchy-table td.cost-col-current,
+.cost-hierarchy-table td.cost-col-projected,
+.cost-hierarchy-table td:not(:first-child) {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.cost-hierarchy-table th:not(:first-child) {
+  text-align: right;
+}
+
 

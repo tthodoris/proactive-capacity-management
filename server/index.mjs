@@ -2199,6 +2199,351 @@ app.get('/api/azure/adx/config', async (_req, res) => {
   })
 })
 
+const COST_MANAGEMENT_API_VERSION = '2023-11-01'
+
+function costMonthKeyFromUsageDate(value) {
+  if (value == null || value === '') return null
+  if (typeof value === 'number') {
+    const raw = String(Math.trunc(value))
+    if (raw.length === 8) return `${raw.slice(0, 4)}-${raw.slice(4, 6)}`
+    if (raw.length === 6) return `${raw.slice(0, 4)}-${raw.slice(4, 6)}`
+  }
+  const text = String(value)
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})/)
+  if (compact) return `${compact[1]}-${compact[2]}`
+  const iso = text.match(/^(\d{4})-(\d{2})/)
+  if (iso) return `${iso[1]}-${iso[2]}`
+  const d = new Date(text)
+  if (!Number.isNaN(d.getTime())) {
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+  }
+  return null
+}
+
+function parseArmResourceId(resourceId) {
+  const raw = String(resourceId || '').trim()
+  if (!raw) {
+    return {
+      resourceGroup: '(unassigned)',
+      serviceType: 'Subscription charges',
+      resourceName: '(unassigned)',
+    }
+  }
+  const m = raw.match(/\/resourceGroups\/([^/]+)\/providers\/(.+)$/i)
+  if (!m) {
+    return {
+      resourceGroup: '(unassigned)',
+      serviceType: 'Other',
+      resourceName: raw.split('/').filter(Boolean).pop() || raw,
+    }
+  }
+  const resourceGroup = decodeURIComponent(m[1])
+  const parts = m[2].split('/').filter(Boolean)
+  const ns = parts[0] || 'Unknown'
+  const type = parts[1] || 'resource'
+  const resourceName = decodeURIComponent(parts[parts.length - 1] || 'resource')
+  return {
+    resourceGroup,
+    serviceType: `${ns}/${type}`,
+    resourceName,
+  }
+}
+
+function parseCostManagementQueryPayload(payload) {
+  const props = payload?.properties || payload || {}
+  const columns = Array.isArray(props.columns) ? props.columns : []
+  const rows = Array.isArray(props.rows) ? props.rows : []
+  const names = columns.map((c) => String(c?.name || ''))
+  const idx = (candidates) => {
+    for (const name of candidates) {
+      const i = names.findIndex((n) => n.toLowerCase() === name.toLowerCase())
+      if (i >= 0) return i
+    }
+    return -1
+  }
+  const costIdx = idx(['Cost', 'PreTaxCost', 'CostUSD'])
+  const dateIdx = idx(['UsageDate', 'BillingMonth', 'BillingPeriod', 'Date'])
+  const resourceIdx = idx(['ResourceId', 'ResourceID'])
+  const meterSubIdx = idx(['MeterSubCategory', 'MeterSubcategory'])
+  const meterIdx = idx(['Meter', 'MeterName'])
+  const serviceIdx = idx(['ServiceName', 'ConsumedService'])
+  const rgIdx = idx(['ResourceGroupName', 'ResourceGroup'])
+  const currencyIdx = idx(['Currency', 'BillingCurrency'])
+
+  const parsed = []
+  for (const row of rows) {
+    if (!Array.isArray(row)) continue
+    const cost = Number(costIdx >= 0 ? row[costIdx] : row[0]) || 0
+    const monthKey = costMonthKeyFromUsageDate(dateIdx >= 0 ? row[dateIdx] : null)
+    if (!monthKey) continue
+    const resourceId = resourceIdx >= 0 ? String(row[resourceIdx] || '') : ''
+    const parsedId = parseArmResourceId(resourceId)
+    const resourceGroup =
+      (rgIdx >= 0 && row[rgIdx] ? String(row[rgIdx]) : '') || parsedId.resourceGroup
+    const sku =
+      (meterSubIdx >= 0 && row[meterSubIdx] ? String(row[meterSubIdx]).trim() : '') ||
+      (meterIdx >= 0 && row[meterIdx] ? String(row[meterIdx]).trim() : '') ||
+      (serviceIdx >= 0 && row[serviceIdx] ? String(row[serviceIdx]).trim() : '') ||
+      'Unspecified'
+    const serviceType =
+      (serviceIdx >= 0 && row[serviceIdx] ? String(row[serviceIdx]).trim() : '') ||
+      parsedId.serviceType
+    parsed.push({
+      monthKey,
+      cost,
+      resourceId,
+      resourceGroup: resourceGroup || '(unassigned)',
+      serviceType,
+      sku,
+      resourceName: parsedId.resourceName,
+      currency: currencyIdx >= 0 ? String(row[currencyIdx] || 'USD') : 'USD',
+    })
+  }
+  return parsed
+}
+
+async function fetchCostManagementQueryPage(url, token, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      ClientType: 'PCM',
+    },
+    body: JSON.stringify(body),
+  })
+  const text = await res.text().catch(() => '')
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = null
+  }
+  if (!res.ok) {
+    const message =
+      payload?.error?.message ||
+      payload?.message ||
+      text.slice(0, 400) ||
+      res.statusText ||
+      `HTTP ${res.status}`
+    const err = new Error(`Cost Management ${res.status}: ${message}`)
+    err.status = res.status
+    throw err
+  }
+  return payload
+}
+
+async function querySubscriptionActualCosts({
+  subscriptionId,
+  token,
+  fromIso,
+  toIso,
+}) {
+  const scope = `https://management.azure.com/subscriptions/${subscriptionId}`
+  const url = `${scope}/providers/Microsoft.CostManagement/query?api-version=${COST_MANAGEMENT_API_VERSION}`
+  const body = {
+    type: 'ActualCost',
+    timeframe: 'Custom',
+    timePeriod: { from: fromIso, to: toIso },
+    dataset: {
+      granularity: 'Monthly',
+      aggregation: {
+        totalCost: { name: 'Cost', function: 'Sum' },
+      },
+      grouping: [
+        { type: 'Dimension', name: 'ResourceId' },
+        { type: 'Dimension', name: 'MeterSubCategory' },
+      ],
+    },
+  }
+
+  const all = []
+  let pageUrl = url
+  let pageBody = body
+  let guard = 0
+  while (pageUrl && guard < 40) {
+    guard += 1
+    const payload = await fetchCostManagementQueryPage(pageUrl, token, pageBody)
+    all.push(...parseCostManagementQueryPayload(payload))
+    const nextLink =
+      payload?.properties?.nextLink || payload?.nextLink || payload?.properties?.nextLinkUrl
+    if (nextLink) {
+      pageUrl = String(nextLink)
+      // nextLink is a full URL; POST body is still required for Cost Management paging.
+      pageBody = body
+    } else {
+      pageUrl = null
+    }
+  }
+  return all
+}
+
+async function mapPool(items, concurrency, worker) {
+  const results = new Array(items.length)
+  let cursor = 0
+  async function run() {
+    while (cursor < items.length) {
+      const index = cursor
+      cursor += 1
+      results[index] = await worker(items[index], index)
+    }
+  }
+  const n = Math.max(1, Math.min(concurrency, items.length || 1))
+  await Promise.all(Array.from({ length: n }, () => run()))
+  return results
+}
+
+app.post('/api/azure/costs/query', async (req, res) => {
+  try {
+    const account = await getAccount()
+    const monthCount = Math.min(Math.max(Number(req.body?.months) || 12, 1), 12)
+    const rawSubs = Array.isArray(req.body?.subscriptions) ? req.body.subscriptions : []
+    const subscriptions = rawSubs
+      .map((s) => ({
+        azureSubscriptionId: String(s?.azureSubscriptionId || s?.subscriptionId || '').trim(),
+        customerId: String(s?.customerId || '').trim() || null,
+        customerName: String(s?.customerName || '').trim() || null,
+        subscriptionName: String(s?.subscriptionName || s?.name || '').trim() || null,
+      }))
+      .filter((s) => s.azureSubscriptionId)
+
+    if (subscriptions.length === 0) {
+      return res.status(400).json({
+        error: 'subscriptions[] with azureSubscriptionId is required',
+      })
+    }
+
+    const now = new Date()
+    const to = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59),
+    )
+    const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (monthCount - 1), 1))
+    const fromIso = from.toISOString()
+    const toIso = to.toISOString()
+
+    const monthColumns = []
+    for (let i = monthCount - 1; i >= 0; i -= 1) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+      const label = d
+        .toLocaleString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' })
+        .toUpperCase()
+      monthColumns.push({
+        key,
+        label,
+        isCurrent: i === 0,
+      })
+    }
+    const currentKey = monthColumns.find((m) => m.isCurrent)?.key || monthColumns.at(-1)?.key
+    const dayOfMonth = Math.max(1, now.getUTCDate())
+    const daysInMonth = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0),
+    ).getUTCDate()
+
+    const token = await getArmAccessToken()
+    const errors = []
+    const leafMap = new Map()
+
+    const outcomes = await mapPool(subscriptions, 3, async (sub) => {
+      try {
+        const rows = await querySubscriptionActualCosts({
+          subscriptionId: sub.azureSubscriptionId,
+          token,
+          fromIso,
+          toIso,
+        })
+        return { sub, rows, error: null }
+      } catch (err) {
+        return {
+          sub,
+          rows: [],
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    })
+
+    for (const outcome of outcomes) {
+      if (outcome.error) {
+        errors.push({
+          azureSubscriptionId: outcome.sub.azureSubscriptionId,
+          subscriptionName: outcome.sub.subscriptionName,
+          error: outcome.error,
+        })
+      }
+      for (const row of outcome.rows) {
+        const key = [
+          outcome.sub.customerId || '',
+          outcome.sub.azureSubscriptionId,
+          row.resourceGroup,
+          row.serviceType,
+          row.sku,
+          row.resourceId || row.resourceName,
+        ].join('|')
+        let leaf = leafMap.get(key)
+        if (!leaf) {
+          leaf = {
+            customerId: outcome.sub.customerId,
+            customerName: outcome.sub.customerName,
+            azureSubscriptionId: outcome.sub.azureSubscriptionId,
+            subscriptionName: outcome.sub.subscriptionName || outcome.sub.azureSubscriptionId,
+            resourceGroup: row.resourceGroup,
+            serviceType: row.serviceType,
+            sku: row.sku,
+            resourceName: row.resourceName,
+            resourceId: row.resourceId || null,
+            months: Object.fromEntries(monthColumns.map((m) => [m.key, 0])),
+            currency: row.currency || 'USD',
+          }
+          leafMap.set(key, leaf)
+        }
+        leaf.months[row.monthKey] = (leaf.months[row.monthKey] || 0) + row.cost
+        if (row.currency) leaf.currency = row.currency
+      }
+    }
+
+    const rows = [...leafMap.values()].map((leaf) => {
+      const current = leaf.months[currentKey] || 0
+      const projected = (current / dayOfMonth) * daysInMonth
+      return { ...leaf, projected }
+    })
+
+    res.json({
+      ok: true,
+      account,
+      source: 'Microsoft.CostManagement',
+      type: 'ActualCost',
+      from: fromIso,
+      to: toIso,
+      monthColumns,
+      rows,
+      errors,
+      subscriptionCount: subscriptions.length,
+      rowCount: rows.length,
+      fetchedAt: new Date().toISOString(),
+      message:
+        rows.length === 0
+          ? 'Cost Management returned no rows for the selected subscriptions in this period.'
+          : `Loaded ${rows.length} resource cost line(s) across ${subscriptions.length} subscription(s).`,
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const expired =
+      /AADSTS70043/i.test(message) ||
+      /AADSTS530036/i.test(message) ||
+      /refresh token/i.test(message) ||
+      /interaction_required/i.test(message)
+    sendRouteError(
+      res,
+      expired ? 401 : 400,
+      err,
+      expired
+        ? 'Azure CLI session expired or blocked. Reconnect on Azure Connect, then retry Cost Management.'
+        : 'Cost Management query failed. Confirm the signed-in account can read costs on the selected subscriptions (Cost Management Reader / Billing Reader).',
+    )
+  }
+})
+
 app.get('/api/azure/inventory', async (req, res) => {
   try {
     const account = await getAccount()

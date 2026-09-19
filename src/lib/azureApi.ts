@@ -406,3 +406,59 @@ export function validateAdxConnection(payload?: {
     body: JSON.stringify(payload || {}),
   })
 }
+
+export type CostMonthColumnDto = {
+  key: string
+  label: string
+  isCurrent: boolean
+}
+
+export type CostActualLeafDto = {
+  customerId?: string | null
+  customerName?: string | null
+  azureSubscriptionId: string
+  subscriptionName: string
+  resourceGroup: string
+  serviceType: string
+  sku: string
+  resourceName: string
+  resourceId?: string | null
+  months: Record<string, number>
+  projected: number
+  currency?: string
+}
+
+export type CostQueryResponse = {
+  ok: boolean
+  account: AzureConnection['account']
+  source: string
+  type: string
+  from: string
+  to: string
+  monthColumns: CostMonthColumnDto[]
+  rows: CostActualLeafDto[]
+  errors: Array<{
+    azureSubscriptionId?: string
+    subscriptionName?: string | null
+    error: string
+  }>
+  subscriptionCount: number
+  rowCount: number
+  fetchedAt: string
+  message: string
+}
+
+export function queryAzureCosts(payload: {
+  months?: number
+  subscriptions: Array<{
+    azureSubscriptionId: string
+    customerId?: string | null
+    customerName?: string | null
+    subscriptionName?: string | null
+  }>
+}) {
+  return api<CostQueryResponse>('/api/azure/costs/query', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}

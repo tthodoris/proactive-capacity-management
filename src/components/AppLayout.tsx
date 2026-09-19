@@ -55,9 +55,10 @@ const nav: NavItem[] = [
     children: [
       { to: '/customers', label: 'Portfolio', icon: Users },
       { to: '/customers/risk', label: 'Risk scores', icon: ShieldAlert },
+      { to: '/inventory', label: 'Inventory', icon: Boxes },
+      { to: '/cost-management', label: 'Cost Management', icon: BarChart3 },
     ],
   },
-  { to: '/inventory', label: 'Inventory', icon: Boxes },
   { to: '/quotas', label: 'Quotas', icon: Gauge },
   { to: '/quota-groups', label: 'Quota groups', icon: Layers },
   {
@@ -112,6 +113,11 @@ const titles: Record<string, { title: string; subtitle: string }> = {
   '/inventory': {
     title: 'Resource inventory',
     subtitle: 'Compute inventory from internal systems and consent-based tenant sync.',
+  },
+  '/cost-management': {
+    title: 'Cost Management',
+    subtitle:
+      'Azure Cost Management Actual Cost hierarchy by customer, subscription, resource group, service, SKU, and resource.',
   },
   '/quotas': {
     title: 'Quotas',
@@ -198,7 +204,12 @@ function isRegionEvalPath(pathname: string) {
 }
 
 function isCustomersPath(pathname: string) {
-  return pathname === '/customers' || pathname.startsWith('/customers/')
+  return (
+    pathname === '/customers' ||
+    pathname.startsWith('/customers/') ||
+    pathname === '/inventory' ||
+    pathname === '/cost-management'
+  )
 }
 
 function isConstraintsPath(pathname: string) {
