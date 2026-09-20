@@ -200,6 +200,44 @@ export async function initDb() {
       ON agent_chats(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_chat_messages_chat
       ON agent_chat_messages(chat_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS cost_retrievals (
+      azure_subscription_id TEXT PRIMARY KEY,
+      customer_id TEXT,
+      customer_name TEXT,
+      subscription_name TEXT,
+      period_from TIMESTAMPTZ,
+      period_to TIMESTAMPTZ,
+      month_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
+      row_count INT NOT NULL DEFAULT 0,
+      retrieved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS cost_line_items (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT,
+      customer_name TEXT,
+      azure_subscription_id TEXT NOT NULL,
+      subscription_name TEXT,
+      resource_group TEXT NOT NULL DEFAULT '(unassigned)',
+      service_type TEXT NOT NULL DEFAULT 'Other',
+      sku TEXT NOT NULL DEFAULT 'Unspecified',
+      resource_name TEXT NOT NULL DEFAULT '(unassigned)',
+      resource_id TEXT,
+      months JSONB NOT NULL DEFAULT '{}'::jsonb,
+      projected DOUBLE PRECISION NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      period_from TIMESTAMPTZ,
+      period_to TIMESTAMPTZ,
+      retrieved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cost_line_items_sub
+      ON cost_line_items(azure_subscription_id);
+    CREATE INDEX IF NOT EXISTS idx_cost_line_items_customer
+      ON cost_line_items(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_cost_retrievals_retrieved
+      ON cost_retrievals(retrieved_at DESC);
   `)
 
   const { initDomainTables } = await import('./domain-db.mjs')
@@ -1331,4 +1369,165 @@ export async function appendAgentChatTurn({
   } finally {
     client.release()
   }
+}
+
+function mapCostLineItem(row) {
+  return {
+    id: row.id,
+    customerId: row.customer_id,
+    customerName: row.customer_name,
+    azureSubscriptionId: row.azure_subscription_id,
+    subscriptionName: row.subscription_name,
+    resourceGroup: row.resource_group,
+    serviceType: row.service_type,
+    sku: row.sku,
+    resourceName: row.resource_name,
+    resourceId: row.resource_id,
+    months: row.months && typeof row.months === 'object' ? row.months : {},
+    projected: Number(row.projected) || 0,
+    currency: row.currency || 'USD',
+    periodFrom: row.period_from ? new Date(row.period_from).toISOString() : null,
+    periodTo: row.period_to ? new Date(row.period_to).toISOString() : null,
+    retrievedAt: row.retrieved_at ? new Date(row.retrieved_at).toISOString() : null,
+  }
+}
+
+function mapCostRetrieval(row) {
+  return {
+    azureSubscriptionId: row.azure_subscription_id,
+    customerId: row.customer_id,
+    customerName: row.customer_name,
+    subscriptionName: row.subscription_name,
+    periodFrom: row.period_from ? new Date(row.period_from).toISOString() : null,
+    periodTo: row.period_to ? new Date(row.period_to).toISOString() : null,
+    monthColumns: Array.isArray(row.month_columns) ? row.month_columns : [],
+    rowCount: Number(row.row_count) || 0,
+    retrievedAt: row.retrieved_at ? new Date(row.retrieved_at).toISOString() : null,
+  }
+}
+
+/** Replace stored cost lines for one Azure subscription with a fresh retrieval. */
+export async function replaceSubscriptionCosts({
+  azureSubscriptionId,
+  customerId,
+  customerName,
+  subscriptionName,
+  periodFrom,
+  periodTo,
+  monthColumns,
+  rows,
+  retrievedAt,
+}) {
+  const subId = String(azureSubscriptionId || '').trim()
+  if (!subId) throw new Error('azureSubscriptionId is required')
+  const retrieved = retrievedAt ? new Date(retrievedAt) : new Date()
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query(`DELETE FROM cost_line_items WHERE azure_subscription_id = $1`, [subId])
+    for (const row of rows || []) {
+      const id =
+        row.id ||
+        `cost:${subId}:${row.resourceId || row.resourceName || randomId()}:${row.sku || 'x'}`
+      await client.query(
+        `
+        INSERT INTO cost_line_items (
+          id, customer_id, customer_name, azure_subscription_id, subscription_name,
+          resource_group, service_type, sku, resource_name, resource_id,
+          months, projected, currency, period_from, period_to, retrieved_at
+        ) VALUES (
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16
+        )
+        `,
+        [
+          id,
+          customerId || row.customerId || null,
+          customerName || row.customerName || null,
+          subId,
+          subscriptionName || row.subscriptionName || subId,
+          row.resourceGroup || '(unassigned)',
+          row.serviceType || 'Other',
+          row.sku || 'Unspecified',
+          row.resourceName || '(unassigned)',
+          row.resourceId || null,
+          JSON.stringify(row.months || {}),
+          Number(row.projected) || 0,
+          row.currency || 'USD',
+          periodFrom || null,
+          periodTo || null,
+          retrieved.toISOString(),
+        ],
+      )
+    }
+    await client.query(
+      `
+      INSERT INTO cost_retrievals (
+        azure_subscription_id, customer_id, customer_name, subscription_name,
+        period_from, period_to, month_columns, row_count, retrieved_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)
+      ON CONFLICT (azure_subscription_id) DO UPDATE SET
+        customer_id = EXCLUDED.customer_id,
+        customer_name = EXCLUDED.customer_name,
+        subscription_name = EXCLUDED.subscription_name,
+        period_from = EXCLUDED.period_from,
+        period_to = EXCLUDED.period_to,
+        month_columns = EXCLUDED.month_columns,
+        row_count = EXCLUDED.row_count,
+        retrieved_at = EXCLUDED.retrieved_at
+      `,
+      [
+        subId,
+        customerId || null,
+        customerName || null,
+        subscriptionName || subId,
+        periodFrom || null,
+        periodTo || null,
+        JSON.stringify(monthColumns || []),
+        Array.isArray(rows) ? rows.length : 0,
+        retrieved.toISOString(),
+      ],
+    )
+    await client.query('COMMIT')
+    return { azureSubscriptionId: subId, rowCount: Array.isArray(rows) ? rows.length : 0, retrievedAt: retrieved.toISOString() }
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+export async function listStoredCosts({ azureSubscriptionIds = [] } = {}) {
+  const ids = (azureSubscriptionIds || [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean)
+  if (ids.length === 0) {
+    return { retrievals: [], rows: [] }
+  }
+  const retrievalsRes = await pool.query(
+    `
+    SELECT *
+    FROM cost_retrievals
+    WHERE azure_subscription_id = ANY($1::text[])
+    ORDER BY retrieved_at DESC
+    `,
+    [ids],
+  )
+  const rowsRes = await pool.query(
+    `
+    SELECT *
+    FROM cost_line_items
+    WHERE azure_subscription_id = ANY($1::text[])
+    ORDER BY customer_name NULLS LAST, subscription_name NULLS LAST, resource_group, service_type, sku, resource_name
+    `,
+    [ids],
+  )
+  return {
+    retrievals: retrievalsRes.rows.map(mapCostRetrieval),
+    rows: rowsRes.rows.map(mapCostLineItem),
+  }
+}
+
+function randomId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }

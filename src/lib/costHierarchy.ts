@@ -1,5 +1,3 @@
-import type { Customer, InventoryItem, Subscription } from '../types'
-
 export type CostLevel = 1 | 2 | 3 | 4 | 5 | 6
 
 export type CostLevelKey =
@@ -33,36 +31,15 @@ export interface CostTreeNode {
   id: string
   level: CostLevel
   label: string
-  /** Monthly costs aligned with `months` keys (USD). */
-  months: Record<string, number>
-  projected: number
+  /** Monthly costs aligned with `months` keys (USD). Null when never retrieved. */
+  months: Record<string, number | null>
+  projected: number | null
   children: CostTreeNode[]
   resourceCount: number
-}
-
-function hashString(input: string) {
-  let h = 2166136261
-  for (let i = 0; i < input.length; i += 1) {
-    h ^= input.charCodeAt(i)
-    h = Math.imul(h, 16777619)
-  }
-  return h >>> 0
-}
-
-/** Rough monthly USD estimate from SKU name until Cost Management API is wired. */
-export function estimateMonthlyCostUsd(sku: string, resourceType: string) {
-  const text = `${sku} ${resourceType}`.toLowerCase()
-  const coresMatch = sku.match(/_([a-z]?)(\d+)/i)
-  const cores = coresMatch ? Math.max(1, Number(coresMatch[2]) || 4) : 4
-  let rate = 42
-  if (/gpu|nc|nd|nv/.test(text)) rate = 180
-  else if (/memory|e\d|m\d/.test(text)) rate = 58
-  else if (/aks|kubernetes|container/.test(text)) rate = 36
-  else if (/sql|database|cosmos|postgres/.test(text)) rate = 95
-  else if (/storage|disk|blob/.test(text)) rate = 18
-  else if (/app service|function|web/.test(text)) rate = 28
-  const noise = (hashString(sku) % 17) - 8
-  return Math.max(12, cores * rate + noise)
+  /** ISO timestamp of latest cost retrieval under this node; null if never retrieved. */
+  retrievedAt: string | null
+  /** False when this node (or branch) has no persisted Azure cost data. */
+  hasCostData: boolean
 }
 
 export function buildMonthColumns(now = new Date(), count = 12): CostMonthColumn[] {
@@ -83,156 +60,8 @@ export function buildMonthColumns(now = new Date(), count = 12): CostMonthColumn
   return months
 }
 
-function seriesForLeaf(baseMonthly: number, monthKeys: string[], seed: string) {
-  const out: Record<string, number> = {}
-  const h = hashString(seed)
-  monthKeys.forEach((key, index) => {
-    const wave = 1 + (((h >> (index % 8)) & 7) - 3) * 0.018
-    const trend = 1 + (index - (monthKeys.length - 1)) * 0.012
-    out[key] = Math.max(0, baseMonthly * wave * trend)
-  })
-  return out
-}
-
-function sumSeries(nodes: CostTreeNode[], monthKeys: string[]) {
-  const months: Record<string, number> = {}
-  for (const key of monthKeys) months[key] = 0
-  let projected = 0
-  let resourceCount = 0
-  for (const node of nodes) {
-    for (const key of monthKeys) months[key] += node.months[key] || 0
-    projected += node.projected
-    resourceCount += node.resourceCount
-  }
-  return { months, projected, resourceCount }
-}
-
-function groupBy<T>(items: T[], keyFn: (item: T) => string) {
-  const map = new Map<string, T[]>()
-  for (const item of items) {
-    const key = keyFn(item)
-    const list = map.get(key)
-    if (list) list.push(item)
-    else map.set(key, [item])
-  }
-  return map
-}
-
-export function buildCostHierarchy(input: {
-  inventory: InventoryItem[]
-  customers: Customer[]
-  subscriptions: Subscription[]
-  monthColumns: CostMonthColumn[]
-}): CostTreeNode[] {
-  const monthKeys = input.monthColumns.map((m) => m.key)
-  const currentKey = input.monthColumns.find((m) => m.isCurrent)?.key || monthKeys[monthKeys.length - 1]
-  const customerName = new Map(input.customers.map((c) => [c.id, c.name]))
-  const subName = new Map(input.subscriptions.map((s) => [s.id, s.name]))
-
-  const byCustomer = groupBy(input.inventory, (i) => i.customerId)
-  const roots: CostTreeNode[] = []
-
-  for (const [customerId, customerItems] of byCustomer) {
-    const bySub = groupBy(customerItems, (i) => i.subscriptionId)
-    const subNodes: CostTreeNode[] = []
-
-    for (const [subscriptionId, subItems] of bySub) {
-      const byRg = groupBy(subItems, (i) => i.resourceGroup || '(no resource group)')
-      const rgNodes: CostTreeNode[] = []
-
-      for (const [resourceGroup, rgItems] of byRg) {
-        const byType = groupBy(rgItems, (i) => i.resourceType || 'Unknown')
-        const typeNodes: CostTreeNode[] = []
-
-        for (const [serviceType, typeItems] of byType) {
-          const bySku = groupBy(typeItems, (i) => i.sku || 'Unknown SKU')
-          const skuNodes: CostTreeNode[] = []
-
-          for (const [sku, skuItems] of bySku) {
-            const resourceNodes: CostTreeNode[] = skuItems.map((item) => {
-              const base = estimateMonthlyCostUsd(item.sku, item.resourceType)
-              const months = seriesForLeaf(base, monthKeys, item.id)
-              const projected = (months[currentKey] || base) * 1.04
-              return {
-                id: `res:${item.id}`,
-                level: 6 as const,
-                label: item.name,
-                months,
-                projected,
-                children: [],
-                resourceCount: 1,
-              }
-            })
-
-            const skuAgg = sumSeries(resourceNodes, monthKeys)
-            skuNodes.push({
-              id: `sku:${customerId}:${subscriptionId}:${resourceGroup}:${serviceType}:${sku}`,
-              level: 5,
-              label: sku,
-              months: skuAgg.months,
-              projected: skuAgg.projected,
-              children: resourceNodes,
-              resourceCount: skuAgg.resourceCount,
-            })
-          }
-
-          skuNodes.sort((a, b) => b.projected - a.projected)
-          const typeAgg = sumSeries(skuNodes, monthKeys)
-          typeNodes.push({
-            id: `type:${customerId}:${subscriptionId}:${resourceGroup}:${serviceType}`,
-            level: 4,
-            label: serviceType,
-            months: typeAgg.months,
-            projected: typeAgg.projected,
-            children: skuNodes,
-            resourceCount: typeAgg.resourceCount,
-          })
-        }
-
-        typeNodes.sort((a, b) => b.projected - a.projected)
-        const rgAgg = sumSeries(typeNodes, monthKeys)
-        rgNodes.push({
-          id: `rg:${customerId}:${subscriptionId}:${resourceGroup}`,
-          level: 3,
-          label: resourceGroup,
-          months: rgAgg.months,
-          projected: rgAgg.projected,
-          children: typeNodes,
-          resourceCount: rgAgg.resourceCount,
-        })
-      }
-
-      rgNodes.sort((a, b) => b.projected - a.projected)
-      const subAgg = sumSeries(rgNodes, monthKeys)
-      subNodes.push({
-        id: `sub:${customerId}:${subscriptionId}`,
-        level: 2,
-        label: subName.get(subscriptionId) || subscriptionId,
-        months: subAgg.months,
-        projected: subAgg.projected,
-        children: rgNodes,
-        resourceCount: subAgg.resourceCount,
-      })
-    }
-
-    subNodes.sort((a, b) => b.projected - a.projected)
-    const custAgg = sumSeries(subNodes, monthKeys)
-    roots.push({
-      id: `cust:${customerId}`,
-      level: 1,
-      label: customerName.get(customerId) || customerId,
-      months: custAgg.months,
-      projected: custAgg.projected,
-      children: subNodes,
-      resourceCount: custAgg.resourceCount,
-    })
-  }
-
-  roots.sort((a, b) => b.projected - a.projected)
-  return roots
-}
-
-export function formatCompactUsd(value: number) {
+export function formatCompactUsd(value: number | null | undefined) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
   const abs = Math.abs(value)
   const sign = value < 0 ? '-' : ''
   if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`
@@ -253,6 +82,55 @@ export interface CostActualLeaf {
   months: Record<string, number>
   projected: number
   currency?: string
+  retrievedAt?: string | null
+}
+
+export function buildEmptyCostHierarchy(input: {
+  subscriptions: Array<{
+    customerId?: string | null
+    customerName?: string | null
+    azureSubscriptionId: string
+    subscriptionName: string
+  }>
+  monthColumns: CostMonthColumn[]
+}): CostTreeNode[] {
+  const monthKeys = input.monthColumns.map((m) => m.key)
+  const emptyMonths = () =>
+    Object.fromEntries(monthKeys.map((k) => [k, null])) as Record<string, number | null>
+  const byCustomer = new Map<string, CostTreeNode>()
+
+  for (const sub of input.subscriptions) {
+    const customerKey = sub.customerId || sub.customerName || 'unknown-customer'
+    const customerLabel = sub.customerName || sub.customerId || 'Unknown customer'
+    let cust = byCustomer.get(customerKey)
+    if (!cust) {
+      cust = {
+        id: `cust:${customerKey}`,
+        level: 1,
+        label: customerLabel,
+        months: emptyMonths(),
+        projected: null,
+        children: [],
+        resourceCount: 0,
+        retrievedAt: null,
+        hasCostData: false,
+      }
+      byCustomer.set(customerKey, cust)
+    }
+    cust.children.push({
+      id: `sub:${customerKey}:${sub.azureSubscriptionId}`,
+      level: 2,
+      label: sub.subscriptionName || sub.azureSubscriptionId,
+      months: emptyMonths(),
+      projected: null,
+      children: [],
+      resourceCount: 0,
+      retrievedAt: null,
+      hasCostData: false,
+    })
+  }
+
+  return [...byCustomer.values()].sort((a, b) => a.label.localeCompare(b.label))
 }
 
 export function buildCostHierarchyFromActual(input: {
@@ -263,7 +141,7 @@ export function buildCostHierarchyFromActual(input: {
   const currentKey =
     input.monthColumns.find((m) => m.isCurrent)?.key || monthKeys[monthKeys.length - 1]
 
-  const emptyMonths = () => Object.fromEntries(monthKeys.map((k) => [k, 0]))
+  const emptyMonths = () => Object.fromEntries(monthKeys.map((k) => [k, 0])) as Record<string, number>
 
   type Acc = {
     id: string
@@ -272,6 +150,8 @@ export function buildCostHierarchyFromActual(input: {
     months: Record<string, number>
     projected: number
     resourceCount: number
+    retrievedAt: string | null
+    hasCostData: boolean
     children: Map<string, Acc>
   }
 
@@ -292,11 +172,18 @@ export function buildCostHierarchyFromActual(input: {
         months: emptyMonths(),
         projected: 0,
         resourceCount: 0,
+        retrievedAt: null,
+        hasCostData: true,
         children: new Map(),
       }
       parent.set(id, node)
     }
     return node
+  }
+
+  const bumpRetrieved = (node: Acc, iso: string | null | undefined) => {
+    if (!iso) return
+    if (!node.retrievedAt || iso > node.retrievedAt) node.retrievedAt = iso
   }
 
   for (const row of input.rows) {
@@ -363,12 +250,18 @@ export function buildCostHierarchyFromActual(input: {
     rg.resourceCount += 1
     sub.resourceCount += 1
     cust.resourceCount += 1
+    bumpRetrieved(res, row.retrievedAt)
+    bumpRetrieved(sku, row.retrievedAt)
+    bumpRetrieved(svc, row.retrievedAt)
+    bumpRetrieved(rg, row.retrievedAt)
+    bumpRetrieved(sub, row.retrievedAt)
+    bumpRetrieved(cust, row.retrievedAt)
   }
 
   const toNode = (acc: Acc): CostTreeNode => {
     const children = [...acc.children.values()]
       .map(toNode)
-      .sort((a, b) => b.projected - a.projected)
+      .sort((a, b) => (b.projected || 0) - (a.projected || 0))
     return {
       id: acc.id,
       level: acc.level,
@@ -377,10 +270,135 @@ export function buildCostHierarchyFromActual(input: {
       projected: acc.projected,
       children,
       resourceCount: acc.resourceCount,
+      retrievedAt: acc.retrievedAt,
+      hasCostData: true,
     }
   }
 
-  return [...roots.values()].map(toNode).sort((a, b) => b.projected - a.projected)
+  return [...roots.values()].map(toNode).sort((a, b) => (b.projected || 0) - (a.projected || 0))
+}
+
+/**
+ * Ensure subscription nodes that were retrieved with zero line items still show as retrieved
+ * (empty months as $0) rather than never-retrieved placeholders.
+ */
+export function applyEmptyRetrievalMarkers(input: {
+  tree: CostTreeNode[]
+  retrievals: Array<{
+    azureSubscriptionId: string
+    customerId?: string | null
+    customerName?: string | null
+    subscriptionName?: string | null
+    retrievedAt: string | null
+  }>
+  monthColumns: CostMonthColumn[]
+}): CostTreeNode[] {
+  if (!input.retrievals.length) return input.tree
+
+  const monthKeys = input.monthColumns.map((m) => m.key)
+  const zeroMonths = () =>
+    Object.fromEntries(monthKeys.map((k) => [k, 0])) as Record<string, number | null>
+
+  const byCustomer = new Map<string, CostTreeNode>()
+  for (const root of input.tree) {
+    byCustomer.set(root.id, {
+      ...root,
+      months: { ...root.months },
+      children: root.children.map((c) => ({
+        ...c,
+        months: { ...c.months },
+        children: c.children.map((x) => ({ ...x, months: { ...x.months }, children: [...x.children] })),
+      })),
+    })
+  }
+
+  for (const retrieval of input.retrievals) {
+    const customerKey = retrieval.customerId || retrieval.customerName || 'unknown-customer'
+    const customerLabel = retrieval.customerName || retrieval.customerId || 'Unknown customer'
+    const custId = `cust:${customerKey}`
+    const subId = `sub:${customerKey}:${retrieval.azureSubscriptionId}`
+    let cust = byCustomer.get(custId)
+    if (!cust) {
+      cust = {
+        id: custId,
+        level: 1,
+        label: customerLabel,
+        months: zeroMonths(),
+        projected: 0,
+        children: [],
+        resourceCount: 0,
+        retrievedAt: retrieval.retrievedAt,
+        hasCostData: true,
+      }
+      byCustomer.set(custId, cust)
+    }
+    const existingSub = cust.children.find((c) => c.id === subId)
+    if (existingSub) {
+      if (retrieval.retrievedAt && (!existingSub.retrievedAt || retrieval.retrievedAt > existingSub.retrievedAt)) {
+        existingSub.retrievedAt = retrieval.retrievedAt
+      }
+      existingSub.hasCostData = true
+      if (cust.retrievedAt == null || (retrieval.retrievedAt && retrieval.retrievedAt > cust.retrievedAt)) {
+        cust.retrievedAt = retrieval.retrievedAt
+      }
+      cust.hasCostData = true
+      continue
+    }
+    cust.children.push({
+      id: subId,
+      level: 2,
+      label: retrieval.subscriptionName || retrieval.azureSubscriptionId,
+      months: zeroMonths(),
+      projected: 0,
+      children: [],
+      resourceCount: 0,
+      retrievedAt: retrieval.retrievedAt,
+      hasCostData: true,
+    })
+    if (cust.retrievedAt == null || (retrieval.retrievedAt && retrieval.retrievedAt > cust.retrievedAt)) {
+      cust.retrievedAt = retrieval.retrievedAt
+    }
+    cust.hasCostData = true
+  }
+
+  return [...byCustomer.values()].sort((a, b) => (b.projected || 0) - (a.projected || 0) || a.label.localeCompare(b.label))
+}
+
+/** Merge retrieved hierarchy with empty placeholders for subscriptions never retrieved. */
+export function mergeCostHierarchyWithPlaceholders(input: {
+  retrievedTree: CostTreeNode[]
+  placeholders: CostTreeNode[]
+}): CostTreeNode[] {
+  const byId = new Map<string, CostTreeNode>()
+
+  const clone = (node: CostTreeNode): CostTreeNode => ({
+    ...node,
+    months: { ...node.months },
+    children: node.children.map(clone),
+  })
+
+  for (const root of input.retrievedTree) {
+    byId.set(root.id, clone(root))
+  }
+
+  for (const placeholder of input.placeholders) {
+    const existing = byId.get(placeholder.id)
+    if (!existing) {
+      byId.set(placeholder.id, clone(placeholder))
+      continue
+    }
+    const existingSubIds = new Set(existing.children.map((c) => c.id))
+    for (const sub of placeholder.children) {
+      if (!existingSubIds.has(sub.id)) {
+        existing.children.push(clone(sub))
+      }
+    }
+  }
+
+  return [...byId.values()].sort((a, b) => {
+    if (a.hasCostData !== b.hasCostData) return a.hasCostData ? -1 : 1
+    return (b.projected || 0) - (a.projected || 0) || a.label.localeCompare(b.label)
+  })
 }
 
 /** Flatten visible rows given an expanded-id set (parents expanded show children). */

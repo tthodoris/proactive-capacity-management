@@ -426,6 +426,19 @@ export type CostActualLeafDto = {
   months: Record<string, number>
   projected: number
   currency?: string
+  retrievedAt?: string | null
+}
+
+export type CostRetrievalDto = {
+  azureSubscriptionId: string
+  customerId?: string | null
+  customerName?: string | null
+  subscriptionName?: string | null
+  periodFrom?: string | null
+  periodTo?: string | null
+  monthColumns: CostMonthColumnDto[]
+  rowCount: number
+  retrievedAt: string | null
 }
 
 export type CostQueryResponse = {
@@ -443,9 +456,18 @@ export type CostQueryResponse = {
     error: string
   }>
   subscriptionCount: number
+  persistedSubscriptions?: number
   rowCount: number
   fetchedAt: string
   message: string
+}
+
+export type StoredCostsResponse = {
+  ok: boolean
+  retrievals: CostRetrievalDto[]
+  rows: CostActualLeafDto[]
+  retrievalCount: number
+  rowCount: number
 }
 
 export function queryAzureCosts(payload: {
@@ -479,5 +501,21 @@ export function queryAzureCosts(payload: {
       throw err
     }
     return data as CostQueryResponse
+  })()
+}
+
+export function listStoredAzureCosts(subscriptionIds: string[]) {
+  return (async () => {
+    const ids = subscriptionIds.map((id) => String(id || '').trim()).filter(Boolean)
+    const res = await fetch('/api/azure/costs/stored', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subscriptionIds: ids }),
+    })
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok) {
+      throw apiErrorFromResponse(res, data)
+    }
+    return data as StoredCostsResponse
   })()
 }

@@ -3,17 +3,25 @@ import { ChevronDown, ChevronRight, LoaderCircle, RefreshCw, Search, Star } from
 import { Link } from 'react-router-dom'
 import { CheckboxMultiSelect } from '../components/CheckboxMultiSelect'
 import { useApp } from '../context/AppContext'
-import { queryAzureCosts, type CostQueryResponse } from '../lib/azureApi'
+import {
+  listStoredAzureCosts,
+  queryAzureCosts,
+  type CostQueryResponse,
+  type StoredCostsResponse,
+} from '../lib/azureApi'
 import {
   COST_LEVEL_META,
-  buildCostHierarchy,
+  applyEmptyRetrievalMarkers,
   buildCostHierarchyFromActual,
+  buildEmptyCostHierarchy,
   buildMonthColumns,
   flattenVisibleCostRows,
   formatCompactUsd,
+  mergeCostHierarchyWithPlaceholders,
   type CostMonthColumn,
   type CostTreeNode,
 } from '../lib/costHierarchy'
+import { formatDate } from '../lib/format'
 
 const MAX_COST_SUBSCRIPTIONS = 7
 
@@ -32,12 +40,13 @@ export function CostManagementPage() {
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [loading, setLoading] = useState(false)
+  const [loadingStored, setLoadingStored] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [costResult, setCostResult] = useState<CostQueryResponse | null>(null)
-  const [useEstimates, setUseEstimates] = useState(false)
+  const [stored, setStored] = useState<StoredCostsResponse | null>(null)
   const [cooldownSeconds, setCooldownSeconds] = useState(0)
 
-  const fallbackMonths = useMemo(() => buildMonthColumns(new Date(), 12), [])
+  const fallbackMonths = useMemo(() => buildMonthColumns(new Date(), 6), [])
 
   const visibleCustomers = useMemo(() => {
     return customers.filter((c) => canSeeAllPortfolios || portfolioCustomerIds.includes(c.id))
@@ -87,50 +96,58 @@ export function CostManagementPage() {
     })
   }, [customerSubs])
 
-  const visibleInventory = useMemo(() => {
-    const customerSet =
-      selectedCustomerIds.length > 0
-        ? new Set(selectedCustomerIds)
-        : new Set(visibleCustomers.map((c) => c.id))
-    const subSet =
-      selectedSubscriptionIds.length > 0 ? new Set(selectedSubscriptionIds) : null
-    return inventory.filter((item) => {
-      if (!customerSet.has(item.customerId)) return false
-      if (subSet && !subSet.has(item.subscriptionId)) return false
-      return true
+  const monthColumns: CostMonthColumn[] = useMemo(() => {
+    if (costResult?.monthColumns?.length) return costResult.monthColumns
+    const fromStored = stored?.retrievals?.find((r) => r.monthColumns?.length)?.monthColumns
+    if (fromStored?.length) return fromStored
+    return fallbackMonths
+  }, [costResult, stored, fallbackMonths])
+
+  const loadStoredCosts = useCallback(async (azureIds: string[]) => {
+    const ids = azureIds.map((id) => String(id || '').trim()).filter(Boolean)
+    if (ids.length === 0) {
+      setStored(null)
+      return
+    }
+    setLoadingStored(true)
+    try {
+      const result = await listStoredAzureCosts(ids)
+      setStored(result)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError((prev) => prev || message)
+    } finally {
+      setLoadingStored(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const azureIds = selectedSubscriptions.map((s) => s.subscriptionId)
+    void loadStoredCosts(azureIds)
+  }, [selectedSubscriptions, loadStoredCosts])
+
+  const placeholders = useMemo(() => {
+    if (selectedSubscriptions.length === 0) return []
+    const customerById = new Map(visibleCustomers.map((c) => [c.id, c]))
+    return buildEmptyCostHierarchy({
+      subscriptions: selectedSubscriptions.map((s) => ({
+        customerId: s.customerId,
+        customerName: customerById.get(s.customerId)?.name || null,
+        azureSubscriptionId: s.subscriptionId,
+        subscriptionName: s.name,
+      })),
+      monthColumns,
     })
-  }, [
-    inventory,
-    selectedCustomerIds,
-    selectedSubscriptionIds,
-    visibleCustomers,
-  ])
+  }, [selectedSubscriptions, visibleCustomers, monthColumns])
 
-  const estimateTree = useMemo(
-    () =>
-      buildCostHierarchy({
-        inventory: visibleInventory,
-        customers: visibleCustomers.filter(
-          (c) =>
-            selectedCustomerIds.length === 0 || selectedCustomerIds.includes(c.id),
-        ),
-        subscriptions: selectedSubscriptions.length
-          ? selectedSubscriptions
-          : customerSubs,
-        monthColumns: fallbackMonths,
-      }),
-    [
-      visibleInventory,
-      visibleCustomers,
-      selectedCustomerIds,
-      selectedSubscriptions,
-      customerSubs,
-      fallbackMonths,
-    ],
-  )
+  const costRows = useMemo(() => {
+    const sourceRows = costResult?.rows?.length
+      ? costResult.rows
+      : stored?.rows?.length
+        ? stored.rows
+        : []
+    if (!sourceRows.length) return []
 
-  const actualTree = useMemo(() => {
-    if (!costResult?.rows?.length) return []
     const skuBySubAndName = new Map<string, string>()
     for (const item of inventory) {
       const key = `${item.subscriptionId}|${String(item.name || '').toLowerCase()}`
@@ -139,23 +156,66 @@ export function CostManagementPage() {
     const azureToLocalSub = new Map(
       subscriptions.map((s) => [String(s.subscriptionId).toLowerCase(), s.id]),
     )
-    const rows = costResult.rows.map((row) => {
+    return sourceRows.map((row) => {
       if (row.sku && row.sku !== 'Unspecified') return row
       const localSubId = azureToLocalSub.get(String(row.azureSubscriptionId).toLowerCase())
       if (!localSubId) return row
-      const sku = skuBySubAndName.get(`${localSubId}|${String(row.resourceName || '').toLowerCase()}`)
+      const sku = skuBySubAndName.get(
+        `${localSubId}|${String(row.resourceName || '').toLowerCase()}`,
+      )
       return sku ? { ...row, sku } : row
     })
-    return buildCostHierarchyFromActual({
-      rows,
-      monthColumns: costResult.monthColumns,
-    })
-  }, [costResult, inventory, subscriptions])
+  }, [costResult, stored, inventory, subscriptions])
 
-  const usingLive = Boolean(costResult) && !useEstimates
-  const tree = usingLive ? actualTree : estimateTree
-  const monthColumns: CostMonthColumn[] =
-    usingLive && costResult?.monthColumns?.length ? costResult.monthColumns : fallbackMonths
+  const tree = useMemo(() => {
+    if (selectedSubscriptions.length === 0) return []
+
+    let retrievedTree = buildCostHierarchyFromActual({
+      rows: costRows,
+      monthColumns,
+    })
+
+    const retrievals =
+      costResult?.rows != null && costResult.fetchedAt
+        ? selectedSubscriptions
+            .filter((s) =>
+              !costResult.errors?.some(
+                (e) =>
+                  String(e.azureSubscriptionId || '').toLowerCase() ===
+                  String(s.subscriptionId).toLowerCase(),
+              ),
+            )
+            .map((s) => {
+              const customer = visibleCustomers.find((c) => c.id === s.customerId)
+              return {
+                azureSubscriptionId: s.subscriptionId,
+                customerId: s.customerId,
+                customerName: customer?.name || null,
+                subscriptionName: s.name,
+                retrievedAt: costResult.fetchedAt,
+              }
+            })
+        : stored?.retrievals || []
+
+    retrievedTree = applyEmptyRetrievalMarkers({
+      tree: retrievedTree,
+      retrievals,
+      monthColumns,
+    })
+
+    return mergeCostHierarchyWithPlaceholders({
+      retrievedTree,
+      placeholders,
+    })
+  }, [
+    selectedSubscriptions,
+    costRows,
+    monthColumns,
+    costResult,
+    stored,
+    placeholders,
+    visibleCustomers,
+  ])
 
   const canRetrieve =
     selectedCustomerIds.length > 0 &&
@@ -209,8 +269,8 @@ export function CostManagementPage() {
         })),
       })
       setCostResult(result)
-      setUseEstimates(false)
       setExpanded(new Set())
+      await loadStoredCosts(selectedSubscriptions.map((s) => s.subscriptionId))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setError(message)
@@ -227,6 +287,7 @@ export function CostManagementPage() {
     selectedCustomerIds.length,
     selectedSubscriptions,
     visibleCustomers,
+    loadStoredCosts,
   ])
 
   useEffect(() => {
@@ -303,7 +364,12 @@ export function CostManagementPage() {
     setExpanded(new Set())
   }
 
-  const portfolioTotal = filteredTree.reduce((sum, n) => sum + n.projected, 0)
+  const hasAnyCostData = tree.some((n) => n.hasCostData)
+  const portfolioTotal = filteredTree.reduce(
+    (sum, n) => sum + (n.hasCostData ? Number(n.projected) || 0 : 0),
+    0,
+  )
+  const retrievedCount = stored?.retrievalCount ?? 0
 
   return (
     <div className="stack">
@@ -313,15 +379,17 @@ export function CostManagementPage() {
           <p>
             Hierarchical Actual Cost from Azure Cost Management — Customer → Subscription →
             Resource group → Service type → SKU (meter) → Resource. Select customers and up to{' '}
-            {MAX_COST_SUBSCRIPTIONS} subscriptions per retrieval. If Azure returns 429, wait 2–3
-            minutes and retry with a single subscription (results are cached for 30 minutes).
+            {MAX_COST_SUBSCRIPTIONS} subscriptions per retrieval. Costs are stored in PCM; never-
+            retrieved subscriptions show empty values until you retrieve them.
           </p>
         </div>
         <div className="hero-actions">
-          <span className={`pill ${usingLive ? 'pill-ok' : 'pill-neutral'}`}>
-            {usingLive ? 'Azure ActualCost' : 'Inventory estimates'}
+          <span className={`pill ${hasAnyCostData ? 'pill-ok' : 'pill-neutral'}`}>
+            {hasAnyCostData ? 'Stored ActualCost' : 'No costs retrieved'}
           </span>
-          <span className="pill pill-neutral">{formatCompactUsd(portfolioTotal)} projected</span>
+          <span className="pill pill-neutral">
+            {hasAnyCostData ? `${formatCompactUsd(portfolioTotal)} projected` : '— projected'}
+          </span>
         </div>
       </div>
 
@@ -345,6 +413,7 @@ export function CostManagementPage() {
                 value={selectedCustomerIds}
                 onChange={(next) => {
                   setSelectedCustomerIds(next)
+                  setCostResult(null)
                   setError(null)
                 }}
                 placeholder="Select customers"
@@ -360,6 +429,7 @@ export function CostManagementPage() {
                 value={selectedSubscriptionIds}
                 onChange={(next) => {
                   setSelectedSubscriptionIds(next)
+                  setCostResult(null)
                   setError(null)
                 }}
                 disabled={selectedCustomerIds.length === 0 || subscriptionOptions.length === 0}
@@ -399,19 +469,8 @@ export function CostManagementPage() {
             <span className="muted" style={{ fontSize: '0.88rem' }}>
               {selectedSubscriptionIds.length}/{MAX_COST_SUBSCRIPTIONS} subscriptions selected · last
               6 months
+              {loadingStored ? ' · loading stored…' : retrievedCount > 0 ? ` · ${retrievedCount} stored` : ''}
             </span>
-            {costResult ? (
-              <button
-                className="btn btn-secondary"
-                type="button"
-                onClick={() => {
-                  setUseEstimates((v) => !v)
-                  setExpanded(new Set())
-                }}
-              >
-                {useEstimates ? 'Show Azure costs' : 'Show estimates'}
-              </button>
-            ) : null}
           </div>
         </div>
       </section>
@@ -437,8 +496,8 @@ export function CostManagementPage() {
         <div className="panel soft-panel">
           <p className="muted" style={{ margin: 0 }}>
             Connect an Azure tenant on <Link to="/connect">Azure Connect</Link> so PCM can call Cost
-            Management with your session. Until then, inventory-based estimates are shown for the
-            selected scope.
+            Management with your session. Previously stored costs still appear for selected
+            subscriptions.
           </p>
         </div>
       ) : null}
@@ -462,9 +521,9 @@ export function CostManagementPage() {
         </div>
       ) : null}
 
-      {costResult && usingLive ? (
+      {costResult ? (
         <div className="muted" style={{ fontSize: '0.88rem' }}>
-          {costResult.message} · {new Date(costResult.fetchedAt).toLocaleString()} ·{' '}
+          {costResult.message} · {formatDate(costResult.fetchedAt)} ·{' '}
           {selectedSubscriptions.length} subscription(s) queried
         </div>
       ) : null}
@@ -472,14 +531,14 @@ export function CostManagementPage() {
       <section className="panel">
         <div className="panel-header">
           <div>
-            <h4>{usingLive ? 'Actual cost hierarchy' : 'Estimated cost hierarchy'}</h4>
+            <h4>Cost hierarchy</h4>
             <p>
               {rows.length} visible row{rows.length === 1 ? '' : 's'}
-              {usingLive
-                ? ` · ${costResult?.rowCount ?? 0} cost lines`
+              {hasAnyCostData
+                ? ` · ${costRows.length} cost lines`
                 : selectedCustomerIds.length === 0
-                  ? ' · select customers to scope estimates'
-                  : ` · ${visibleInventory.length} inventory resources`}
+                  ? ' · select customers and subscriptions'
+                  : ' · retrieve costs to populate values'}
             </p>
           </div>
         </div>
@@ -500,6 +559,7 @@ export function CostManagementPage() {
                   </th>
                 ))}
                 <th className="cost-col-projected">Projected</th>
+                <th className="cost-col-retrieved">Retrieved</th>
               </tr>
             </thead>
             <tbody>
@@ -538,26 +598,33 @@ export function CostManagementPage() {
                         key={month.key}
                         className={month.isCurrent ? 'cost-col-current' : undefined}
                       >
-                        {formatCompactUsd(node.months[month.key] || 0)}
+                        {formatCompactUsd(
+                          node.hasCostData ? node.months[month.key] ?? 0 : null,
+                        )}
                       </td>
                     ))}
-                    <td className="cost-col-projected">{formatCompactUsd(node.projected)}</td>
+                    <td className="cost-col-projected">
+                      {formatCompactUsd(node.hasCostData ? node.projected : null)}
+                    </td>
+                    <td className="cost-col-retrieved muted">
+                      {node.retrievedAt ? formatDate(node.retrievedAt) : '—'}
+                    </td>
                   </tr>
                 )
               })}
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={monthColumns.length + 2}>
+                  <td colSpan={monthColumns.length + 3}>
                     <div className="empty">
-                      {loading
-                        ? 'Loading Azure Cost Management…'
-                        : usingLive
-                          ? 'No cost rows returned for the selected subscriptions in this period.'
-                          : selectedCustomerIds.length === 0
-                            ? 'Select customers and subscriptions, then retrieve costs from Azure.'
-                            : visibleInventory.length === 0
-                              ? 'No inventory in the selected scope. Retrieve costs from Azure or collect inventory.'
-                              : 'No hierarchy rows match the current filter.'}
+                      {loading || loadingStored
+                        ? 'Loading costs…'
+                        : selectedCustomerIds.length === 0
+                          ? 'Select customers and subscriptions, then retrieve costs from Azure.'
+                          : selectedSubscriptions.length === 0
+                            ? 'Select at least one subscription.'
+                            : query.trim()
+                              ? 'No hierarchy rows match the current filter.'
+                              : 'No hierarchy rows for the selected scope.'}
                     </div>
                   </td>
                 </tr>

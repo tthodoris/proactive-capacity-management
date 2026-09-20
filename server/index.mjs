@@ -34,6 +34,8 @@ import {
   listAgentChats,
   getAgentChat,
   appendAgentChatTurn,
+  replaceSubscriptionCosts,
+  listStoredCosts,
 } from './db.mjs'
 import { toSkuFamily } from './skuFamily.mjs'
 import { enrichResultsWithRetailPrices } from './retailPrices.mjs'
@@ -2550,7 +2552,7 @@ async function querySubscriptionActualCosts({ subscriptionId, fromIso, toIso }) 
 
 app.post('/api/azure/costs/query', async (req, res) => {
   try {
-    const cooldownMs = costManagementCoolDownRemainingMs()
+    const cooldownMs = costManagementCooldownRemainingMs()
     if (cooldownMs > 0) {
       return res.status(429).json({
         error: `Azure Cost Management is cooling down after rate limiting (${Math.ceil(cooldownMs / 1000)}s remaining).`,
@@ -2620,19 +2622,18 @@ app.post('/api/azure/costs/query', async (req, res) => {
     ).getUTCDate()
 
     const errors = []
-    const leafMap = new Map()
     const outcomes = []
 
     // Sequential queries + pause between subscriptions to avoid Cost Management 429s.
     for (let i = 0; i < subscriptions.length; i += 1) {
       const sub = subscriptions[i]
       if (i > 0) await sleep(5_000)
-      if (costManagementCoolDownRemainingMs() > 0) {
+      if (costManagementCooldownRemainingMs() > 0) {
         for (let j = i; j < subscriptions.length; j += 1) {
           outcomes.push({
             sub: subscriptions[j],
             rows: [],
-            error: `Skipped: Cost Management cooldown active (${Math.ceil(costManagementCoolDownRemainingMs() / 1000)}s remaining).`,
+            error: `Skipped: Cost Management cooldown active (${Math.ceil(costManagementCooldownRemainingMs() / 1000)}s remaining).`,
           })
         }
         break
@@ -2671,6 +2672,10 @@ app.post('/api/azure/costs/query', async (req, res) => {
       }
     }
 
+    const fetchedAt = new Date().toISOString()
+    const rows = []
+    let persistedCount = 0
+
     for (const outcome of outcomes) {
       if (outcome.error) {
         errors.push({
@@ -2678,7 +2683,10 @@ app.post('/api/azure/costs/query', async (req, res) => {
           subscriptionName: outcome.sub.subscriptionName,
           error: outcome.error,
         })
+        continue
       }
+
+      const leafMap = new Map()
       for (const row of outcome.rows) {
         const key = [
           outcome.sub.customerId || '',
@@ -2702,21 +2710,47 @@ app.post('/api/azure/costs/query', async (req, res) => {
             resourceId: row.resourceId || null,
             months: Object.fromEntries(monthColumns.map((m) => [m.key, 0])),
             currency: row.currency || 'USD',
+            retrievedAt: fetchedAt,
           }
           leafMap.set(key, leaf)
         }
         leaf.months[row.monthKey] = (leaf.months[row.monthKey] || 0) + row.cost
         if (row.currency) leaf.currency = row.currency
       }
+
+      const subRows = [...leafMap.values()].map((leaf) => {
+        const current = leaf.months[currentKey] || 0
+        const projected = (current / dayOfMonth) * daysInMonth
+        return { ...leaf, projected, retrievedAt: fetchedAt }
+      })
+
+      try {
+        await replaceSubscriptionCosts({
+          azureSubscriptionId: outcome.sub.azureSubscriptionId,
+          customerId: outcome.sub.customerId,
+          customerName: outcome.sub.customerName,
+          subscriptionName: outcome.sub.subscriptionName || outcome.sub.azureSubscriptionId,
+          periodFrom: fromIso,
+          periodTo: toIso,
+          monthColumns,
+          rows: subRows,
+          retrievedAt: fetchedAt,
+        })
+        persistedCount += 1
+      } catch (persistErr) {
+        const persistMessage =
+          persistErr instanceof Error ? persistErr.message : String(persistErr)
+        errors.push({
+          azureSubscriptionId: outcome.sub.azureSubscriptionId || outcome.sub.rawId,
+          subscriptionName: outcome.sub.subscriptionName,
+          error: `Cost query succeeded but saving to database failed: ${persistMessage}`,
+        })
+      }
+
+      rows.push(...subRows)
     }
 
-    const rows = [...leafMap.values()].map((leaf) => {
-      const current = leaf.months[currentKey] || 0
-      const projected = (current / dayOfMonth) * daysInMonth
-      return { ...leaf, projected }
-    })
-
-    if (rows.length === 0 && errors.length > 0) {
+    if (rows.length === 0 && errors.length > 0 && persistedCount === 0) {
       const throttled = errors.some((e) => isCostManagementThrottleError(e.error))
       return res.status(throttled ? 429 : 502).json({
         error: throttled
@@ -2728,7 +2762,7 @@ app.post('/api/azure/costs/query', async (req, res) => {
         errors,
         monthColumns,
         rows: [],
-        fetchedAt: new Date().toISOString(),
+        fetchedAt,
       })
     }
 
@@ -2743,12 +2777,15 @@ app.post('/api/azure/costs/query', async (req, res) => {
       rows,
       errors,
       subscriptionCount: subscriptions.length,
+      persistedSubscriptions: persistedCount,
       rowCount: rows.length,
-      fetchedAt: new Date().toISOString(),
+      fetchedAt,
       message:
         rows.length === 0
-          ? 'Cost Management returned no rows for the selected subscriptions in this period.'
-          : `Loaded ${rows.length} resource cost line(s) across ${subscriptions.length} subscription(s).`,
+          ? persistedCount > 0
+            ? `Stored empty cost results for ${persistedCount} subscription(s) (no charges in this period).`
+            : 'Cost Management returned no rows for the selected subscriptions in this period.'
+          : `Loaded and stored ${rows.length} resource cost line(s) across ${persistedCount} subscription(s).`,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -2765,6 +2802,50 @@ app.post('/api/azure/costs/query', async (req, res) => {
         ? 'Azure CLI session expired or blocked. Reconnect on Azure Connect, then retry Cost Management.'
         : 'Cost Management query failed. Confirm the signed-in account can read costs on the selected subscriptions (Cost Management Reader / Billing Reader).',
     )
+  }
+})
+
+app.get('/api/azure/costs/stored', async (req, res) => {
+  try {
+    const fromQuery = String(req.query.subscriptionIds || req.query.subscriptions || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+    const fromBody = Array.isArray(req.body?.subscriptionIds) ? req.body.subscriptionIds : []
+    const azureSubscriptionIds = [
+      ...fromQuery,
+      ...fromBody.map((id) => String(id || '').trim()).filter(Boolean),
+    ]
+    const data = await listStoredCosts({ azureSubscriptionIds })
+    res.json({
+      ok: true,
+      retrievals: data.retrievals,
+      rows: data.rows,
+      retrievalCount: data.retrievals.length,
+      rowCount: data.rows.length,
+    })
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Failed to load stored costs from the database.')
+  }
+})
+
+app.post('/api/azure/costs/stored', async (req, res) => {
+  try {
+    const azureSubscriptionIds = (
+      Array.isArray(req.body?.subscriptionIds) ? req.body.subscriptionIds : []
+    )
+      .map((id) => String(id || '').trim())
+      .filter(Boolean)
+    const data = await listStoredCosts({ azureSubscriptionIds })
+    res.json({
+      ok: true,
+      retrievals: data.retrievals,
+      rows: data.rows,
+      retrievalCount: data.retrievals.length,
+      rowCount: data.rows.length,
+    })
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Failed to load stored costs from the database.')
   }
 })
 

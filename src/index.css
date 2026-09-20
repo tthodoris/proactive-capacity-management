@@ -3625,8 +3625,15 @@ tr.is-selected-row td {
   font-weight: 600;
 }
 
+.cost-hierarchy-table th.cost-col-retrieved,
+.cost-hierarchy-table td.cost-col-retrieved {
+  font-weight: 500;
+  min-width: 7.5rem;
+}
+
 .cost-hierarchy-table td.cost-col-current,
 .cost-hierarchy-table td.cost-col-projected,
+.cost-hierarchy-table td.cost-col-retrieved,
 .cost-hierarchy-table td:not(:first-child) {
   font-variant-numeric: tabular-nums;
   text-align: right;
