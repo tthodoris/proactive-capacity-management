@@ -2200,8 +2200,14 @@ app.get('/api/azure/adx/config', async (_req, res) => {
 })
 
 const COST_MANAGEMENT_API_VERSION = '2023-11-01'
+const COST_QUERY_CACHE_TTL_MS = 30 * 60 * 1000
+const COST_THROTTLE_COOLDOWN_MS = 2 * 60 * 1000
 /** Remember which query shape succeeded so later subscriptions reuse it. */
 let preferredCostQueryVariantLabel = null
+/** @type {Map<string, { expiresAt: number, rows: any[] }>} */
+const costQueryCache = new Map()
+/** Timestamp until which we should not call Cost Management (after a 429). */
+let costManagementCooldownDownUntil = 0
 
 function normalizeAzureSubscriptionId(value) {
   const raw = String(value || '').trim()
@@ -2234,6 +2240,32 @@ function isCostManagementBadRequestError(message) {
     /Invalid.*grouping/i.test(text) ||
     /not a valid dimension/i.test(text)
   )
+}
+
+function markCostManagementThrottled(extraMs = COST_THROTTLE_COOLDOWN_MS) {
+  costManagementCoolDownUntil = Math.max(costManagementCoolDownUntil, Date.now() + extraMs)
+}
+
+function costManagementCooldownRemainingMs() {
+  return Math.max(0, costManagementCoolDownUntil - Date.now())
+}
+
+function costCacheKey(subscriptionId, fromIso, toIso, variantLabel) {
+  return `${subscriptionId}|${fromIso.slice(0, 10)}|${toIso.slice(0, 10)}|${variantLabel || '*'}`
+}
+
+function getCachedCostRows(key) {
+  const hit = costQueryCache.get(key)
+  if (!hit) return null
+  if (hit.expiresAt <= Date.now()) {
+    costQueryCache.delete(key)
+    return null
+  }
+  return hit.rows
+}
+
+function setCachedCostRows(key, rows) {
+  costQueryCache.set(key, { expiresAt: Date.now() + COST_QUERY_CACHE_TTL_MS, rows })
 }
 
 function costMonthKeyFromUsageDate(value) {
@@ -2339,9 +2371,10 @@ function parseCostManagementQueryPayload(payload) {
 
 function buildCostQueryBodies(fromIso, toIso) {
   const timePeriod = { from: fromIso, to: toIso }
+  // Prefer a single grouping — much less likely to trip Cost Management throttling.
   const variants = [
     {
-      label: 'ResourceId+MeterSubCategory/Cost',
+      label: 'ResourceId/Cost',
       body: {
         type: 'ActualCost',
         timeframe: 'Custom',
@@ -2349,26 +2382,7 @@ function buildCostQueryBodies(fromIso, toIso) {
         dataset: {
           granularity: 'Monthly',
           aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
-          grouping: [
-            { type: 'Dimension', name: 'ResourceId' },
-            { type: 'Dimension', name: 'MeterSubCategory' },
-          ],
-        },
-      },
-    },
-    {
-      label: 'ResourceId+MeterSubcategory/PreTaxCost',
-      body: {
-        type: 'ActualCost',
-        timeframe: 'Custom',
-        timePeriod,
-        dataset: {
-          granularity: 'Monthly',
-          aggregation: { totalCost: { name: 'PreTaxCost', function: 'Sum' } },
-          grouping: [
-            { type: 'Dimension', name: 'ResourceId' },
-            { type: 'Dimension', name: 'MeterSubcategory' },
-          ],
+          grouping: [{ type: 'Dimension', name: 'ResourceId' }],
         },
       },
     },
@@ -2427,19 +2441,25 @@ async function postCostManagementQueryAzRest(url, body) {
   }
 }
 
-async function postCostManagementQueryWithRetry(url, body, { maxAttempts = 5 } = {}) {
+async function postCostManagementQueryWithRetry(url, body, { maxAttempts = 4 } = {}) {
   let lastError = null
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const cooldownMs = costManagementCooldownRemainingMs()
+    if (cooldownMs > 0) {
+      await sleep(Math.min(cooldownMs, 30_000))
+    }
     try {
       return await postCostManagementQueryAzRest(url, body)
     } catch (err) {
       lastError = err
       const message = err instanceof Error ? err.message : String(err)
-      if (!isCostManagementThrottleError(message) || attempt === maxAttempts) {
+      if (!isCostManagementThrottleError(message)) {
         throw err
       }
-      // Cost Management throttles aggressively; back off before retrying the same request.
-      const delayMs = Math.min(60_000, 4_000 * 2 ** (attempt - 1))
+      markCostManagementThrottled()
+      if (attempt === maxAttempts) throw err
+      // Long backoff — Cost Management tenant quotas recover slowly.
+      const delayMs = Math.min(120_000, 20_000 * attempt)
       await sleep(delayMs)
     }
   }
@@ -2460,6 +2480,7 @@ async function runCostQueryVariant(url, variant) {
       payload?.properties?.nextLinkUrl ||
       null
     pageUrl = nextLink ? String(nextLink) : null
+    if (pageUrl) await sleep(1000)
   }
   return all
 }
@@ -2472,6 +2493,13 @@ async function querySubscriptionActualCosts({ subscriptionId, fromIso, toIso }) 
     )
   }
 
+  const cooldownMs = costManagementCooldownRemainingMs()
+  if (cooldownMs > 0) {
+    throw new Error(
+      `Cost Management is in cooldown after HTTP 429 (${Math.ceil(cooldownMs / 1000)}s remaining). Wait and retry with one subscription.`,
+    )
+  }
+
   const url = `https://management.azure.com/subscriptions/${subId}/providers/Microsoft.CostManagement/query?api-version=${COST_MANAGEMENT_API_VERSION}`
   const variants = buildCostQueryBodies(fromIso, toIso)
   const ordered = preferredCostQueryVariantLabel
@@ -2481,22 +2509,34 @@ async function querySubscriptionActualCosts({ subscriptionId, fromIso, toIso }) 
       ]
     : variants
 
+  // Serve from cache when possible (avoids re-hitting Azure after prior success).
+  for (const variant of ordered) {
+    const cached = getCachedCostRows(costCacheKey(subId, fromIso, toIso, variant.label))
+    if (cached) {
+      preferredCostQueryVariantLabel = variant.label
+      return cached
+    }
+  }
+  const anyCached = getCachedCostRows(costCacheKey(subId, fromIso, toIso, '*'))
+  if (anyCached) return anyCached
+
   const errors = []
   for (const variant of ordered) {
     try {
       const rows = await runCostQueryVariant(url, variant)
       preferredCostQueryVariantLabel = variant.label
+      setCachedCostRows(costCacheKey(subId, fromIso, toIso, variant.label), rows)
+      setCachedCostRows(costCacheKey(subId, fromIso, toIso, '*'), rows)
       return rows
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       errors.push(`${variant.label}: ${message}`)
-      // Throttling: don't burn the remaining quota on alternate shapes.
       if (isCostManagementThrottleError(message)) {
+        markCostManagementThrottled()
         throw new Error(
-          `Cost Management rate-limited subscription ${subId} (HTTP 429). Wait a minute and retry with fewer subscriptions. Details: ${message.slice(0, 220)}`,
+          `Cost Management rate-limited subscription ${subId} (HTTP 429). Wait 2–3 minutes and retry with a single subscription. Details: ${message.slice(0, 180)}`,
         )
       }
-      // Only fall through to another grouping/aggregation on bad request / invalid dimension.
       if (!isCostManagementBadRequestError(message) && !/404|NotFound/i.test(message)) {
         throw new Error(`Cost Management query failed for subscription ${subId}. ${message}`)
       }
@@ -2510,8 +2550,20 @@ async function querySubscriptionActualCosts({ subscriptionId, fromIso, toIso }) 
 
 app.post('/api/azure/costs/query', async (req, res) => {
   try {
+    const cooldownMs = costManagementCoolDownRemainingMs()
+    if (cooldownMs > 0) {
+      return res.status(429).json({
+        error: `Azure Cost Management is cooling down after rate limiting (${Math.ceil(cooldownMs / 1000)}s remaining).`,
+        hint: 'Wait for the cooldown, then retrieve one subscription. Successful results are cached for 30 minutes.',
+        retryAfterSeconds: Math.ceil(cooldownMs / 1000),
+        errors: [],
+        rows: [],
+        fetchedAt: new Date().toISOString(),
+      })
+    }
+
     const account = await getAccount()
-    const monthCount = Math.min(Math.max(Number(req.body?.months) || 12, 1), 12)
+    const monthCount = Math.min(Math.max(Number(req.body?.months) || 6, 1), 12)
     const rawSubs = Array.isArray(req.body?.subscriptions) ? req.body.subscriptions : []
     const subscriptions = rawSubs
       .map((s) => {
@@ -2574,7 +2626,17 @@ app.post('/api/azure/costs/query', async (req, res) => {
     // Sequential queries + pause between subscriptions to avoid Cost Management 429s.
     for (let i = 0; i < subscriptions.length; i += 1) {
       const sub = subscriptions[i]
-      if (i > 0) await sleep(1500)
+      if (i > 0) await sleep(5_000)
+      if (costManagementCoolDownRemainingMs() > 0) {
+        for (let j = i; j < subscriptions.length; j += 1) {
+          outcomes.push({
+            sub: subscriptions[j],
+            rows: [],
+            error: `Skipped: Cost Management cooldown active (${Math.ceil(costManagementCoolDownRemainingMs() / 1000)}s remaining).`,
+          })
+        }
+        break
+      }
       if (!sub.azureSubscriptionId) {
         outcomes.push({
           sub,
@@ -2595,12 +2657,13 @@ app.post('/api/azure/costs/query', async (req, res) => {
         outcomes.push({ sub, rows: [], error: message })
         // If throttled, stop hammering remaining subscriptions in this request.
         if (isCostManagementThrottleError(message)) {
+          markCostManagementThrottled()
           for (let j = i + 1; j < subscriptions.length; j += 1) {
             outcomes.push({
               sub: subscriptions[j],
               rows: [],
               error:
-                'Skipped because Cost Management rate-limited earlier subscriptions in this request. Wait about a minute and retry with fewer subscriptions.',
+                'Skipped because Cost Management rate-limited earlier subscriptions in this request. Wait 2–3 minutes and retry with one subscription.',
             })
           }
           break
@@ -2660,7 +2723,7 @@ app.post('/api/azure/costs/query', async (req, res) => {
           ? `Azure Cost Management rate-limited this request (HTTP 429). ${errors[0]?.error || ''}`.trim()
           : `Azure Cost Management returned no data. ${errors[0]?.error || 'Unknown error'}`,
         hint: throttled
-          ? 'Wait 1–2 minutes, select fewer subscriptions (1–2), and retrieve again. Avoid rapid repeated refreshes.'
+          ? 'Wait 2–3 minutes, retrieve one subscription only, then add more. Successful results are cached for 30 minutes on pcm-api.'
           : 'Confirm pcm-api was redeployed with the Cost Management route, the Azure session is connected, subscription IDs are GUIDs, and the account has Cost Management Reader on those subscriptions.',
         errors,
         monthColumns,

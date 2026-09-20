@@ -35,6 +35,7 @@ export function CostManagementPage() {
   const [error, setError] = useState<string | null>(null)
   const [costResult, setCostResult] = useState<CostQueryResponse | null>(null)
   const [useEstimates, setUseEstimates] = useState(false)
+  const [cooldownSeconds, setCooldownSeconds] = useState(0)
 
   const fallbackMonths = useMemo(() => buildMonthColumns(new Date(), 12), [])
 
@@ -130,11 +131,26 @@ export function CostManagementPage() {
 
   const actualTree = useMemo(() => {
     if (!costResult?.rows?.length) return []
+    const skuBySubAndName = new Map<string, string>()
+    for (const item of inventory) {
+      const key = `${item.subscriptionId}|${String(item.name || '').toLowerCase()}`
+      if (item.sku) skuBySubAndName.set(key, item.sku)
+    }
+    const azureToLocalSub = new Map(
+      subscriptions.map((s) => [String(s.subscriptionId).toLowerCase(), s.id]),
+    )
+    const rows = costResult.rows.map((row) => {
+      if (row.sku && row.sku !== 'Unspecified') return row
+      const localSubId = azureToLocalSub.get(String(row.azureSubscriptionId).toLowerCase())
+      if (!localSubId) return row
+      const sku = skuBySubAndName.get(`${localSubId}|${String(row.resourceName || '').toLowerCase()}`)
+      return sku ? { ...row, sku } : row
+    })
     return buildCostHierarchyFromActual({
-      rows: costResult.rows,
+      rows,
       monthColumns: costResult.monthColumns,
     })
-  }, [costResult])
+  }, [costResult, inventory, subscriptions])
 
   const usingLive = Boolean(costResult) && !useEstimates
   const tree = usingLive ? actualTree : estimateTree
@@ -144,9 +160,24 @@ export function CostManagementPage() {
   const canRetrieve =
     selectedCustomerIds.length > 0 &&
     selectedSubscriptionIds.length > 0 &&
-    selectedSubscriptionIds.length <= MAX_COST_SUBSCRIPTIONS
+    selectedSubscriptionIds.length <= MAX_COST_SUBSCRIPTIONS &&
+    cooldownSeconds <= 0
+
+  useEffect(() => {
+    if (cooldownSeconds <= 0) return
+    const timer = window.setInterval(() => {
+      setCooldownSeconds((s) => Math.max(0, s - 1))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [cooldownSeconds])
 
   const loadCosts = useCallback(async () => {
+    if (cooldownSeconds > 0) {
+      setError(
+        `Azure Cost Management cooldown active — wait ${cooldownSeconds}s before retrieving again.`,
+      )
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -169,7 +200,7 @@ export function CostManagementPage() {
       }
       const customerById = new Map(visibleCustomers.map((c) => [c.id, c]))
       const result = await queryAzureCosts({
-        months: 12,
+        months: 6,
         subscriptions: selectedSubscriptions.map((s) => ({
           azureSubscriptionId: s.subscriptionId,
           customerId: s.customerId,
@@ -181,11 +212,17 @@ export function CostManagementPage() {
       setUseEstimates(false)
       setExpanded(new Set())
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      if (/\b429\b|rate-limited|cooling down|cooldown/i.test(message)) {
+        const match = message.match(/(\d+)\s*s(?:ec(?:ond)?s?)?\s+remaining/i)
+        setCooldownSeconds(match ? Number(match[1]) : 180)
+      }
     } finally {
       setLoading(false)
     }
   }, [
+    cooldownSeconds,
     ensureAzureSession,
     selectedCustomerIds.length,
     selectedSubscriptions,
@@ -276,8 +313,8 @@ export function CostManagementPage() {
           <p>
             Hierarchical Actual Cost from Azure Cost Management — Customer → Subscription →
             Resource group → Service type → SKU (meter) → Resource. Select customers and up to{' '}
-            {MAX_COST_SUBSCRIPTIONS} subscriptions per retrieval. If Azure returns 429, wait a minute
-            and retry with fewer subscriptions.
+            {MAX_COST_SUBSCRIPTIONS} subscriptions per retrieval. If Azure returns 429, wait 2–3
+            minutes and retry with a single subscription (results are cached for 30 minutes).
           </p>
         </div>
         <div className="hero-actions">
@@ -345,16 +382,23 @@ export function CostManagementPage() {
               disabled={loading || !canRetrieve}
               aria-busy={loading}
               title={
-                !canRetrieve
-                  ? `Select customers and 1–${MAX_COST_SUBSCRIPTIONS} subscriptions`
-                  : undefined
+                cooldownSeconds > 0
+                  ? `Cooldown ${cooldownSeconds}s after rate limit`
+                  : !canRetrieve
+                    ? `Select customers and 1–${MAX_COST_SUBSCRIPTIONS} subscriptions`
+                    : undefined
               }
             >
               {loading ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={16} />}
-              {loading ? 'Loading costs…' : 'Retrieve costs from Azure'}
+              {loading
+                ? 'Loading costs…'
+                : cooldownSeconds > 0
+                  ? `Wait ${cooldownSeconds}s`
+                  : 'Retrieve costs from Azure'}
             </button>
             <span className="muted" style={{ fontSize: '0.88rem' }}>
-              {selectedSubscriptionIds.length}/{MAX_COST_SUBSCRIPTIONS} subscriptions selected
+              {selectedSubscriptionIds.length}/{MAX_COST_SUBSCRIPTIONS} subscriptions selected · last
+              6 months
             </span>
             {costResult ? (
               <button

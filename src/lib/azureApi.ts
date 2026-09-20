@@ -457,16 +457,27 @@ export function queryAzureCosts(payload: {
     subscriptionName?: string | null
   }>
 }) {
-  return api<CostQueryResponse>('/api/azure/costs/query', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  }).catch((err) => {
-    const message = err instanceof Error ? err.message : String(err)
-    if (/Request failed \(404\)/i.test(message) || /Cannot POST \/api\/azure\/costs\/query/i.test(message)) {
-      throw new Error(
-        'Cost Management API route not found (404). Redeploy/restart pcm-api so it includes POST /api/azure/costs/query, then retry.',
-      )
+  return (async () => {
+    const res = await fetch('/api/azure/costs/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok) {
+      if (res.status === 404) {
+        throw new Error(
+          'Cost Management API route not found (404). Redeploy/restart pcm-api so it includes POST /api/azure/costs/query, then retry.',
+        )
+      }
+      const err = apiErrorFromResponse(res, data)
+      const retryAfter =
+        typeof data.retryAfterSeconds === 'number' ? data.retryAfterSeconds : undefined
+      if (retryAfter && retryAfter > 0 && !err.message.includes(`${retryAfter}s remaining`)) {
+        throw new Error(`${err.message} (${retryAfter}s remaining)`)
+      }
+      throw err
     }
-    throw err
-  })
+    return data as CostQueryResponse
+  })()
 }
