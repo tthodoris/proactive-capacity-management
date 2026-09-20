@@ -2209,7 +2209,7 @@ let preferredCostQueryVariantLabel = null
 /** @type {Map<string, { expiresAt: number, rows: any[] }>} */
 const costQueryCache = new Map()
 /** Timestamp until which we should not call Cost Management (after a 429). */
-let costManagementCooldownDownUntil = 0
+let costManagementCooldownUntil = 0
 
 function normalizeAzureSubscriptionId(value) {
   const raw = String(value || '').trim()
@@ -2245,11 +2245,11 @@ function isCostManagementBadRequestError(message) {
 }
 
 function markCostManagementThrottled(extraMs = COST_THROTTLE_COOLDOWN_MS) {
-  costManagementCoolDownUntil = Math.max(costManagementCoolDownUntil, Date.now() + extraMs)
+  costManagementCooldownUntil = Math.max(costManagementCooldownUntil, Date.now() + extraMs)
 }
 
 function costManagementCooldownRemainingMs() {
-  return Math.max(0, costManagementCoolDownUntil - Date.now())
+  return Math.max(0, costManagementCooldownUntil - Date.now())
 }
 
 function costCacheKey(subscriptionId, fromIso, toIso, variantLabel) {
