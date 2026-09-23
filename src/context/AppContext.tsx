@@ -23,6 +23,7 @@ import {
   fetchAzureLocations,
   fetchLiveInventory,
   getAzureStatus,
+  queryAzureCosts,
   setSubscription,
   type AzureConnection,
   type AzureLocationOption,
@@ -902,7 +903,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               customerName: input.customerName,
             },
             'info',
-            `Inventory retrieval queued for ${input.customerName} across ${input.subscriptions.length} subscription(s).`,
+            `Inventory + Cost Management retrieval queued for ${input.customerName} across ${input.subscriptions.length} subscription(s).`,
             {
               details: `${input.subscriptions.map((s) => s.name).join(', ')}${
                 input.regions?.length ? ` · regions ${input.regions.join(', ')}` : ''
@@ -924,12 +925,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           appendRetrievalLog(
             jobId,
             'info',
-            `Started inventory retrieval in background for ${input.customerName}. You can leave Azure Connect safely.`,
+            `Started inventory and Cost Management retrieval in background for ${input.customerName}. You can leave Azure Connect safely.`,
           )
 
           let importedTotal = 0
           let failures = 0
+          let costLineTotal = 0
+          let costFailures = 0
           const failureReasons: string[] = []
+          const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
           for (let index = 0; index < input.subscriptions.length; index += 1) {
             const sub = input.subscriptions[index]
@@ -997,6 +1001,120 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 },
               )
             }
+
+            // After inventory (success or fail), retrieve & store Cost Management for this subscription.
+            appendRetrievalLog(
+              jobId,
+              'info',
+              `Retrieving Cost Management for subscription ${sub.name}`,
+              {
+                subscriptionId: sub.id,
+                subscriptionName: sub.name,
+                details: 'ActualCost · last 6 months · stored for Cost Management page',
+              },
+            )
+            try {
+              if (index > 0) await sleep(5_000)
+              const costResult = await queryAzureCosts({
+                months: 6,
+                subscriptions: [
+                  {
+                    azureSubscriptionId: sub.id,
+                    customerId: input.customerId,
+                    customerName: input.customerName,
+                    subscriptionName: sub.name,
+                  },
+                ],
+              })
+              if (costResult.errors?.length && costResult.rowCount === 0) {
+                const firstErr = costResult.errors[0]?.error || 'Cost query returned errors'
+                throw new Error(firstErr)
+              }
+              costLineTotal += costResult.rowCount
+              appendRetrievalLog(
+                jobId,
+                'success',
+                `Stored ${costResult.rowCount} cost line(s) for ${sub.name}`,
+                {
+                  subscriptionId: sub.id,
+                  subscriptionName: sub.name,
+                  details: costResult.message,
+                },
+              )
+            } catch (err) {
+              const reason = err instanceof Error ? err.message : String(err)
+              const cooldownMatch = reason.match(/(\d+)\s*s(?:ec(?:ond)?s?)?\s+remaining/i)
+              if (cooldownMatch) {
+                const waitSec = Math.min(Number(cooldownMatch[1]) || 120, 180)
+                appendRetrievalLog(
+                  jobId,
+                  'warn',
+                  `Cost Management rate-limited for ${sub.name}; waiting ${waitSec}s then retrying once`,
+                  {
+                    subscriptionId: sub.id,
+                    subscriptionName: sub.name,
+                    details: reason,
+                  },
+                )
+                try {
+                  await sleep(waitSec * 1000)
+                  const retry = await queryAzureCosts({
+                    months: 6,
+                    subscriptions: [
+                      {
+                        azureSubscriptionId: sub.id,
+                        customerId: input.customerId,
+                        customerName: input.customerName,
+                        subscriptionName: sub.name,
+                      },
+                    ],
+                  })
+                  if (retry.errors?.length && retry.rowCount === 0) {
+                    throw new Error(retry.errors[0]?.error || 'Cost query returned errors')
+                  }
+                  costLineTotal += retry.rowCount
+                  appendRetrievalLog(
+                    jobId,
+                    'success',
+                    `Stored ${retry.rowCount} cost line(s) for ${sub.name} after retry`,
+                    {
+                      subscriptionId: sub.id,
+                      subscriptionName: sub.name,
+                      details: retry.message,
+                    },
+                  )
+                } catch (retryErr) {
+                  costFailures += 1
+                  const retryReason =
+                    retryErr instanceof Error ? retryErr.message : String(retryErr)
+                  failureReasons.push(`${sub.name} (costs): ${retryReason}`)
+                  appendRetrievalLog(
+                    jobId,
+                    'error',
+                    `Cost Management collection failed for ${sub.name}`,
+                    {
+                      subscriptionId: sub.id,
+                      subscriptionName: sub.name,
+                      details: retryReason,
+                    },
+                  )
+                }
+              } else {
+                costFailures += 1
+                failureReasons.push(`${sub.name} (costs): ${reason}`)
+                appendRetrievalLog(
+                  jobId,
+                  'error',
+                  `Cost Management collection failed for ${sub.name}`,
+                  {
+                    subscriptionId: sub.id,
+                    subscriptionName: sub.name,
+                    details: reason,
+                  },
+                )
+              }
+            }
+
             patchRetrievalJob(jobId, (j) => ({
               ...j,
               progressCurrent: index + 1,
@@ -1011,14 +1129,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
 
           const finishedAt = new Date().toISOString()
+          const totalFailures = failures + costFailures
           const status =
-            failures === 0
+            totalFailures === 0
               ? 'succeeded'
-              : failures === input.subscriptions.length
+              : failures === input.subscriptions.length &&
+                  costFailures === input.subscriptions.length
                 ? 'failed'
                 : 'partial'
-          const summary = `Imported ${importedTotal} resource(s) across ${input.subscriptions.length} subscription(s)${
-            failures ? ` · ${failures} failed` : ''
+          const summary = `Imported ${importedTotal} resource(s) and stored ${costLineTotal} cost line(s) across ${input.subscriptions.length} subscription(s)${
+            totalFailures ? ` · ${totalFailures} failed step(s)` : ''
           }`
           const errorDetail = failureReasons.slice(0, 5).join(' | ')
           appendRetrievalLog(
@@ -1031,7 +1151,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ...j,
             status,
             summary,
-            error: failures ? errorDetail || summary : undefined,
+            error: totalFailures ? errorDetail || summary : undefined,
             finishedAt,
             updatedAt: finishedAt,
             progressCurrent: j.progressTotal,

@@ -291,7 +291,7 @@ export function TenantConnectPanel() {
 
   const inventoryRecentTip =
     selectedInventoryLastAt && isWithinDays(selectedInventoryLastAt, RECENT_RETRIEVAL_DAYS)
-      ? `Last inventory retrieval was ${formatHoursAgo(selectedInventoryLastAt)}.`
+      ? `Last inventory (+ costs) retrieval was ${formatHoursAgo(selectedInventoryLastAt)}.`
       : null
 
   const quotasRecentTip =
@@ -647,7 +647,7 @@ export function TenantConnectPanel() {
         return
       }
       setStatusNote(
-        'Inventory retrieval started in the background. You can navigate away — progress is on the Dashboard.',
+        'Inventory and Cost Management retrieval started in the background. Costs appear on Cost Management when finished — you can navigate away.',
       )
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -798,8 +798,9 @@ export function TenantConnectPanel() {
           <div>
             <h4>Connect Azure tenant</h4>
             <p>
-              Collect inventory or quotas in the background — you can leave this page while retrieval
-              continues. Progress is in Retrieval activity below (and on the Dashboard).
+              Collect inventory (with Cost Management) or quotas in the background — you can leave
+              this page while retrieval continues. Progress is in Retrieval activity below (and on the
+              Dashboard).
             </p>
           </div>
           <span
@@ -1013,7 +1014,9 @@ export function TenantConnectPanel() {
                         ) : (
                           <Boxes size={16} />
                         )}
-                        {loadingInventory ? 'Collecting inventory…' : 'Collect inventory'}
+                        {loadingInventory
+                          ? 'Collecting inventory + costs…'
+                          : 'Collect inventory'}
                       </button>
                       {inventoryRecentTip ? (
                         <span id="inventory-recent-tip" className="btn-tooltip" role="tooltip">
