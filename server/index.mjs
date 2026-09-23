@@ -92,7 +92,7 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }))
 /** @type {{
  *  status: 'idle' | 'awaiting_device_code' | 'authenticating' | 'connected' | 'error' | 'cancelled'
  *  tenantId: string | null
- *  loginMode: 'device_code' | 'interactive' | null
+ *  loginMode: 'device_code' | null
  *  deviceCode: string | null
  *  verificationUrl: string | null
  *  message: string | null
@@ -879,8 +879,7 @@ app.post('/api/azure/connect', async (req, res) => {
   if (!tenantId) {
     return res.status(400).json({ error: 'tenantId is required' })
   }
-  const loginMode =
-    String(req.body?.loginMode || '').trim() === 'device_code' ? 'device_code' : 'interactive'
+  const loginMode = 'device_code'
   if (loginProcess && !loginProcess.killed) {
     return res.status(409).json({
       error: 'A login is already in progress',
@@ -906,20 +905,18 @@ app.post('/api/azure/connect', async (req, res) => {
   connection.account = null
   connection.startedAt = new Date().toISOString()
   connection.connectedAt = null
+  connection.status = 'awaiting_device_code'
+  connection.message = `Starting az login --tenant ${tenantId} --use-device-code`
 
-  const loginArgs =
-    loginMode === 'device_code'
-      ? ['login', '--tenant', tenantId, '--use-device-code', '--allow-no-subscriptions', '-o', 'json']
-      : ['login', '--tenant', tenantId, '--allow-no-subscriptions', '-o', 'json']
-
-  if (loginMode === 'device_code') {
-    connection.status = 'awaiting_device_code'
-    connection.message = `Starting az login --tenant ${tenantId} --use-device-code`
-  } else {
-    connection.status = 'authenticating'
-    connection.message =
-      'Starting interactive az login (browser / Windows WAM) on the API host. Complete the sign-in prompt there — Microsoft tenant Conditional Access blocks device-code sessions for ADX.'
-  }
+  const loginArgs = [
+    'login',
+    '--tenant',
+    tenantId,
+    '--use-device-code',
+    '--allow-no-subscriptions',
+    '-o',
+    'json',
+  ]
 
   loginProcess = spawn('az', loginArgs, {
     shell: true,
@@ -933,18 +930,13 @@ app.post('/api/azure/connect', async (req, res) => {
   loginProcess.stdout?.on('data', (chunk) => {
     const text = chunk.toString()
     combined += text
-    if (loginMode === 'device_code') {
-      const parsed = parseDeviceCode(combined)
-      if (parsed.deviceCode) {
-        connection.deviceCode = parsed.deviceCode
-        connection.verificationUrl = parsed.verificationUrl
-        connection.status = 'authenticating'
-        connection.message =
-          'Open the verification URL, enter the device code, then return here while Azure CLI finishes.'
-      }
-    } else if (/To sign in|https:\/\/login\.microsoftonline\.com|Select the account/i.test(text)) {
+    const parsed = parseDeviceCode(combined)
+    if (parsed.deviceCode) {
+      connection.deviceCode = parsed.deviceCode
+      connection.verificationUrl = parsed.verificationUrl
+      connection.status = 'authenticating'
       connection.message =
-        'Complete the browser or Windows account picker on the machine running pcm-api, then return here.'
+        'Open the verification URL, enter the device code, then return here while Azure CLI finishes.'
     }
 
     // Successful login prints JSON account array/object on stdout
@@ -969,18 +961,13 @@ app.post('/api/azure/connect', async (req, res) => {
   loginProcess.stderr?.on('data', (chunk) => {
     const text = chunk.toString()
     combined += text
-    if (loginMode === 'device_code') {
-      const parsed = parseDeviceCode(combined)
-      if (parsed.deviceCode) {
-        connection.deviceCode = parsed.deviceCode
-        connection.verificationUrl = parsed.verificationUrl
-        connection.status = 'authenticating'
-        connection.message =
-          'Open the verification URL, enter the device code, then return here while Azure CLI finishes.'
-      }
-    } else if (/To sign in|https:\/\/login\.microsoftonline\.com|WAM|broker/i.test(text)) {
+    const parsed = parseDeviceCode(combined)
+    if (parsed.deviceCode) {
+      connection.deviceCode = parsed.deviceCode
+      connection.verificationUrl = parsed.verificationUrl
+      connection.status = 'authenticating'
       connection.message =
-        'Complete the browser or Windows account picker on the machine running pcm-api, then return here.'
+        'Open the verification URL, enter the device code, then return here while Azure CLI finishes.'
     }
   })
 
@@ -1349,33 +1336,6 @@ async function getArmAccessToken() {
   return String(parsed.accessToken)
 }
 
-const ADX_DEFAULT_CLUSTER = 'https://reliabilityrptwus3prod.westus3.kusto.windows.net'
-const ADX_DEFAULT_DATABASE = 'customerdomdata'
-const ADX_VALIDATION_QUERY = `CustomerResourceModel
-| where TPID == "5572428" and ResourceGroup == 'ia28-rg01'
-| order by Type`
-const ADX_TOKEN_RESOURCES = [
-  'https://api.kusto.windows.net',
-  'https://kusto.kusto.windows.net',
-]
-
-async function resolveKustoTokenResource(clusterUri) {
-  const cluster = String(clusterUri || ADX_DEFAULT_CLUSTER).replace(/\/+$/, '')
-  try {
-    const res = await fetch(`${cluster}/v1/rest/auth/metadata`, {
-      headers: { Accept: 'application/json' },
-    })
-    if (res.ok) {
-      const meta = await res.json()
-      const resourceId = meta?.AzureAD?.KustoServiceResourceId
-      if (resourceId) return String(resourceId).replace(/\/+$/, '')
-    }
-  } catch {
-    // Fall through to defaults.
-  }
-  return ADX_TOKEN_RESOURCES[0]
-}
-
 function isAzAuthFlowBlockedError(message) {
   const text = String(message || '')
   return (
@@ -1385,183 +1345,12 @@ function isAzAuthFlowBlockedError(message) {
   )
 }
 
-function isAzSessionExpiredError(message) {
-  const text = String(message || '')
-  return (
-    isAzAuthFlowBlockedError(text) ||
-    /AADSTS70043/i.test(text) ||
-    /refresh token has expired/i.test(text) ||
-    /sign-in frequency/i.test(text) ||
-    /interaction_required/i.test(text)
-  )
-}
-
 function formatAzAuthFlowBlockedError(detail) {
   return (
     'Conditional Access blocked this Azure CLI session (AADSTS530036 — authentication flows / device code). ' +
-    'On Azure Connect: Disconnect, then use "Connect (browser / WAM)" — not device code. ' +
-    'Sign in on the machine running pcm-api. Device-code refresh tokens are permanently invalid under this policy. ' +
+    'On Azure Connect: Disconnect, then Connect again with device code and complete microsoft.com/devicelogin. ' +
     `Details: ${String(detail || '').slice(0, 240)}`
   )
-}
-
-function formatAzSessionExpiredError(detail) {
-  if (isAzAuthFlowBlockedError(detail)) {
-    return formatAzAuthFlowBlockedError(detail)
-  }
-  return (
-    'Azure CLI session expired (Conditional Access sign-in frequency). ' +
-    'On Azure Connect, click Disconnect, then Connect (browser / WAM), and retry the ADX validation. ' +
-    `Details: ${String(detail || '').slice(0, 280)}`
-  )
-}
-
-async function getKustoAccessToken(clusterUri, { tenantId } = {}) {
-  const cluster = String(clusterUri || ADX_DEFAULT_CLUSTER).replace(/\/+$/, '')
-  const preferred = await resolveKustoTokenResource(cluster)
-  const candidates = [
-    preferred,
-    ...ADX_TOKEN_RESOURCES,
-    cluster,
-  ].filter((value, index, all) => value && all.indexOf(value) === index)
-
-  const errors = []
-  let sawExpiredSession = false
-  let expiredDetail = ''
-  for (const resource of candidates) {
-    const attempts = [
-      {
-        label: `${resource} (--resource)`,
-        args: ['account', 'get-access-token', '--resource', resource, '-o', 'json'],
-      },
-      {
-        label: `${resource} (--scope)`,
-        args: [
-          'account',
-          'get-access-token',
-          '--scope',
-          `${resource.replace(/\/+$/, '')}/.default`,
-          '-o',
-          'json',
-        ],
-      },
-    ]
-    for (const attempt of attempts) {
-      try {
-        const args = [...attempt.args]
-        if (tenantId) args.push('--tenant', String(tenantId))
-        const { stdout } = await runAz(args, { timeoutMs: 30_000 })
-        const parsed = JSON.parse(stdout)
-        if (parsed?.accessToken) {
-          return {
-            accessToken: String(parsed.accessToken),
-            resource,
-            tenant: parsed.tenant || tenantId || null,
-          }
-        }
-        errors.push(`${attempt.label}: no accessToken in az response`)
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        if (isAzSessionExpiredError(message)) {
-          sawExpiredSession = true
-          expiredDetail = message
-        }
-        errors.push(`${attempt.label}: ${message}`)
-      }
-    }
-  }
-
-  if (sawExpiredSession) {
-    try {
-      connection.status = 'error'
-      connection.error = formatAzSessionExpiredError(expiredDetail)
-      connection.message = isAzAuthFlowBlockedError(expiredDetail)
-        ? 'Azure CLI login blocked by Conditional Access auth-flow policy. Reconnect with browser/WAM (not device code).'
-        : 'Azure CLI login expired. Reconnect with az login before using ADX or other Azure APIs.'
-    } catch {
-      // connection may be unavailable in some contexts
-    }
-    throw new Error(formatAzSessionExpiredError(expiredDetail))
-  }
-
-  throw new Error(
-    `Failed to acquire ADX access token. Tried: ${candidates.join(', ')}. ${errors.slice(0, 3).join(' | ')}`,
-  )
-}
-
-function parseKustoV1Tables(payload) {
-  const tables = Array.isArray(payload?.Tables) ? payload.Tables : []
-  // Prefer PrimaryResult; otherwise first table with rows.
-  const primary =
-    tables.find((t) => String(t?.TableName || '') === 'PrimaryResult') ||
-    tables.find((t) => Array.isArray(t?.Rows) && t.Rows.length > 0) ||
-    tables[0]
-  if (!primary) {
-    return { columns: [], rows: [], rowCount: 0 }
-  }
-  const columns = (primary.Columns || []).map((c) => ({
-    name: String(c.ColumnName || c.ColumnType || 'col'),
-    type: c.ColumnType ? String(c.ColumnType) : undefined,
-  }))
-  const rows = (primary.Rows || []).map((row) => {
-    if (Array.isArray(row)) {
-      const obj = {}
-      columns.forEach((col, i) => {
-        obj[col.name] = row[i]
-      })
-      return obj
-    }
-    return row && typeof row === 'object' ? row : { value: row }
-  })
-  return { columns, rows, rowCount: rows.length }
-}
-
-async function runAdxQuery({ clusterUri, database, query, tenantId }) {
-  const cluster = String(clusterUri || ADX_DEFAULT_CLUSTER).replace(/\/+$/, '')
-  const db = String(database || ADX_DEFAULT_DATABASE).trim()
-  const csl = String(query || '').trim()
-  if (!csl) throw new Error('ADX query (csl) is required')
-
-  const { accessToken, resource, tenant } = await getKustoAccessToken(cluster, { tenantId })
-  const url = `${cluster}/v1/rest/query`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json; charset=utf-8',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ db, csl }),
-  })
-  const text = await res.text()
-  let payload = null
-  try {
-    payload = text ? JSON.parse(text) : null
-  } catch {
-    payload = null
-  }
-  if (!res.ok) {
-    const detail =
-      payload?.error?.['@message'] ||
-      payload?.error?.message ||
-      payload?.Message ||
-      (typeof payload === 'string' ? payload : text).slice(0, 600)
-    const hint =
-      res.status === 401
-        ? ` Unauthorized for token audience "${resource}". If this ADX cluster lives in another tenant than your Azure Connect login, set an ADX tenant ID and retry. Also confirm your account has database viewer/user permission on "${db}".`
-        : ''
-    throw new Error(`ADX query failed (${res.status}): ${detail || res.statusText}.${hint}`)
-  }
-  const parsed = parseKustoV1Tables(payload)
-  return {
-    cluster,
-    database: db,
-    query: csl,
-    tokenResource: resource,
-    tokenTenant: tenant,
-    ...parsed,
-    fetchedAt: new Date().toISOString(),
-  }
 }
 
 async function armGetJson(url, token) {
@@ -2144,62 +1933,6 @@ function formatWorkloadProfileSize(profile) {
   }
   return type
 }
-
-app.post('/api/azure/adx/validate', async (req, res) => {
-  try {
-    const account = await getAccount()
-    const clusterUri = String(req.body?.clusterUri || ADX_DEFAULT_CLUSTER).trim()
-    const database = String(req.body?.database || ADX_DEFAULT_DATABASE).trim()
-    const query = String(req.body?.query || ADX_VALIDATION_QUERY).trim()
-    const tenantId = String(req.body?.tenantId || '').trim() || undefined
-    const previewLimit = Math.min(
-      Math.max(Number(req.body?.previewLimit) || 50, 1),
-      200,
-    )
-
-    const result = await runAdxQuery({ clusterUri, database, query, tenantId })
-    res.json({
-      ok: true,
-      account,
-      cluster: result.cluster,
-      database: result.database,
-      query: result.query,
-      tokenResource: result.tokenResource,
-      tokenTenant: result.tokenTenant,
-      columns: result.columns,
-      rowCount: result.rowCount,
-      rows: result.rows.slice(0, previewLimit),
-      previewLimit,
-      fetchedAt: result.fetchedAt,
-      message:
-        result.rowCount === 0
-          ? 'Connected to ADX and ran the validation query, but it returned 0 rows.'
-          : `Connected to ADX. Validation query returned ${result.rowCount} row(s).`,
-    })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    const expired = isAzSessionExpiredError(message)
-    const authFlowBlocked = isAzAuthFlowBlockedError(message)
-    sendRouteError(
-      res,
-      expired ? 401 : 400,
-      err,
-      authFlowBlocked
-        ? 'AADSTS530036: Conditional Access blocks device-code / auth-transfer refresh tokens for all apps. Disconnect, then Connect (browser / WAM) on the API host — not device code — and retry.'
-        : expired
-          ? 'Your az login refresh token expired (often after ~12 hours due to Conditional Access). Disconnect and Connect (browser / WAM) again on Azure Connect, then retry.'
-          : 'ADX validation failed. Ensure az login is connected (browser/WAM for Microsoft tenant), token audience is correct (api.kusto.windows.net), and your account can query the cluster/database (possibly in a different tenant than Azure Connect).',
-    )
-  }
-})
-
-app.get('/api/azure/adx/config', async (_req, res) => {
-  res.json({
-    clusterUri: ADX_DEFAULT_CLUSTER,
-    database: ADX_DEFAULT_DATABASE,
-    validationQuery: ADX_VALIDATION_QUERY,
-  })
-})
 
 const COST_MANAGEMENT_API_VERSION = '2023-11-01'
 const COST_QUERY_CACHE_TTL_MS = 30 * 60 * 1000

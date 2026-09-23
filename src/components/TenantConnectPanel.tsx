@@ -5,7 +5,6 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  Database,
   Gauge,
   Layers,
   Link2,
@@ -17,9 +16,6 @@ import { CheckboxMultiSelect } from './CheckboxMultiSelect'
 import { RetrievalLogEntryView } from './RetrievalLogEntryView'
 import { useApp } from '../context/AppContext'
 import {
-  ADX_DEFAULT_CLUSTER,
-  ADX_DEFAULT_DATABASE,
-  ADX_VALIDATION_QUERY,
   cancelAzureLogin,
   connectTenant,
   disconnectTenant,
@@ -28,8 +24,6 @@ import {
   fetchTenantInfo,
   getAzureStatus,
   setSubscription,
-  validateAdxConnection,
-  type AdxValidateResponse,
   type AzureConnection,
   type AzureRegionOption,
   type AzureSubscriptionOption,
@@ -39,17 +33,6 @@ import { formatDate, formatHoursAgo, isWithinDays, maxIsoDate } from '../lib/for
 import type { Customer } from '../types'
 
 const RECENT_RETRIEVAL_DAYS = 2
-
-function formatAdxCell(value: unknown): string {
-  if (value == null) return ''
-  if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return String(value)
-  }
-}
 
 export function TenantConnectPanel() {
   const {
@@ -114,9 +97,6 @@ export function TenantConnectPanel() {
   const [startingInventory, setStartingInventory] = useState(false)
   const [startingQuotas, setStartingQuotas] = useState(false)
   const [startingQuotaGroups, setStartingQuotaGroups] = useState(false)
-  const [validatingAdx, setValidatingAdx] = useState(false)
-  const [adxResult, setAdxResult] = useState<AdxValidateResponse | null>(null)
-  const [adxTenantId, setAdxTenantId] = useState('')
   const [activityExpanded, setActivityExpanded] = useState(false)
   const pollRef = useRef<number | null>(null)
   const restoreAttemptedRef = useRef(false)
@@ -501,7 +481,7 @@ export function TenantConnectPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function onConnect(e: FormEvent, loginMode: 'interactive' | 'device_code' = 'interactive') {
+  async function onConnect(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
@@ -516,13 +496,8 @@ export function TenantConnectPanel() {
     setRegions([])
     restoreAttemptedRef.current = false
     try {
-      const status = await connectTenant(tenantId.trim(), loginMode)
+      const status = await connectTenant(tenantId.trim())
       setConnection(status)
-      if (loginMode === 'interactive') {
-        setStatusNote(
-          'Complete the browser or Windows sign-in on the machine running pcm-api, then wait for session ready.',
-        )
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -779,52 +754,6 @@ export function TenantConnectPanel() {
     }
   }
 
-  async function onValidateAdx() {
-    if (validatingAdx || !connected) return
-    setValidatingAdx(true)
-    setError(null)
-    setAdxResult(null)
-    try {
-      await ensureAzureSession()
-      const result = await validateAdxConnection({
-        clusterUri: ADX_DEFAULT_CLUSTER,
-        database: ADX_DEFAULT_DATABASE,
-        query: ADX_VALIDATION_QUERY,
-        tenantId: adxTenantId.trim() || undefined,
-        previewLimit: 50,
-      })
-      setAdxResult(result)
-      setStatusNote(result.message)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      setError(message)
-      const expired =
-        /AADSTS70043/i.test(message) ||
-        /AADSTS530036/i.test(message) ||
-        /Azure CLI session expired/i.test(message) ||
-        /authentication flow checks/i.test(message) ||
-        /refresh token expired/i.test(message) ||
-        /sign-in frequency/i.test(message)
-      if (expired) {
-        try {
-          const status = await getAzureStatus()
-          setConnection(status)
-        } catch {
-          // ignore status refresh failures
-        }
-        setSessionReady(false)
-        setAzureSession(null, false)
-        setStatusNote(
-          /AADSTS530036|authentication flow/i.test(message)
-            ? 'Conditional Access blocked the device-code session. Disconnect, then Connect (browser / WAM) — not device code — and retry ADX.'
-            : 'Azure CLI login expired. Disconnect, Connect (browser / WAM) again, then retry ADX validation.',
-        )
-      }
-    } finally {
-      setValidatingAdx(false)
-    }
-  }
-
   async function copyCode() {
     if (!connection?.deviceCode) return
     await navigator.clipboard.writeText(connection.deviceCode)
@@ -892,7 +821,7 @@ export function TenantConnectPanel() {
 
         <div className="panel-body stack">
           {!connected && !pending ? (
-            <form className="tenant-connect-form" onSubmit={(e) => void onConnect(e, 'interactive')}>
+            <form className="tenant-connect-form" onSubmit={(e) => void onConnect(e)}>
               <div className="field" style={{ flex: 1 }}>
                 <label htmlFor="tenantId">Tenant ID (directory GUID)</label>
                 <input
@@ -907,15 +836,6 @@ export function TenantConnectPanel() {
               </div>
               <button className="btn btn-primary" type="submit" disabled={busy || !tenantId.trim()}>
                 {busy ? <LoaderCircle size={16} className="spin" /> : <PlugZap size={16} />}
-                Connect (browser / WAM)
-              </button>
-              <button
-                className="btn btn-secondary"
-                type="button"
-                disabled={busy || !tenantId.trim()}
-                onClick={(e) => void onConnect(e, 'device_code')}
-                title="Often blocked by Microsoft tenant Conditional Access for ADX"
-              >
                 Connect (device code)
               </button>
               <button
@@ -926,11 +846,6 @@ export function TenantConnectPanel() {
               >
                 Use existing az session
               </button>
-              <p className="muted" style={{ margin: 0, fontSize: '0.85rem' }}>
-                Prefer <strong>browser / WAM</strong> for Microsoft tenant (72f988bf…). Device code
-                sessions are blocked by Conditional Access (AADSTS530036) and cannot refresh ADX
-                tokens.
-              </p>
             </form>
           ) : null}
 
@@ -956,44 +871,31 @@ export function TenantConnectPanel() {
           {pending ? (
             <div className="device-code-card">
               <div>
-                <div className="muted">
-                  {connection?.loginMode === 'interactive'
-                    ? 'Interactive login for tenant'
-                    : 'Device code for tenant'}
-                </div>
+                <div className="muted">Device code for tenant</div>
                 <strong style={{ fontSize: '1.05rem' }}>{connection?.tenantId}</strong>
               </div>
-              {connection?.loginMode === 'interactive' ? (
-                <div className="device-code-value">
-                  <span>Waiting for browser / WAM sign-in on the API host…</span>
+              <div className="device-code-value">
+                <span>{connection?.deviceCode || 'Waiting for Azure CLI…'}</span>
+                {connection?.deviceCode ? (
+                  <button type="button" className="btn btn-ghost" onClick={() => void copyCode()}>
+                    <Copy size={14} /> {copied ? 'Copied' : 'Copy'}
+                  </button>
+                ) : (
                   <LoaderCircle size={18} className="spin" />
-                </div>
-              ) : (
-                <div className="device-code-value">
-                  <span>{connection?.deviceCode || 'Waiting for Azure CLI…'}</span>
-                  {connection?.deviceCode ? (
-                    <button type="button" className="btn btn-ghost" onClick={() => void copyCode()}>
-                      <Copy size={14} /> {copied ? 'Copied' : 'Copy'}
-                    </button>
-                  ) : (
-                    <LoaderCircle size={18} className="spin" />
-                  )}
-                </div>
-              )}
+                )}
+              </div>
               <p className="muted" style={{ margin: 0 }}>
                 {connection?.message}
               </p>
               <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap' }}>
-                {connection?.loginMode !== 'interactive' ? (
-                  <a
-                    className="btn btn-primary"
-                    href={connection?.verificationUrl || 'https://microsoft.com/devicelogin'}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <Link2 size={16} /> Open microsoft.com/devicelogin
-                  </a>
-                ) : null}
+                <a
+                  className="btn btn-primary"
+                  href={connection?.verificationUrl || 'https://microsoft.com/devicelogin'}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <Link2 size={16} /> Open microsoft.com/devicelogin
+                </a>
                 <button className="btn btn-secondary" type="button" onClick={() => void onCancel()} disabled={busy}>
                   Cancel login
                 </button>
@@ -1179,105 +1081,6 @@ export function TenantConnectPanel() {
                   </Link>
                 </div>
               ) : null}
-
-              <section className="adx-connect-panel">
-                <div className="panel-header" style={{ paddingInline: 0 }}>
-                  <div>
-                    <h4>ADX inventory source</h4>
-                    <p>
-                      Connect to Azure Data Explorer and run a validation query. Full customer
-                      inventory collection queries will be wired next. For Microsoft tenant CA
-                      (AADSTS530036), use Connect (browser / WAM) — device-code refresh tokens cannot
-                      acquire ADX tokens.
-                    </p>
-                  </div>
-                  <button
-                    className="btn btn-primary"
-                    type="button"
-                    onClick={() => void onValidateAdx()}
-                    disabled={validatingAdx || busy}
-                    aria-busy={validatingAdx}
-                  >
-                    {validatingAdx ? (
-                      <LoaderCircle size={16} className="spin" />
-                    ) : (
-                      <Database size={16} />
-                    )}
-                    {validatingAdx ? 'Validating ADX…' : 'Validate ADX query'}
-                  </button>
-                </div>
-                <div className="stack">
-                  <div className="muted" style={{ fontSize: '0.88rem' }}>
-                    <div>
-                      <strong>Cluster:</strong> {ADX_DEFAULT_CLUSTER}
-                    </div>
-                    <div>
-                      <strong>Database:</strong> {ADX_DEFAULT_DATABASE}
-                    </div>
-                    <div className="field" style={{ marginTop: '0.65rem', maxWidth: '28rem' }}>
-                      <label htmlFor="adxTenantId">ADX tenant ID (optional)</label>
-                      <input
-                        id="adxTenantId"
-                        value={adxTenantId}
-                        onChange={(e) => setAdxTenantId(e.target.value)}
-                        placeholder="Leave blank to use current az tenant"
-                        pattern="[0-9a-fA-F-]{36}"
-                        title="Entra tenant GUID that owns the ADX cluster"
-                      />
-                      <p className="muted" style={{ margin: '0.35rem 0 0' }}>
-                        Use this when the ADX cluster is in a different directory than the Azure
-                        Connect customer tenant.
-                      </p>
-                    </div>
-                    <div style={{ marginTop: '0.35rem' }}>
-                      <strong>Validation query</strong>
-                      <pre className="adx-query-preview">{ADX_VALIDATION_QUERY}</pre>
-                    </div>
-                  </div>
-
-                  {adxResult ? (
-                    <div className="stack">
-                      <div className="list-row">
-                        <div style={{ flex: 1 }}>
-                          <strong>{adxResult.message}</strong>
-                          <div className="muted">
-                            {adxResult.rowCount} row(s) · showing up to {adxResult.previewLimit} ·{' '}
-                            {adxResult.fetchedAt ? formatDate(adxResult.fetchedAt) : 'just now'}
-                            {adxResult.tokenResource
-                              ? ` · token audience ${adxResult.tokenResource}`
-                              : ''}
-                          </div>
-                        </div>
-                        <span className={`pill ${adxResult.rowCount > 0 ? 'pill-ok' : 'pill-medium'}`}>
-                          {adxResult.rowCount > 0 ? 'query ok' : '0 rows'}
-                        </span>
-                      </div>
-                      {adxResult.rows.length > 0 ? (
-                        <div className="adx-result-scroll">
-                          <table className="adx-result-table">
-                            <thead>
-                              <tr>
-                                {adxResult.columns.map((col) => (
-                                  <th key={col.name}>{col.name}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {adxResult.rows.map((row, idx) => (
-                                <tr key={idx}>
-                                  {adxResult.columns.map((col) => (
-                                    <td key={col.name}>{formatAdxCell(row[col.name])}</td>
-                                  ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              </section>
 
               {customerJobs.length > 0 || customerLog.length > 0 ? (
                 <div className="collapsible-block">

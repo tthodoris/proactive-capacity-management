@@ -11,7 +11,7 @@ export type AzureConnectionStatus =
 export interface AzureConnection {
   status: AzureConnectionStatus
   tenantId: string | null
-  loginMode?: 'device_code' | 'interactive' | null
+  loginMode?: 'device_code' | null
   deviceCode: string | null
   verificationUrl: string | null
   message: string | null
@@ -115,13 +115,10 @@ export function getAzureStatus() {
   return api<AzureConnection>('/api/azure/status')
 }
 
-export function connectTenant(
-  tenantId: string,
-  loginMode: 'interactive' | 'device_code' = 'interactive',
-) {
+export function connectTenant(tenantId: string) {
   return api<AzureConnection>('/api/azure/connect', {
     method: 'POST',
-    body: JSON.stringify({ tenantId, loginMode }),
+    body: JSON.stringify({ tenantId, loginMode: 'device_code' }),
   })
 }
 
@@ -366,44 +363,6 @@ export function evaluateRegions(payload: {
   return api<RegionEvaluationResponse>('/api/azure/region-evaluation', {
     method: 'POST',
     body: JSON.stringify(payload),
-  })
-}
-
-export const ADX_DEFAULT_CLUSTER =
-  'https://reliabilityrptwus3prod.westus3.kusto.windows.net'
-export const ADX_DEFAULT_DATABASE = 'customerdomdata'
-export const ADX_VALIDATION_QUERY = `CustomerResourceModel
-| where TPID == "5572428" and ResourceGroup == 'ia28-rg01'
-| order by Type`
-
-export type AdxColumn = { name: string; type?: string }
-
-export type AdxValidateResponse = {
-  ok: boolean
-  account: AzureConnection['account']
-  cluster: string
-  database: string
-  query: string
-  tokenResource?: string
-  tokenTenant?: string | null
-  columns: AdxColumn[]
-  rowCount: number
-  rows: Array<Record<string, unknown>>
-  previewLimit: number
-  fetchedAt: string
-  message: string
-}
-
-export function validateAdxConnection(payload?: {
-  clusterUri?: string
-  database?: string
-  query?: string
-  tenantId?: string
-  previewLimit?: number
-}) {
-  return api<AdxValidateResponse>('/api/azure/adx/validate', {
-    method: 'POST',
-    body: JSON.stringify(payload || {}),
   })
 }
 
