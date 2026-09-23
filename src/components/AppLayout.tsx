@@ -266,12 +266,12 @@ export function AppLayout() {
               const sectionActive = isGroupPath(item, location.pathname)
               const menuOpen = Boolean(openGroups[item.to]) && !locked
               return (
-                <div key={item.to} className={`nav-group${locked ? ' nav-locked' : ''}`}>
+                <div key={item.to} className={`nav-group${locked ? ' nav-locked' : ''}${menuOpen ? ' is-open' : ''}${sectionActive && !locked ? ' is-current' : ''}`}>
                   <button
                     type="button"
-                    className={`nav-link nav-group-trigger${sectionActive && !locked ? ' active' : ''}${
-                      locked ? ' disabled' : ''
-                    }`}
+                    className={`nav-link nav-group-trigger${sectionActive && !locked ? ' nav-group-current' : ''}${
+                      menuOpen ? ' nav-group-open' : ''
+                    }${locked ? ' disabled' : ''}`}
                     aria-expanded={menuOpen}
                     aria-disabled={locked}
                     disabled={locked}
@@ -283,10 +283,15 @@ export function AppLayout() {
                   >
                     <Icon size={18} />
                     <span>{item.label}</span>
-                    {menuOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    <span className="nav-group-meta">
+                      <span className="nav-group-count" aria-hidden="true">
+                        {item.children.length}
+                      </span>
+                      {menuOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </span>
                   </button>
                   {menuOpen ? (
-                    <div className="nav-sub">
+                    <div className="nav-sub" role="group" aria-label={`${item.label} pages`}>
                       {item.children.map((child) => {
                         const ChildIcon = child.icon
                         return (

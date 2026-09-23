@@ -183,33 +183,100 @@ a {
 .nav-group {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0.15rem;
+  margin: 0.35rem 0;
+  padding: 0.28rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .nav-group-trigger {
   width: 100%;
   border: none;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.04);
   cursor: pointer;
   font: inherit;
+  font-weight: 650;
+  letter-spacing: 0.01em;
   text-align: left;
+  color: #edf5fa;
+}
+
+.nav-group-trigger:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.nav-group-trigger.nav-group-current {
+  background: rgba(25, 179, 191, 0.14);
+  color: #fff;
+  box-shadow: inset 3px 0 0 #19b3bf;
+}
+
+.nav-group-trigger.nav-group-open {
+  border-radius: 10px 10px 8px 8px;
 }
 
 .nav-group-trigger > svg:last-child {
   margin-left: auto;
-  opacity: 0.8;
+  flex-shrink: 0;
+  opacity: 0.85;
+  color: #7fd4db;
+}
+
+.nav-group-trigger .nav-group-meta {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.nav-group-count {
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: #0b2a30;
+  background: rgba(127, 212, 219, 0.92);
 }
 
 .nav-sub {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  padding: 0.15rem 0 0.25rem 0.55rem;
+  gap: 0.12rem;
+  margin: 0.1rem 0.15rem 0.15rem 0.45rem;
+  padding: 0.2rem 0.15rem 0.2rem 0.55rem;
+  border-left: 2px solid rgba(25, 179, 191, 0.4);
 }
 
 .nav-sub-link {
-  padding: 0.55rem 0.75rem;
-  font-size: 0.9rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: #a9c0d2;
+  border-radius: 10px;
+}
+
+.nav-sub-link:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.07);
+  transform: translateX(1px);
+}
+
+.nav-sub-link.active {
+  background: linear-gradient(90deg, rgba(25, 179, 191, 0.32), rgba(25, 179, 191, 0.1));
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(25, 179, 191, 0.3);
+  font-weight: 600;
+}
+
+.nav-sub-link svg {
+  opacity: 0.85;
 }
 
 .sidebar-foot {
