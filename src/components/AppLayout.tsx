@@ -283,12 +283,7 @@ export function AppLayout() {
                   >
                     <Icon size={18} />
                     <span>{item.label}</span>
-                    <span className="nav-group-meta">
-                      <span className="nav-group-count" aria-hidden="true">
-                        {item.children.length}
-                      </span>
-                      {menuOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                    </span>
+                    {menuOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                   </button>
                   {menuOpen ? (
                     <div className="nav-sub" role="group" aria-label={`${item.label} pages`}>

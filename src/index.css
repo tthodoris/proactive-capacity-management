@@ -224,27 +224,6 @@ a {
   color: #7fd4db;
 }
 
-.nav-group-trigger .nav-group-meta {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.nav-group-count {
-  min-width: 1.25rem;
-  height: 1.25rem;
-  padding: 0 0.35rem;
-  border-radius: 999px;
-  display: inline-grid;
-  place-items: center;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  color: #0b2a30;
-  background: rgba(127, 212, 219, 0.92);
-}
-
 .nav-sub {
   display: flex;
   flex-direction: column;
