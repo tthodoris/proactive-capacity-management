@@ -6,6 +6,7 @@ import {
   Link2,
   Loader2,
   MapPinned,
+  Plus,
   Save,
   ShieldAlert,
   Trash2,
@@ -23,20 +24,24 @@ import { exportSheetsToExcel } from '../lib/exportExcel'
 import { formatDate, prettyRegion } from '../lib/format'
 import {
   buildDependencyMap,
-  buildFailoverScorecard,
-  buildRegionShortlist,
   buildStrategyEvalCoverage,
   buildStrategyQuotaRecommendations,
   buildWhatIfPlan,
   buildWorkloadGroups,
   collectStrategySkuGaps,
+  dependencyNoteForType,
+  emptyWhatIfSelection,
   filterInventoryForStrategy,
   filterLinkableEvaluations,
+  groupInventoryByServiceCategory,
   pruneLinkedEvaluationIds,
   resolveStrategyRegionIds,
+  suggestDependencyItems,
   type StrategyEvalLaunchState,
   type StrategyGroupBy,
   type StrategyScenario,
+  type WhatIfExpansionAdd,
+  type WhatIfSelection,
 } from '../lib/multiregionStrategy'
 import type { SavedRegionEvaluation } from '../lib/azureApi'
 
@@ -46,19 +51,6 @@ const GROUP_BY_OPTIONS: Array<{ value: StrategyGroupBy; label: string }> = [
   { value: 'region', label: 'Region' },
   { value: 'skuFamily', label: 'SKU family' },
 ]
-
-function rolePillClass(role: string) {
-  if (role === 'Primary') return 'pill-ok'
-  if (role === 'Secondary') return 'pill-high'
-  if (role === 'Tertiary') return 'pill-neutral'
-  return 'pill-neutral'
-}
-
-function gradePillClass(grade: string) {
-  if (grade === 'Strong') return 'pill-ok'
-  if (grade === 'Moderate') return 'pill-high'
-  return 'pill-critical'
-}
 
 export function MultiregionStrategyPage() {
   const navigate = useNavigate()
@@ -80,7 +72,10 @@ export function MultiregionStrategyPage() {
   const [groupBy, setGroupBy] = useState<StrategyGroupBy>('resourceGroup')
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
   const [candidateRegionIds, setCandidateRegionIds] = useState<string[]>([])
-  const [whatIfPercent, setWhatIfPercent] = useState(50)
+  const [whatIfSelection, setWhatIfSelection] = useState<WhatIfSelection>(() => emptyWhatIfSelection())
+  const [expansionDraft, setExpansionDraft] = useState<Record<string, { sku: string; size: string; count: string }>>(
+    {},
+  )
   const [scenarioName, setScenarioName] = useState('')
   const [scenarioNotes, setScenarioNotes] = useState('')
   const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null)
@@ -175,34 +170,57 @@ export function MultiregionStrategyPage() {
     }))
   }, [candidateRegionIds, regionOptions, workloadItems])
 
-  const shortlist = useMemo(
-    () =>
-      customerId
-        ? buildRegionShortlist({
-            workloadItems,
-            customerId,
-            constraints,
-            quotas,
-            candidateRegions,
-          })
-        : [],
-    [workloadItems, customerId, constraints, quotas, candidateRegions],
-  )
-
-  const scorecard = useMemo(
-    () =>
-      buildFailoverScorecard({
-        workloadItems,
-        constraints,
-        shortlist,
-      }),
-    [workloadItems, constraints, shortlist],
-  )
-
   const effectiveSubscriptionIds = useMemo(() => {
     if (selectedSubscriptionIds.length > 0) return selectedSubscriptionIds
     return customerSubs.map((s) => s.id)
   }, [selectedSubscriptionIds, customerSubs])
+
+  const serviceCategories = useMemo(
+    () => groupInventoryByServiceCategory(workloadItems),
+    [workloadItems],
+  )
+
+  const selectedMoveItems = useMemo(
+    () => workloadItems.filter((item) => whatIfSelection.selectedItemIds.includes(item.id)),
+    [workloadItems, whatIfSelection.selectedItemIds],
+  )
+
+  const suggestedDependencies = useMemo(
+    () => suggestDependencyItems(selectedMoveItems, workloadItems),
+    [selectedMoveItems, workloadItems],
+  )
+
+  const whatIfTarget = useMemo(() => {
+    const id = whatIfSelection.targetRegionId
+    if (id) {
+      const fromCandidates = candidateRegions.find((r) => r.id === id)
+      if (fromCandidates) return fromCandidates
+      const fromOptions = regionOptions.find((r) => r.value === id)
+      if (fromOptions) return { id: fromOptions.value, label: fromOptions.label }
+    }
+    return candidateRegions[0] || null
+  }, [whatIfSelection.targetRegionId, candidateRegions, regionOptions])
+
+  useEffect(() => {
+    if (!whatIfSelection.targetRegionId && candidateRegions[0]) {
+      setWhatIfSelection((prev) => ({ ...prev, targetRegionId: candidateRegions[0].id }))
+    }
+  }, [candidateRegions, whatIfSelection.targetRegionId])
+
+  useEffect(() => {
+    const validIds = new Set(workloadItems.map((item) => item.id))
+    setWhatIfSelection((prev) => {
+      const selectedItemIds = prev.selectedItemIds.filter((id) => validIds.has(id))
+      const ignoredDependencyIds = prev.ignoredDependencyIds.filter((id) => validIds.has(id))
+      if (
+        selectedItemIds.length === prev.selectedItemIds.length &&
+        ignoredDependencyIds.length === prev.ignoredDependencyIds.length
+      ) {
+        return prev
+      }
+      return { ...prev, selectedItemIds, ignoredDependencyIds }
+    })
+  }, [workloadItems])
 
   const dependencySlices = useMemo(
     () => buildDependencyMap(workloadItems, customerSubs),
@@ -241,21 +259,22 @@ export function MultiregionStrategyPage() {
     navigate('/region-evaluation', { state })
   }, [customerId, effectiveSubscriptionIds, evaluationTargetRegionIds, navigate])
 
-  const whatIfTarget = shortlist.find((s) => s.role === 'Secondary') || shortlist[1] || shortlist[0]
-
   const whatIfPlan = useMemo(
     () =>
       customerId && whatIfTarget
         ? buildWhatIfPlan({
             workloadItems,
-            percent: whatIfPercent,
+            selection: {
+              ...whatIfSelection,
+              targetRegionId: whatIfTarget.id,
+            },
             customerId,
             quotas,
-            targetRegionId: whatIfTarget.regionId,
-            targetRegionLabel: whatIfTarget.regionLabel,
+            targetRegionId: whatIfTarget.id,
+            targetRegionLabel: whatIfTarget.label,
           })
         : null,
-    [workloadItems, whatIfPercent, customerId, quotas, whatIfTarget],
+    [workloadItems, whatIfSelection, customerId, quotas, whatIfTarget],
   )
 
   const strategyRegionIds = useMemo(
@@ -366,6 +385,8 @@ export function MultiregionStrategyPage() {
     setScenarioNotes('')
     setLinkedEvaluationIds([])
     setCandidateRegionIds([])
+    setWhatIfSelection(emptyWhatIfSelection())
+    setExpansionDraft({})
     setStatusNote(null)
     setError(null)
   }
@@ -377,12 +398,87 @@ export function MultiregionStrategyPage() {
     setGroupBy(scenario.groupBy || 'resourceGroup')
     setSelectedGroupKey(scenario.selectedGroupKey)
     setCandidateRegionIds(scenario.candidateRegionIds || [])
-    setWhatIfPercent(scenario.whatIfPercent || 50)
+    setWhatIfSelection(
+      scenario.whatIfSelection && typeof scenario.whatIfSelection === 'object'
+        ? {
+            targetRegionId: scenario.whatIfSelection.targetRegionId || '',
+            selectedItemIds: scenario.whatIfSelection.selectedItemIds || [],
+            ignoredDependencyIds: scenario.whatIfSelection.ignoredDependencyIds || [],
+            expansionAdds: scenario.whatIfSelection.expansionAdds || [],
+          }
+        : emptyWhatIfSelection(scenario.candidateRegionIds?.[0] || ''),
+    )
+    setExpansionDraft({})
     setLinkedEvaluationIds(scenario.linkedEvaluationIds || [])
     setScenarioName(scenario.name)
     setScenarioNotes(scenario.notes || '')
     setStatusNote(`Loaded scenario “${scenario.name}”.`)
     setError(null)
+  }
+
+  const toggleMoveItem = (itemId: string) => {
+    setWhatIfSelection((prev) => {
+      const selected = new Set(prev.selectedItemIds)
+      if (selected.has(itemId)) selected.delete(itemId)
+      else selected.add(itemId)
+      return { ...prev, selectedItemIds: [...selected] }
+    })
+  }
+
+  const toggleIgnoreDependency = (itemId: string) => {
+    setWhatIfSelection((prev) => {
+      const ignored = new Set(prev.ignoredDependencyIds)
+      if (ignored.has(itemId)) ignored.delete(itemId)
+      else ignored.add(itemId)
+      return { ...prev, ignoredDependencyIds: [...ignored] }
+    })
+  }
+
+  const selectAllInCategory = (resourceType: string, select: boolean) => {
+    const ids = workloadItems
+      .filter((item) => item.resourceType === resourceType)
+      .map((item) => item.id)
+    setWhatIfSelection((prev) => {
+      const selected = new Set(prev.selectedItemIds)
+      for (const id of ids) {
+        if (select) selected.add(id)
+        else selected.delete(id)
+      }
+      return { ...prev, selectedItemIds: [...selected] }
+    })
+  }
+
+  const addExpansionResource = (resourceType: string) => {
+    const draft = expansionDraft[resourceType] || { sku: '', size: '', count: '1' }
+    const sku = draft.sku.trim()
+    const count = Math.max(1, Math.floor(Number(draft.count) || 0))
+    if (!sku) {
+      setError(`Enter a SKU to add an expansion resource for ${resourceType}.`)
+      return
+    }
+    const add: WhatIfExpansionAdd = {
+      id: `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      resourceType,
+      sku,
+      size: draft.size.trim() || undefined,
+      count,
+    }
+    setWhatIfSelection((prev) => ({
+      ...prev,
+      expansionAdds: [...prev.expansionAdds, add],
+    }))
+    setExpansionDraft((prev) => ({
+      ...prev,
+      [resourceType]: { sku: '', size: '', count: '1' },
+    }))
+    setError(null)
+  }
+
+  const removeExpansionResource = (id: string) => {
+    setWhatIfSelection((prev) => ({
+      ...prev,
+      expansionAdds: prev.expansionAdds.filter((row) => row.id !== id),
+    }))
   }
 
   const onSaveScenario = async () => {
@@ -392,6 +488,10 @@ export function MultiregionStrategyPage() {
     }
     const name = scenarioName.trim() || `Strategy ${formatDate(new Date().toISOString())}`
     const safeLinkedIds = pruneLinkedEvaluationIds(linkedEvaluationIds, linkableEvaluations)
+    const selectionToSave: WhatIfSelection = {
+      ...whatIfSelection,
+      targetRegionId: whatIfTarget?.id || whatIfSelection.targetRegionId,
+    }
     setSaving(true)
     setError(null)
     try {
@@ -405,7 +505,8 @@ export function MultiregionStrategyPage() {
         groupBy,
         selectedGroupKey,
         candidateRegionIds,
-        whatIfPercent,
+        whatIfPercent: 0,
+        whatIfSelection: selectionToSave,
         linkedEvaluationIds: safeLinkedIds,
         createdByUserId: user?.id || null,
         createdByName: user?.name || null,
@@ -460,20 +561,13 @@ export function MultiregionStrategyPage() {
           { field: 'Resources in scope', value: workloadItems.length },
           { field: 'Est. vCPU weight', value: selectedGroup?.vcpuEstimate ?? '—' },
           {
-            field: 'Failover grade',
-            value: `${scorecard.grade} (${scorecard.score}/100) — ${scorecard.pattern}`,
-          },
-          {
-            field: 'Primary / Secondary / Tertiary',
-            value: shortlist
-              .slice(0, 3)
-              .map((s) => `${s.role}: ${s.regionLabel} (${s.score})`)
-              .join(' · '),
+            field: 'What-if target',
+            value: whatIfTarget?.label || 'n/a',
           },
           {
             field: 'What-if',
             value: whatIfPlan
-              ? `${whatIfPlan.percent}% into ${whatIfTarget?.regionLabel || 'n/a'} ≈ ${whatIfPlan.projectedItemCount} resources / ${whatIfPlan.projectedVcpu} vCPU`
+              ? `Move ${whatIfPlan.moveItemCount} + deps ${whatIfPlan.dependencyItemCount} + expansion ${whatIfPlan.expansionItemCount} → ${whatIfPlan.projectedItemCount} resources / ${whatIfPlan.projectedVcpu} vCPU in ${whatIfTarget?.label || 'n/a'}`
               : 'n/a',
           },
           {
@@ -517,40 +611,6 @@ export function MultiregionStrategyPage() {
         })),
       },
       {
-        name: 'Region shortlist',
-        columns: [
-          { key: 'role', label: 'Role' },
-          { key: 'regionLabel', label: 'Region' },
-          { key: 'score', label: 'Score' },
-          { key: 'currentSharePct', label: 'Current share %' },
-          { key: 'openConstraintCount', label: 'Open constraints' },
-          { key: 'quotaPressurePct', label: 'Quota pressure %' },
-          { key: 'reasons', label: 'Reasons' },
-        ],
-        rows: shortlist.map((s) => ({
-          role: s.role,
-          regionLabel: s.regionLabel,
-          score: s.score,
-          currentSharePct: s.currentSharePct,
-          openConstraintCount: s.openConstraintCount,
-          quotaPressurePct: s.quotaPressurePct ?? '',
-          reasons: s.reasons.join(' | '),
-        })),
-      },
-      {
-        name: 'Failover checks',
-        columns: [
-          { key: 'label', label: 'Check' },
-          { key: 'pass', label: 'Pass' },
-          { key: 'detail', label: 'Detail' },
-        ],
-        rows: scorecard.checks.map((c) => ({
-          label: c.label,
-          pass: c.pass ? 'Yes' : 'No',
-          detail: c.detail,
-        })),
-      },
-      {
         name: 'Dependencies',
         columns: [
           { key: 'subscriptionName', label: 'Subscription' },
@@ -579,15 +639,20 @@ export function MultiregionStrategyPage() {
         ],
         rows: whatIfPlan
           ? [
-              { field: 'Percent', value: whatIfPlan.percent },
-              { field: 'Target region', value: whatIfTarget?.regionLabel || '' },
-              { field: 'Source resources', value: whatIfPlan.sourceItemCount },
+              { field: 'Target region', value: whatIfTarget?.label || '' },
+              { field: 'Selected to move', value: whatIfPlan.moveItemCount },
+              { field: 'Dependencies included', value: whatIfPlan.dependencyItemCount },
+              { field: 'Dependencies ignored', value: whatIfPlan.ignoredDependencyCount },
+              { field: 'Expansion adds', value: whatIfPlan.expansionItemCount },
               { field: 'Projected resources', value: whatIfPlan.projectedItemCount },
-              { field: 'Source vCPU', value: whatIfPlan.sourceVcpu },
               { field: 'Projected vCPU', value: whatIfPlan.projectedVcpu },
+              ...whatIfPlan.byServiceCategory.map((c) => ({
+                field: `Category: ${c.resourceType}`,
+                value: `move ${c.moveCount} · deps ${c.dependencyCount} · expansion ${c.expansionCount} · total ${c.projectedCount}`,
+              })),
               ...whatIfPlan.bySkuFamily.map((f) => ({
                 field: `SKU family: ${f.family}`,
-                value: `${f.sourceCount} → ${f.projectedCount}`,
+                value: f.projectedCount,
               })),
               ...whatIfPlan.quotaWatch.map((q) => ({
                 field: `Quota: ${q.name} (${q.region})`,
@@ -656,8 +721,8 @@ export function MultiregionStrategyPage() {
               : 'Run Region evaluation for the selected subscriptions and candidate regions, then link it here.',
           },
           {
-            owner: 'CSA',
-            action: `Review shortlist with customer; validate ${shortlist[1]?.regionLabel || 'secondary'} as DR/expansion target.`,
+            owner: 'CSA + customer',
+            action: `Validate what-if move set (${whatIfPlan?.moveItemCount || 0} selected, ${whatIfPlan?.dependencyItemCount || 0} deps) into ${whatIfTarget?.label || 'target region'}.`,
           },
           {
             owner: 'CSA + customer',
@@ -676,10 +741,6 @@ export function MultiregionStrategyPage() {
                     .join('; ')}.`
                 : 'Confirm quota headroom in candidate regions before expansion.',
           },
-          {
-            owner: 'Customer',
-            action: `Decide target pattern: ${scorecard.pattern}.`,
-          },
         ],
       },
     ])
@@ -692,8 +753,8 @@ export function MultiregionStrategyPage() {
         <div>
           <h3>Multiregion strategy</h3>
           <p>
-            Plan primary / secondary region paths from live inventory: footprint, shortlist,
-            failover readiness, dependencies, what-if capacity, and saved scenarios.
+            Plan multiregion paths from live inventory: footprint, dependencies, selective
+            what-if moves with dependencies and expansion adds, and saved scenarios.
           </p>
         </div>
         <div className="strategy-hero-actions">
@@ -887,89 +948,6 @@ export function MultiregionStrategyPage() {
         </div>
       </section>
 
-      <div className="strategy-two-col">
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h4>Region shortlist</h4>
-              <p>Primary / secondary / tertiary from constraints, quotas, and pairing hints.</p>
-            </div>
-          </div>
-          <div className="panel-body">
-            {shortlist.length === 0 ? (
-              <div className="empty">Need scoped inventory and candidate regions.</div>
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Role</th>
-                      <th>Region</th>
-                      <th>Score</th>
-                      <th>Share</th>
-                      <th>Constraints</th>
-                      <th>Quota</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {shortlist.slice(0, 8).map((entry) => (
-                      <tr key={entry.regionId}>
-                        <td>
-                          <span className={`pill ${rolePillClass(entry.role)}`}>{entry.role}</span>
-                        </td>
-                        <td>
-                          <strong>{entry.regionLabel}</strong>
-                          <div className="muted strategy-reason">
-                            {entry.reasons[0]}
-                          </div>
-                        </td>
-                        <td>{entry.score}</td>
-                        <td>{entry.currentSharePct}%</td>
-                        <td>{entry.openConstraintCount}</td>
-                        <td>
-                          {entry.quotaPressurePct == null ? '—' : `${entry.quotaPressurePct}%`}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h4>Failover readiness</h4>
-              <p className="strategy-score-line">
-                <span className={`pill ${gradePillClass(scorecard.grade)}`}>
-                  {scorecard.grade}
-                </span>
-                <span>
-                  {scorecard.score}/100 · {scorecard.pattern}
-                </span>
-              </p>
-            </div>
-          </div>
-          <div className="panel-body">
-            <ul className="strategy-check-list">
-              {scorecard.checks.map((check) => (
-                <li key={check.id} className={check.pass ? 'is-pass' : 'is-fail'}>
-                  <span className={`strategy-check-badge ${check.pass ? 'is-pass' : 'is-fail'}`}>
-                    {check.pass ? 'Pass' : 'Gap'}
-                  </span>
-                  <div className="strategy-check-copy">
-                    <strong>{check.label}</strong>
-                    <span className="muted">{check.detail}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </section>
-      </div>
-
       <section className="panel">
         <div className="panel-header">
           <div>
@@ -1028,80 +1006,256 @@ export function MultiregionStrategyPage() {
           <div>
             <h4>What-if expansion planner</h4>
             <p>
-              Simulate standing up a share of this workload in{' '}
-              {whatIfTarget ? whatIfTarget.regionLabel : 'the secondary candidate'}.
+              Choose a target region, select resources by service category to move, review auto-
+              selected dependencies (ignore any that should stay), and add expansion capacity per
+              category.
             </p>
           </div>
-          <label className="field strategy-whatif-pct">
-            <span>{whatIfPercent}%</span>
-            <input
-              type="range"
-              min={5}
-              max={100}
-              step={5}
-              value={whatIfPercent}
-              onChange={(e) => setWhatIfPercent(Number(e.target.value))}
-            />
+          <label className="field strategy-whatif-target">
+            <span>Target region</span>
+            <select
+              value={whatIfTarget?.id || ''}
+              onChange={(e) =>
+                setWhatIfSelection((prev) => ({ ...prev, targetRegionId: e.target.value }))
+              }
+              disabled={candidateRegions.length === 0}
+            >
+              {candidateRegions.length === 0 ? (
+                <option value="">Select candidate regions first</option>
+              ) : (
+                candidateRegions.map((region) => (
+                  <option key={region.id} value={region.id}>
+                    {region.label}
+                  </option>
+                ))
+              )}
+            </select>
           </label>
         </div>
-        <div className="panel-body">
-          {!whatIfPlan ? (
-            <div className="empty">Select a customer with inventory to run what-if.</div>
+        <div className="panel-body stack">
+          {!customerId || workloadItems.length === 0 ? (
+            <div className="empty">Select a customer with inventory to plan what-if moves.</div>
           ) : (
             <>
               <div className="strategy-stat-row">
                 <div className="strategy-stat-card">
-                  <span className="muted">Projected resources</span>
+                  <span className="muted">Selected to move</span>
+                  <strong>{whatIfPlan?.moveItemCount || 0}</strong>
+                </div>
+                <div className="strategy-stat-card">
+                  <span className="muted">Dependencies included</span>
                   <strong>
-                    {whatIfPlan.projectedItemCount}
-                    <span className="muted"> / {whatIfPlan.sourceItemCount}</span>
+                    {whatIfPlan?.dependencyItemCount || 0}
+                    {(whatIfPlan?.ignoredDependencyCount || 0) > 0 ? (
+                      <span className="muted"> · {whatIfPlan?.ignoredDependencyCount} ignored</span>
+                    ) : null}
                   </strong>
+                </div>
+                <div className="strategy-stat-card">
+                  <span className="muted">Expansion adds</span>
+                  <strong>{whatIfPlan?.expansionItemCount || 0}</strong>
                 </div>
                 <div className="strategy-stat-card">
                   <span className="muted">Projected vCPU</span>
-                  <strong>
-                    {whatIfPlan.projectedVcpu}
-                    <span className="muted"> / {whatIfPlan.sourceVcpu}</span>
-                  </strong>
-                </div>
-                <div className="strategy-stat-card">
-                  <span className="muted">Target</span>
-                  <strong>{whatIfTarget?.regionLabel || '—'}</strong>
+                  <strong>{whatIfPlan?.projectedVcpu || 0}</strong>
                 </div>
               </div>
-              <div className="strategy-detail-cols">
+
+              {suggestedDependencies.length > 0 ? (
+                <div className="strategy-whatif-deps">
+                  <h6>Dependencies from selection</h6>
+                  <p className="muted">
+                    Included automatically with selected moves. Ignore any dependency that should
+                    not move to {whatIfTarget?.label || 'the target region'}.
+                  </p>
+                  <ul className="strategy-whatif-dep-list">
+                    {suggestedDependencies.map((item) => {
+                      const ignored = whatIfSelection.ignoredDependencyIds.includes(item.id)
+                      return (
+                        <li key={item.id} className={ignored ? 'is-ignored' : ''}>
+                          <label className="strategy-whatif-check">
+                            <input
+                              type="checkbox"
+                              checked={!ignored}
+                              onChange={() => toggleIgnoreDependency(item.id)}
+                            />
+                            <span>
+                              <strong>{item.name}</strong>
+                              <span className="muted">
+                                {' '}
+                                · {item.resourceType} · {item.sku}
+                                {item.resourceGroup ? ` · ${item.resourceGroup}` : ''}
+                              </span>
+                            </span>
+                          </label>
+                          <span className="muted strategy-whatif-dep-note">
+                            {dependencyNoteForType(item.resourceType)}
+                          </span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+
+              <div className="strategy-whatif-categories">
+                {serviceCategories.map((category) => {
+                  const selectedInCategory = category.items.filter((item) =>
+                    whatIfSelection.selectedItemIds.includes(item.id),
+                  ).length
+                  const draft = expansionDraft[category.resourceType] || {
+                    sku: '',
+                    size: '',
+                    count: '1',
+                  }
+                  const adds = whatIfSelection.expansionAdds.filter(
+                    (row) => row.resourceType === category.resourceType,
+                  )
+                  return (
+                    <div key={category.resourceType} className="strategy-whatif-category">
+                      <div className="strategy-whatif-category-head">
+                        <div>
+                          <strong>{category.resourceType}</strong>
+                          <div className="muted">
+                            {selectedInCategory}/{category.count} selected · ~{category.vcpuEstimate}{' '}
+                            vCPU in inventory
+                          </div>
+                        </div>
+                        <div className="strategy-whatif-category-actions">
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => selectAllInCategory(category.resourceType, true)}
+                          >
+                            Select all
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => selectAllInCategory(category.resourceType, false)}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+
+                      <ul className="strategy-whatif-resource-list">
+                        {category.items.map((item) => (
+                          <li key={item.id}>
+                            <label className="strategy-whatif-check">
+                              <input
+                                type="checkbox"
+                                checked={whatIfSelection.selectedItemIds.includes(item.id)}
+                                onChange={() => toggleMoveItem(item.id)}
+                              />
+                              <span>
+                                <strong>{item.name}</strong>
+                                <span className="muted">
+                                  {' '}
+                                  · {item.sku}
+                                  {item.size ? ` / ${item.size}` : ''} · {prettyRegion(item.region)}
+                                  {item.resourceGroup ? ` · ${item.resourceGroup}` : ''}
+                                </span>
+                              </span>
+                            </label>
+                          </li>
+                        ))}
+                      </ul>
+
+                      <div className="strategy-whatif-expansion">
+                        <h6>Expansion adds</h6>
+                        {adds.length > 0 ? (
+                          <ul className="strategy-plain-list">
+                            {adds.map((row) => (
+                              <li key={row.id} className="strategy-whatif-expansion-row">
+                                <span>
+                                  {row.count}× {row.sku}
+                                  {row.size ? ` / ${row.size}` : ''}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost"
+                                  onClick={() => removeExpansionResource(row.id)}
+                                >
+                                  <Trash2 size={14} /> Remove
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="muted">No expansion capacity added for this category yet.</p>
+                        )}
+                        <div className="strategy-whatif-add-grid">
+                          <label className="field">
+                            <span>SKU</span>
+                            <input
+                              value={draft.sku}
+                              onChange={(e) =>
+                                setExpansionDraft((prev) => ({
+                                  ...prev,
+                                  [category.resourceType]: { ...draft, sku: e.target.value },
+                                }))
+                              }
+                              placeholder="e.g. Standard_D4s_v5"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Size (optional)</span>
+                            <input
+                              value={draft.size}
+                              onChange={(e) =>
+                                setExpansionDraft((prev) => ({
+                                  ...prev,
+                                  [category.resourceType]: { ...draft, size: e.target.value },
+                                }))
+                              }
+                              placeholder="Optional"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Count</span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={draft.count}
+                              onChange={(e) =>
+                                setExpansionDraft((prev) => ({
+                                  ...prev,
+                                  [category.resourceType]: { ...draft, count: e.target.value },
+                                }))
+                              }
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={() => addExpansionResource(category.resourceType)}
+                          >
+                            <Plus size={16} /> Add to scenario
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {whatIfPlan && whatIfPlan.quotaWatch.length > 0 ? (
                 <div>
-                  <h6>SKU family projection</h6>
+                  <h6>Quota watch ({whatIfTarget?.label || 'target'})</h6>
                   <ul className="strategy-plain-list">
-                    {whatIfPlan.bySkuFamily.map((f) => (
-                      <li key={f.family}>
-                        {f.family}{' '}
+                    {whatIfPlan.quotaWatch.map((q) => (
+                      <li key={`${q.region}-${q.name}`}>
+                        {q.name}{' '}
                         <span className="muted">
-                          {f.sourceCount} → {f.projectedCount}
+                          {q.usage}/{q.limit} ({q.usagePct}%) +{q.projectedExtra}
                         </span>
+                        <div className="muted">{q.note}</div>
                       </li>
                     ))}
                   </ul>
                 </div>
-                <div>
-                  <h6>Quota watch ({whatIfTarget?.regionLabel || 'target'})</h6>
-                  {whatIfPlan.quotaWatch.length === 0 ? (
-                    <p className="muted">No scoped quotas for this region.</p>
-                  ) : (
-                    <ul className="strategy-plain-list">
-                      {whatIfPlan.quotaWatch.map((q) => (
-                        <li key={`${q.region}-${q.name}`}>
-                          {q.name}{' '}
-                          <span className="muted">
-                            {q.usage}/{q.limit} ({q.usagePct}%) +{q.projectedExtra}
-                          </span>
-                          <div className="muted">{q.note}</div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
+              ) : null}
             </>
           )}
         </div>

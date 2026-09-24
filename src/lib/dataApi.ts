@@ -281,6 +281,7 @@ export type StrategyScenarioPayload = {
   selectedGroupKey?: string | null
   candidateRegionIds?: string[]
   whatIfPercent?: number
+  whatIfSelection?: import('./multiregionStrategy').WhatIfSelection | null
   linkedEvaluationIds?: string[]
   createdByUserId?: string | null
   createdByName?: string | null

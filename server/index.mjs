@@ -3567,7 +3567,10 @@ app.post('/api/data/strategy-scenarios', async (req, res) => {
       groupBy: body.groupBy || 'resourceGroup',
       selectedGroupKey: body.selectedGroupKey || null,
       candidateRegionIds: Array.isArray(body.candidateRegionIds) ? body.candidateRegionIds : [],
-      whatIfPercent: Number(body.whatIfPercent || 50),
+      whatIfPercent: Number(body.whatIfPercent || 0),
+      whatIfSelection: body.whatIfSelection && typeof body.whatIfSelection === 'object'
+        ? body.whatIfSelection
+        : {},
       linkedEvaluationIds: Array.isArray(body.linkedEvaluationIds) ? body.linkedEvaluationIds : [],
       createdByUserId: body.createdByUserId || null,
       createdByName: body.createdByName || null,

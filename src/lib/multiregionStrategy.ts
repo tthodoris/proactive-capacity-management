@@ -79,12 +79,40 @@ export type StrategyEvalLaunchState = {
   autoEvaluate?: boolean
 }
 
+export interface WhatIfExpansionAdd {
+  id: string
+  resourceType: string
+  sku: string
+  size?: string
+  count: number
+}
+
+export interface WhatIfSelection {
+  targetRegionId: string
+  selectedItemIds: string[]
+  ignoredDependencyIds: string[]
+  expansionAdds: WhatIfExpansionAdd[]
+}
+
 export interface WhatIfPlan {
-  percent: number
-  sourceItemCount: number
+  targetRegionId: string
+  targetRegionLabel: string
+  moveItemCount: number
+  dependencyItemCount: number
+  ignoredDependencyCount: number
+  expansionItemCount: number
   projectedItemCount: number
-  sourceVcpu: number
   projectedVcpu: number
+  movedItems: InventoryItem[]
+  dependencyItems: InventoryItem[]
+  byServiceCategory: Array<{
+    resourceType: string
+    moveCount: number
+    dependencyCount: number
+    expansionCount: number
+    projectedCount: number
+    projectedVcpu: number
+  }>
   bySkuFamily: Array<{ family: string; sourceCount: number; projectedCount: number }>
   quotaWatch: Array<{
     region: string
@@ -107,7 +135,9 @@ export interface StrategyScenario {
   groupBy: StrategyGroupBy
   selectedGroupKey: string | null
   candidateRegionIds: string[]
-  whatIfPercent: number
+  /** @deprecated kept for older saved scenarios */
+  whatIfPercent?: number
+  whatIfSelection?: WhatIfSelection | null
   linkedEvaluationIds: string[]
   createdByUserId?: string | null
   createdByName?: string | null
@@ -581,34 +611,171 @@ export function resolveStrategyRegionIds(
   return [...out]
 }
 
+export function pairedServiceTypes(resourceType: string): string[] {
+  return DEPENDENCY_GRAPH.find((d) => d.type === resourceType)?.pairedWith || []
+}
+
+export function dependencyNoteForType(resourceType: string): string {
+  return (
+    DEPENDENCY_GRAPH.find((d) => d.type === resourceType)?.note ||
+    'Related service commonly required alongside the selected workload.'
+  )
+}
+
+/** Inventory items suggested as dependencies for the selected move set. */
+export function suggestDependencyItems(
+  selectedItems: InventoryItem[],
+  pool: InventoryItem[],
+): InventoryItem[] {
+  if (!selectedItems.length) return []
+  const selectedIds = new Set(selectedItems.map((item) => item.id))
+  const neededTypes = new Set<string>()
+  for (const item of selectedItems) {
+    for (const type of pairedServiceTypes(item.resourceType)) neededTypes.add(type)
+  }
+  if (neededTypes.size === 0) return []
+
+  const subIds = new Set(selectedItems.map((item) => item.subscriptionId))
+  const resourceGroups = new Set(
+    selectedItems.map((item) => String(item.resourceGroup || '').trim().toLowerCase()).filter(Boolean),
+  )
+
+  const scored = pool
+    .filter((item) => {
+      if (selectedIds.has(item.id)) return false
+      if (!neededTypes.has(item.resourceType)) return false
+      if (!subIds.has(item.subscriptionId)) return false
+      return true
+    })
+    .map((item) => {
+      const sameRg = resourceGroups.has(String(item.resourceGroup || '').trim().toLowerCase())
+      return { item, rank: sameRg ? 0 : 1 }
+    })
+    .sort(
+      (a, b) =>
+        a.rank - b.rank ||
+        a.item.resourceType.localeCompare(b.item.resourceType) ||
+        a.item.name.localeCompare(b.item.name),
+    )
+
+  return scored.map((row) => row.item)
+}
+
+export function groupInventoryByServiceCategory(items: InventoryItem[]) {
+  const map = new Map<string, InventoryItem[]>()
+  for (const item of items) {
+    const key = item.resourceType || 'Unknown'
+    const list = map.get(key) || []
+    list.push(item)
+    map.set(key, list)
+  }
+  return [...map.entries()]
+    .map(([resourceType, groupItems]) => ({
+      resourceType,
+      items: groupItems
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name) || a.sku.localeCompare(b.sku)),
+      count: groupItems.length,
+      vcpuEstimate: groupItems.reduce(
+        (sum, item) => sum + estimateVcpuFromSku(item.sku, item.size),
+        0,
+      ),
+    }))
+    .sort((a, b) => b.count - a.count || a.resourceType.localeCompare(b.resourceType))
+}
+
+export function emptyWhatIfSelection(targetRegionId = ''): WhatIfSelection {
+  return {
+    targetRegionId,
+    selectedItemIds: [],
+    ignoredDependencyIds: [],
+    expansionAdds: [],
+  }
+}
+
 export function buildWhatIfPlan(input: {
   workloadItems: InventoryItem[]
-  percent: number
+  selection: WhatIfSelection
   customerId: string
   quotas: Quota[]
   targetRegionId: string
   targetRegionLabel: string
 }): WhatIfPlan {
-  const pct = Math.max(5, Math.min(100, Math.round(input.percent)))
-  const sourceItemCount = input.workloadItems.length
-  const projectedItemCount = Math.max(1, Math.ceil((sourceItemCount * pct) / 100))
-  let sourceVcpu = 0
+  const selectedIds = new Set(input.selection.selectedItemIds || [])
+  const ignoredIds = new Set(input.selection.ignoredDependencyIds || [])
+  const movedItems = input.workloadItems.filter((item) => selectedIds.has(item.id))
+  const suggestedDeps = suggestDependencyItems(movedItems, input.workloadItems)
+  const dependencyItems = suggestedDeps.filter((item) => !ignoredIds.has(item.id))
+  const ignoredDependencyCount = suggestedDeps.filter((item) => ignoredIds.has(item.id)).length
+
+  const expansionAdds = (input.selection.expansionAdds || []).filter(
+    (row) => row.resourceType && row.sku && Number(row.count) > 0,
+  )
+
+  const includedInventory = [...movedItems, ...dependencyItems]
+  let projectedVcpu = 0
   const familyCounts = new Map<string, number>()
-  for (const item of input.workloadItems) {
-    sourceVcpu += estimateVcpuFromSku(item.sku, item.size)
+  const categoryMove = new Map<string, number>()
+  const categoryDep = new Map<string, number>()
+  const categoryExp = new Map<string, number>()
+  const categoryVcpu = new Map<string, number>()
+
+  for (const item of includedInventory) {
+    const vcpu = estimateVcpuFromSku(item.sku, item.size)
+    projectedVcpu += vcpu
     const family = toSkuFamily(item.sku, item.size) || item.sku
     familyCounts.set(family, (familyCounts.get(family) || 0) + 1)
+    const bucket = selectedIds.has(item.id) ? categoryMove : categoryDep
+    bucket.set(item.resourceType, (bucket.get(item.resourceType) || 0) + 1)
+    categoryVcpu.set(item.resourceType, (categoryVcpu.get(item.resourceType) || 0) + vcpu)
   }
-  const projectedVcpu = Math.max(1, Math.ceil((sourceVcpu * pct) / 100))
+
+  let expansionItemCount = 0
+  for (const add of expansionAdds) {
+    const count = Math.max(1, Math.floor(Number(add.count) || 0))
+    expansionItemCount += count
+    const vcpuEach = estimateVcpuFromSku(add.sku, add.size)
+    projectedVcpu += vcpuEach * count
+    const family = toSkuFamily(add.sku, add.size) || add.sku
+    familyCounts.set(family, (familyCounts.get(family) || 0) + count)
+    categoryExp.set(add.resourceType, (categoryExp.get(add.resourceType) || 0) + count)
+    categoryVcpu.set(
+      add.resourceType,
+      (categoryVcpu.get(add.resourceType) || 0) + vcpuEach * count,
+    )
+  }
+
+  const allTypes = new Set([
+    ...categoryMove.keys(),
+    ...categoryDep.keys(),
+    ...categoryExp.keys(),
+  ])
+  const byServiceCategory = [...allTypes]
+    .map((resourceType) => {
+      const moveCount = categoryMove.get(resourceType) || 0
+      const dependencyCount = categoryDep.get(resourceType) || 0
+      const expansionCount = categoryExp.get(resourceType) || 0
+      return {
+        resourceType,
+        moveCount,
+        dependencyCount,
+        expansionCount,
+        projectedCount: moveCount + dependencyCount + expansionCount,
+        projectedVcpu: categoryVcpu.get(resourceType) || 0,
+      }
+    })
+    .sort((a, b) => b.projectedCount - a.projectedCount || a.resourceType.localeCompare(b.resourceType))
+
   const bySkuFamily = [...familyCounts.entries()]
-    .map(([family, sourceCount]) => ({
+    .map(([family, projectedCount]) => ({
       family,
-      sourceCount,
-      projectedCount: Math.max(1, Math.ceil((sourceCount * pct) / 100)),
+      sourceCount: projectedCount,
+      projectedCount,
     }))
     .sort((a, b) => b.projectedCount - a.projectedCount)
     .slice(0, 12)
 
+  const projectedItemCount = includedInventory.length + expansionItemCount
   const want = normalizeRegionKey(input.targetRegionId)
   const quotaWatch = input.quotas
     .filter((q) => {
@@ -646,11 +813,17 @@ export function buildWhatIfPlan(input: {
     .slice(0, 8)
 
   return {
-    percent: pct,
-    sourceItemCount,
+    targetRegionId: input.targetRegionId,
+    targetRegionLabel: input.targetRegionLabel,
+    moveItemCount: movedItems.length,
+    dependencyItemCount: dependencyItems.length,
+    ignoredDependencyCount,
+    expansionItemCount,
     projectedItemCount,
-    sourceVcpu,
     projectedVcpu,
+    movedItems,
+    dependencyItems,
+    byServiceCategory,
     bySkuFamily,
     quotaWatch,
   }

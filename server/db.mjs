@@ -167,7 +167,8 @@ export async function initDb() {
       group_by TEXT NOT NULL DEFAULT 'resourceGroup',
       selected_group_key TEXT,
       candidate_region_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
-      what_if_percent INTEGER NOT NULL DEFAULT 50,
+      what_if_percent INTEGER NOT NULL DEFAULT 0,
+      what_if_selection JSONB NOT NULL DEFAULT '{}'::jsonb,
       linked_evaluation_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
       created_by_user_id TEXT,
       created_by_name TEXT,
@@ -238,6 +239,11 @@ export async function initDb() {
       ON cost_line_items(customer_id);
     CREATE INDEX IF NOT EXISTS idx_cost_retrievals_retrieved
       ON cost_retrievals(retrieved_at DESC);
+  `)
+
+  await pool.query(`
+    ALTER TABLE strategy_scenarios
+      ADD COLUMN IF NOT EXISTS what_if_selection JSONB NOT NULL DEFAULT '{}'::jsonb;
   `)
 
   const { initDomainTables } = await import('./domain-db.mjs')
@@ -1133,7 +1139,11 @@ function mapStrategyScenario(row) {
     groupBy: row.group_by || 'resourceGroup',
     selectedGroupKey: row.selected_group_key || null,
     candidateRegionIds: row.candidate_region_ids || [],
-    whatIfPercent: Number(row.what_if_percent || 50),
+    whatIfPercent: Number(row.what_if_percent || 0),
+    whatIfSelection:
+      row.what_if_selection && typeof row.what_if_selection === 'object'
+        ? row.what_if_selection
+        : null,
     linkedEvaluationIds: row.linked_evaluation_ids || [],
     createdByUserId: row.created_by_user_id || null,
     createdByName: row.created_by_name || null,
@@ -1167,10 +1177,10 @@ export async function upsertStrategyScenario(scenario) {
     `
       INSERT INTO strategy_scenarios (
         id, customer_id, customer_name, name, notes, subscription_ids, group_by,
-        selected_group_key, candidate_region_ids, what_if_percent, linked_evaluation_ids,
-        created_by_user_id, created_by_name, created_at, updated_at
+        selected_group_key, candidate_region_ids, what_if_percent, what_if_selection,
+        linked_evaluation_ids, created_by_user_id, created_by_name, created_at, updated_at
       ) VALUES (
-        $1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9::jsonb,$10,$11::jsonb,$12,$13,COALESCE($14::timestamptz, NOW()),NOW()
+        $1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9::jsonb,$10,$11::jsonb,$12::jsonb,$13,$14,COALESCE($15::timestamptz, NOW()),NOW()
       )
       ON CONFLICT (id) DO UPDATE SET
         customer_id = EXCLUDED.customer_id,
@@ -1182,6 +1192,7 @@ export async function upsertStrategyScenario(scenario) {
         selected_group_key = EXCLUDED.selected_group_key,
         candidate_region_ids = EXCLUDED.candidate_region_ids,
         what_if_percent = EXCLUDED.what_if_percent,
+        what_if_selection = EXCLUDED.what_if_selection,
         linked_evaluation_ids = EXCLUDED.linked_evaluation_ids,
         created_by_user_id = EXCLUDED.created_by_user_id,
         created_by_name = EXCLUDED.created_by_name,
@@ -1198,7 +1209,8 @@ export async function upsertStrategyScenario(scenario) {
       scenario.groupBy || 'resourceGroup',
       scenario.selectedGroupKey || null,
       JSON.stringify(scenario.candidateRegionIds || []),
-      Number(scenario.whatIfPercent || 50),
+      Number(scenario.whatIfPercent || 0),
+      JSON.stringify(scenario.whatIfSelection || {}),
       JSON.stringify(scenario.linkedEvaluationIds || []),
       scenario.createdByUserId || null,
       scenario.createdByName || null,
