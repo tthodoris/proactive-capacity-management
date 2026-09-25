@@ -85,13 +85,21 @@ export interface WhatIfExpansionAdd {
   sku: string
   size?: string
   count: number
+  /** Optional planner group key (RG name or service category) that created this add. */
+  groupKey?: string
 }
+
+export type WhatIfInventoryGroupBy = 'serviceCategory' | 'resourceGroup'
 
 export interface WhatIfSelection {
   targetRegionId: string
   selectedItemIds: string[]
   ignoredDependencyIds: string[]
   expansionAdds: WhatIfExpansionAdd[]
+  /** How inventory is grouped in the what-if planner. */
+  inventoryGroupBy?: WhatIfInventoryGroupBy
+  /** Optional focus on a single resource group within the selected workload. */
+  focusedResourceGroup?: string | null
 }
 
 export interface WhatIfPlan {
@@ -684,12 +692,73 @@ export function groupInventoryByServiceCategory(items: InventoryItem[]) {
     .sort((a, b) => b.count - a.count || a.resourceType.localeCompare(b.resourceType))
 }
 
+export type WhatIfInventoryGroup = {
+  key: string
+  label: string
+  items: InventoryItem[]
+  count: number
+  vcpuEstimate: number
+  /** Default resource type for expansion adds (most common in the group). */
+  defaultResourceType: string
+  resourceTypes: string[]
+}
+
+export function groupInventoryForWhatIf(
+  items: InventoryItem[],
+  mode: WhatIfInventoryGroupBy,
+): WhatIfInventoryGroup[] {
+  const map = new Map<string, InventoryItem[]>()
+  for (const item of items) {
+    const key =
+      mode === 'resourceGroup'
+        ? String(item.resourceGroup || '').trim() || '(no resource group)'
+        : item.resourceType || 'Unknown'
+    const list = map.get(key) || []
+    list.push(item)
+    map.set(key, list)
+  }
+
+  return [...map.entries()]
+    .map(([key, groupItems]) => {
+      const sorted = groupItems
+        .slice()
+        .sort(
+          (a, b) =>
+            a.resourceType.localeCompare(b.resourceType) ||
+            a.name.localeCompare(b.name) ||
+            a.sku.localeCompare(b.sku),
+        )
+      const typeCounts = new Map<string, number>()
+      for (const item of sorted) {
+        typeCounts.set(item.resourceType, (typeCounts.get(item.resourceType) || 0) + 1)
+      }
+      const resourceTypes = [...typeCounts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([type]) => type)
+      return {
+        key,
+        label: key,
+        items: sorted,
+        count: sorted.length,
+        vcpuEstimate: sorted.reduce(
+          (sum, item) => sum + estimateVcpuFromSku(item.sku, item.size),
+          0,
+        ),
+        defaultResourceType: resourceTypes[0] || 'Virtual Machine',
+        resourceTypes,
+      }
+    })
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+}
+
 export function emptyWhatIfSelection(targetRegionId = ''): WhatIfSelection {
   return {
     targetRegionId,
     selectedItemIds: [],
     ignoredDependencyIds: [],
     expansionAdds: [],
+    inventoryGroupBy: 'resourceGroup',
+    focusedResourceGroup: null,
   }
 }
 

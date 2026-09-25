@@ -33,7 +33,7 @@ import {
   emptyWhatIfSelection,
   filterInventoryForStrategy,
   filterLinkableEvaluations,
-  groupInventoryByServiceCategory,
+  groupInventoryForWhatIf,
   pruneLinkedEvaluationIds,
   resolveStrategyRegionIds,
   suggestDependencyItems,
@@ -41,6 +41,7 @@ import {
   type StrategyGroupBy,
   type StrategyScenario,
   type WhatIfExpansionAdd,
+  type WhatIfInventoryGroupBy,
   type WhatIfSelection,
 } from '../lib/multiregionStrategy'
 import type { SavedRegionEvaluation } from '../lib/azureApi'
@@ -73,9 +74,9 @@ export function MultiregionStrategyPage() {
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
   const [candidateRegionIds, setCandidateRegionIds] = useState<string[]>([])
   const [whatIfSelection, setWhatIfSelection] = useState<WhatIfSelection>(() => emptyWhatIfSelection())
-  const [expansionDraft, setExpansionDraft] = useState<Record<string, { sku: string; size: string; count: string }>>(
-    {},
-  )
+  const [expansionDraft, setExpansionDraft] = useState<
+    Record<string, { resourceType: string; sku: string; size: string; count: string }>
+  >({})
   const [scenarioName, setScenarioName] = useState('')
   const [scenarioNotes, setScenarioNotes] = useState('')
   const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null)
@@ -175,19 +176,38 @@ export function MultiregionStrategyPage() {
     return customerSubs.map((s) => s.id)
   }, [selectedSubscriptionIds, customerSubs])
 
-  const serviceCategories = useMemo(
-    () => groupInventoryByServiceCategory(workloadItems),
-    [workloadItems],
+  const whatIfGroupBy: WhatIfInventoryGroupBy =
+    whatIfSelection.inventoryGroupBy === 'serviceCategory' ? 'serviceCategory' : 'resourceGroup'
+
+  const resourceGroupOptions = useMemo(() => {
+    const groups = new Set<string>()
+    for (const item of workloadItems) {
+      groups.add(String(item.resourceGroup || '').trim() || '(no resource group)')
+    }
+    return [...groups].sort((a, b) => a.localeCompare(b))
+  }, [workloadItems])
+
+  const whatIfInventoryItems = useMemo(() => {
+    const focus = whatIfSelection.focusedResourceGroup
+    if (!focus) return workloadItems
+    return workloadItems.filter(
+      (item) => (String(item.resourceGroup || '').trim() || '(no resource group)') === focus,
+    )
+  }, [workloadItems, whatIfSelection.focusedResourceGroup])
+
+  const whatIfInventoryGroups = useMemo(
+    () => groupInventoryForWhatIf(whatIfInventoryItems, whatIfGroupBy),
+    [whatIfInventoryItems, whatIfGroupBy],
   )
 
   const selectedMoveItems = useMemo(
-    () => workloadItems.filter((item) => whatIfSelection.selectedItemIds.includes(item.id)),
-    [workloadItems, whatIfSelection.selectedItemIds],
+    () => whatIfInventoryItems.filter((item) => whatIfSelection.selectedItemIds.includes(item.id)),
+    [whatIfInventoryItems, whatIfSelection.selectedItemIds],
   )
 
   const suggestedDependencies = useMemo(
-    () => suggestDependencyItems(selectedMoveItems, workloadItems),
-    [selectedMoveItems, workloadItems],
+    () => suggestDependencyItems(selectedMoveItems, whatIfInventoryItems),
+    [selectedMoveItems, whatIfInventoryItems],
   )
 
   const whatIfTarget = useMemo(() => {
@@ -212,13 +232,25 @@ export function MultiregionStrategyPage() {
     setWhatIfSelection((prev) => {
       const selectedItemIds = prev.selectedItemIds.filter((id) => validIds.has(id))
       const ignoredDependencyIds = prev.ignoredDependencyIds.filter((id) => validIds.has(id))
+      const focus = prev.focusedResourceGroup
+      const focusStillValid =
+        !focus ||
+        workloadItems.some(
+          (item) => (String(item.resourceGroup || '').trim() || '(no resource group)') === focus,
+        )
       if (
         selectedItemIds.length === prev.selectedItemIds.length &&
-        ignoredDependencyIds.length === prev.ignoredDependencyIds.length
+        ignoredDependencyIds.length === prev.ignoredDependencyIds.length &&
+        focusStillValid
       ) {
         return prev
       }
-      return { ...prev, selectedItemIds, ignoredDependencyIds }
+      return {
+        ...prev,
+        selectedItemIds,
+        ignoredDependencyIds,
+        focusedResourceGroup: focusStillValid ? prev.focusedResourceGroup : null,
+      }
     })
   }, [workloadItems])
 
@@ -263,7 +295,7 @@ export function MultiregionStrategyPage() {
     () =>
       customerId && whatIfTarget
         ? buildWhatIfPlan({
-            workloadItems,
+            workloadItems: whatIfInventoryItems,
             selection: {
               ...whatIfSelection,
               targetRegionId: whatIfTarget.id,
@@ -274,7 +306,7 @@ export function MultiregionStrategyPage() {
             targetRegionLabel: whatIfTarget.label,
           })
         : null,
-    [workloadItems, whatIfSelection, customerId, quotas, whatIfTarget],
+    [whatIfInventoryItems, whatIfSelection, customerId, quotas, whatIfTarget],
   )
 
   const strategyRegionIds = useMemo(
@@ -405,6 +437,8 @@ export function MultiregionStrategyPage() {
             selectedItemIds: scenario.whatIfSelection.selectedItemIds || [],
             ignoredDependencyIds: scenario.whatIfSelection.ignoredDependencyIds || [],
             expansionAdds: scenario.whatIfSelection.expansionAdds || [],
+            inventoryGroupBy: scenario.whatIfSelection.inventoryGroupBy || 'resourceGroup',
+            focusedResourceGroup: scenario.whatIfSelection.focusedResourceGroup || null,
           }
         : emptyWhatIfSelection(scenario.candidateRegionIds?.[0] || ''),
     )
@@ -434,13 +468,10 @@ export function MultiregionStrategyPage() {
     })
   }
 
-  const selectAllInCategory = (resourceType: string, select: boolean) => {
-    const ids = workloadItems
-      .filter((item) => item.resourceType === resourceType)
-      .map((item) => item.id)
+  const selectAllInGroup = (itemIds: string[], select: boolean) => {
     setWhatIfSelection((prev) => {
       const selected = new Set(prev.selectedItemIds)
-      for (const id of ids) {
+      for (const id of itemIds) {
         if (select) selected.add(id)
         else selected.delete(id)
       }
@@ -448,20 +479,27 @@ export function MultiregionStrategyPage() {
     })
   }
 
-  const addExpansionResource = (resourceType: string) => {
-    const draft = expansionDraft[resourceType] || { sku: '', size: '', count: '1' }
+  const addExpansionResource = (groupKey: string, defaultResourceType: string) => {
+    const draft = expansionDraft[groupKey] || {
+      resourceType: defaultResourceType,
+      sku: '',
+      size: '',
+      count: '1',
+    }
+    const resourceType = (draft.resourceType || defaultResourceType).trim()
     const sku = draft.sku.trim()
     const count = Math.max(1, Math.floor(Number(draft.count) || 0))
     if (!sku) {
-      setError(`Enter a SKU to add an expansion resource for ${resourceType}.`)
+      setError(`Enter a SKU to add an expansion resource for ${resourceType || groupKey}.`)
       return
     }
     const add: WhatIfExpansionAdd = {
       id: `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      resourceType,
+      resourceType: resourceType || 'Virtual Machine',
       sku,
       size: draft.size.trim() || undefined,
       count,
+      groupKey,
     }
     setWhatIfSelection((prev) => ({
       ...prev,
@@ -469,7 +507,7 @@ export function MultiregionStrategyPage() {
     }))
     setExpansionDraft((prev) => ({
       ...prev,
-      [resourceType]: { sku: '', size: '', count: '1' },
+      [groupKey]: { resourceType: resourceType || defaultResourceType, sku: '', size: '', count: '1' },
     }))
     setError(null)
   }
@@ -1006,38 +1044,83 @@ export function MultiregionStrategyPage() {
           <div>
             <h4>What-if expansion planner</h4>
             <p>
-              Choose a target region, select resources by service category to move, review auto-
-              selected dependencies (ignore any that should stay), and add expansion capacity per
-              category.
+              Inventory from the selected workload
+              {selectedGroup ? ` (“${selectedGroup.label}”)` : ''}. Group by resource group or
+              service category, checkbox the resources to move, review dependencies, and add
+              expansion capacity.
             </p>
           </div>
-          <label className="field strategy-whatif-target">
-            <span>Target region</span>
-            <select
-              value={whatIfTarget?.id || ''}
-              onChange={(e) =>
-                setWhatIfSelection((prev) => ({ ...prev, targetRegionId: e.target.value }))
-              }
-              disabled={candidateRegions.length === 0}
-            >
-              {candidateRegions.length === 0 ? (
-                <option value="">Select candidate regions first</option>
-              ) : (
-                candidateRegions.map((region) => (
-                  <option key={region.id} value={region.id}>
-                    {region.label}
+          <div className="strategy-whatif-header-controls">
+            <label className="field strategy-whatif-target">
+              <span>Target region</span>
+              <select
+                value={whatIfTarget?.id || ''}
+                onChange={(e) =>
+                  setWhatIfSelection((prev) => ({ ...prev, targetRegionId: e.target.value }))
+                }
+                disabled={candidateRegions.length === 0}
+              >
+                {candidateRegions.length === 0 ? (
+                  <option value="">Select candidate regions first</option>
+                ) : (
+                  candidateRegions.map((region) => (
+                    <option key={region.id} value={region.id}>
+                      {region.label}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <label className="field strategy-whatif-target">
+              <span>Group inventory by</span>
+              <select
+                value={whatIfGroupBy}
+                onChange={(e) =>
+                  setWhatIfSelection((prev) => ({
+                    ...prev,
+                    inventoryGroupBy: e.target.value as WhatIfInventoryGroupBy,
+                  }))
+                }
+              >
+                <option value="resourceGroup">Resource group</option>
+                <option value="serviceCategory">Service category</option>
+              </select>
+            </label>
+            <label className="field strategy-whatif-target">
+              <span>Resource group filter</span>
+              <select
+                value={whatIfSelection.focusedResourceGroup || ''}
+                onChange={(e) =>
+                  setWhatIfSelection((prev) => ({
+                    ...prev,
+                    focusedResourceGroup: e.target.value || null,
+                  }))
+                }
+              >
+                <option value="">All RGs in workload ({workloadItems.length})</option>
+                {resourceGroupOptions.map((rg) => (
+                  <option key={rg} value={rg}>
+                    {rg}
                   </option>
-                ))
-              )}
-            </select>
-          </label>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
         <div className="panel-body stack">
           {!customerId || workloadItems.length === 0 ? (
-            <div className="empty">Select a customer with inventory to plan what-if moves.</div>
+            <div className="empty">
+              Select a customer and a workload group above to load inventory for what-if moves.
+            </div>
+          ) : whatIfInventoryItems.length === 0 ? (
+            <div className="empty">No inventory in the selected resource group filter.</div>
           ) : (
             <>
               <div className="strategy-stat-row">
+                <div className="strategy-stat-card">
+                  <span className="muted">Inventory in view</span>
+                  <strong>{whatIfInventoryItems.length}</strong>
+                </div>
                 <div className="strategy-stat-card">
                   <span className="muted">Selected to move</span>
                   <strong>{whatIfPlan?.moveItemCount || 0}</strong>
@@ -1099,40 +1182,63 @@ export function MultiregionStrategyPage() {
               ) : null}
 
               <div className="strategy-whatif-categories">
-                {serviceCategories.map((category) => {
-                  const selectedInCategory = category.items.filter((item) =>
+                {whatIfInventoryGroups.map((group) => {
+                  const selectedInGroup = group.items.filter((item) =>
                     whatIfSelection.selectedItemIds.includes(item.id),
                   ).length
-                  const draft = expansionDraft[category.resourceType] || {
+                  const draft = expansionDraft[group.key] || {
+                    resourceType: group.defaultResourceType,
                     sku: '',
                     size: '',
                     count: '1',
                   }
                   const adds = whatIfSelection.expansionAdds.filter(
-                    (row) => row.resourceType === category.resourceType,
+                    (row) =>
+                      row.groupKey === group.key ||
+                      (!row.groupKey &&
+                        (whatIfGroupBy === 'serviceCategory'
+                          ? row.resourceType === group.key
+                          : false)),
                   )
                   return (
-                    <div key={category.resourceType} className="strategy-whatif-category">
+                    <div key={group.key} className="strategy-whatif-category">
                       <div className="strategy-whatif-category-head">
                         <div>
-                          <strong>{category.resourceType}</strong>
+                          <strong>
+                            {whatIfGroupBy === 'resourceGroup' ? 'RG · ' : ''}
+                            {group.label}
+                          </strong>
                           <div className="muted">
-                            {selectedInCategory}/{category.count} selected · ~{category.vcpuEstimate}{' '}
-                            vCPU in inventory
+                            {selectedInGroup}/{group.count} selected · ~{group.vcpuEstimate} vCPU
+                            {whatIfGroupBy === 'resourceGroup' && group.resourceTypes.length > 0
+                              ? ` · ${group.resourceTypes.length} service type${
+                                  group.resourceTypes.length === 1 ? '' : 's'
+                                }`
+                              : ''}
                           </div>
                         </div>
                         <div className="strategy-whatif-category-actions">
                           <button
                             type="button"
                             className="btn btn-ghost"
-                            onClick={() => selectAllInCategory(category.resourceType, true)}
+                            onClick={() =>
+                              selectAllInGroup(
+                                group.items.map((item) => item.id),
+                                true,
+                              )
+                            }
                           >
                             Select all
                           </button>
                           <button
                             type="button"
                             className="btn btn-ghost"
-                            onClick={() => selectAllInCategory(category.resourceType, false)}
+                            onClick={() =>
+                              selectAllInGroup(
+                                group.items.map((item) => item.id),
+                                false,
+                              )
+                            }
                           >
                             Clear
                           </button>
@@ -1140,7 +1246,7 @@ export function MultiregionStrategyPage() {
                       </div>
 
                       <ul className="strategy-whatif-resource-list">
-                        {category.items.map((item) => (
+                        {group.items.map((item) => (
                           <li key={item.id}>
                             <label className="strategy-whatif-check">
                               <input
@@ -1152,9 +1258,11 @@ export function MultiregionStrategyPage() {
                                 <strong>{item.name}</strong>
                                 <span className="muted">
                                   {' '}
-                                  · {item.sku}
+                                  · {item.resourceType} · {item.sku}
                                   {item.size ? ` / ${item.size}` : ''} · {prettyRegion(item.region)}
-                                  {item.resourceGroup ? ` · ${item.resourceGroup}` : ''}
+                                  {whatIfGroupBy === 'serviceCategory' && item.resourceGroup
+                                    ? ` · ${item.resourceGroup}`
+                                    : ''}
                                 </span>
                               </span>
                             </label>
@@ -1169,7 +1277,7 @@ export function MultiregionStrategyPage() {
                             {adds.map((row) => (
                               <li key={row.id} className="strategy-whatif-expansion-row">
                                 <span>
-                                  {row.count}× {row.sku}
+                                  {row.count}× {row.resourceType} · {row.sku}
                                   {row.size ? ` / ${row.size}` : ''}
                                 </span>
                                 <button
@@ -1183,9 +1291,36 @@ export function MultiregionStrategyPage() {
                             ))}
                           </ul>
                         ) : (
-                          <p className="muted">No expansion capacity added for this category yet.</p>
+                          <p className="muted">No expansion capacity added for this group yet.</p>
                         )}
-                        <div className="strategy-whatif-add-grid">
+                        <div
+                          className={`strategy-whatif-add-grid${
+                            whatIfGroupBy === 'resourceGroup' ? ' has-type' : ''
+                          }`}
+                        >
+                          {whatIfGroupBy === 'resourceGroup' ? (
+                            <label className="field">
+                              <span>Service type</span>
+                              <select
+                                value={draft.resourceType || group.defaultResourceType}
+                                onChange={(e) =>
+                                  setExpansionDraft((prev) => ({
+                                    ...prev,
+                                    [group.key]: { ...draft, resourceType: e.target.value },
+                                  }))
+                                }
+                              >
+                                {(group.resourceTypes.length
+                                  ? group.resourceTypes
+                                  : [group.defaultResourceType]
+                                ).map((type) => (
+                                  <option key={type} value={type}>
+                                    {type}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          ) : null}
                           <label className="field">
                             <span>SKU</span>
                             <input
@@ -1193,7 +1328,7 @@ export function MultiregionStrategyPage() {
                               onChange={(e) =>
                                 setExpansionDraft((prev) => ({
                                   ...prev,
-                                  [category.resourceType]: { ...draft, sku: e.target.value },
+                                  [group.key]: { ...draft, sku: e.target.value },
                                 }))
                               }
                               placeholder="e.g. Standard_D4s_v5"
@@ -1206,7 +1341,7 @@ export function MultiregionStrategyPage() {
                               onChange={(e) =>
                                 setExpansionDraft((prev) => ({
                                   ...prev,
-                                  [category.resourceType]: { ...draft, size: e.target.value },
+                                  [group.key]: { ...draft, size: e.target.value },
                                 }))
                               }
                               placeholder="Optional"
@@ -1221,7 +1356,7 @@ export function MultiregionStrategyPage() {
                               onChange={(e) =>
                                 setExpansionDraft((prev) => ({
                                   ...prev,
-                                  [category.resourceType]: { ...draft, count: e.target.value },
+                                  [group.key]: { ...draft, count: e.target.value },
                                 }))
                               }
                             />
@@ -1229,7 +1364,9 @@ export function MultiregionStrategyPage() {
                           <button
                             type="button"
                             className="btn btn-secondary"
-                            onClick={() => addExpansionResource(category.resourceType)}
+                            onClick={() =>
+                              addExpansionResource(group.key, group.defaultResourceType)
+                            }
                           >
                             <Plus size={16} /> Add to scenario
                           </button>

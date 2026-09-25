@@ -2684,9 +2684,21 @@ button.region-eval-constraint-tag:hover {
   line-height: 1.4;
 }
 
+.strategy-whatif-header-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+  justify-content: flex-end;
+}
+
 .strategy-whatif-target {
-  min-width: 14rem;
+  min-width: 12rem;
   margin: 0;
+}
+
+.strategy-whatif-add-grid.has-type {
+  grid-template-columns: 1.2fr 1.2fr 0.9fr 0.55fr auto;
 }
 
 .strategy-whatif-deps {
