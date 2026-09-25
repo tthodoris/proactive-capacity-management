@@ -2684,12 +2684,17 @@ button.region-eval-constraint-tag:hover {
   line-height: 1.4;
 }
 
-.strategy-whatif-header-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: end;
-  justify-content: flex-end;
+.strategy-whatif-builder,
+.strategy-whatif-workload {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  background: var(--panel-soft);
+}
+
+.strategy-whatif-builder h6,
+.strategy-whatif-workload h6 {
+  margin: 0 0 0.55rem;
 }
 
 .strategy-whatif-target {

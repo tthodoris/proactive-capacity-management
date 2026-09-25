@@ -16,9 +16,12 @@ import { useApp } from '../context/AppContext'
 import { deployableAzureRegions } from '../data/azureLocations'
 import {
   deleteStrategyScenario,
+  fetchInventoryResourceTypes,
+  fetchInventorySkus,
   fetchRegionEvaluations,
   fetchStrategyScenarios,
   persistStrategyScenario,
+  type InventorySkuOption,
 } from '../lib/dataApi'
 import { exportSheetsToExcel } from '../lib/exportExcel'
 import { formatDate, prettyRegion } from '../lib/format'
@@ -29,22 +32,42 @@ import {
   buildWhatIfPlan,
   buildWorkloadGroups,
   collectStrategySkuGaps,
-  dependencyNoteForType,
   emptyWhatIfSelection,
   filterInventoryForStrategy,
   filterLinkableEvaluations,
-  groupInventoryForWhatIf,
+  normalizeWhatIfWorkloadItems,
   pruneLinkedEvaluationIds,
   resolveStrategyRegionIds,
-  suggestDependencyItems,
   type StrategyEvalLaunchState,
   type StrategyGroupBy,
   type StrategyScenario,
-  type WhatIfExpansionAdd,
-  type WhatIfInventoryGroupBy,
   type WhatIfSelection,
+  type WhatIfWorkloadItem,
 } from '../lib/multiregionStrategy'
 import type { SavedRegionEvaluation } from '../lib/azureApi'
+import type { ResourceType } from '../types'
+
+const FALLBACK_RESOURCE_TYPES: ResourceType[] = [
+  'Virtual Machine',
+  'Azure SQL Database',
+  'Azure SQL Managed Instance',
+  'Azure Database for MySQL',
+  'Azure Database for PostgreSQL',
+  'Azure Cosmos DB',
+  'Azure Kubernetes Service',
+  'Container Instances',
+  'Azure Container Apps',
+  'Azure Container Apps Environment',
+  'Azure Databricks',
+  'Azure Data Explorer',
+  'Azure Cache for Redis',
+  'Azure Managed Redis',
+  'Key Vault',
+  'Storage Account',
+  'Application Gateway',
+  'API Management',
+  'VPN Gateway',
+]
 
 const GROUP_BY_OPTIONS: Array<{ value: StrategyGroupBy; label: string }> = [
   { value: 'resourceGroup', label: 'App / RG heuristic' },
@@ -74,9 +97,13 @@ export function MultiregionStrategyPage() {
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null)
   const [candidateRegionIds, setCandidateRegionIds] = useState<string[]>([])
   const [whatIfSelection, setWhatIfSelection] = useState<WhatIfSelection>(() => emptyWhatIfSelection())
-  const [expansionDraft, setExpansionDraft] = useState<
-    Record<string, { resourceType: string; sku: string; size: string; count: string }>
-  >({})
+  const [whatIfResourceTypes, setWhatIfResourceTypes] = useState<string[]>(FALLBACK_RESOURCE_TYPES)
+  const [whatIfSkuOptions, setWhatIfSkuOptions] = useState<InventorySkuOption[]>([])
+  const [whatIfDraftType, setWhatIfDraftType] = useState('Virtual Machine')
+  const [whatIfDraftSku, setWhatIfDraftSku] = useState('')
+  const [whatIfDraftCount, setWhatIfDraftCount] = useState('1')
+  const [loadingWhatIfTypes, setLoadingWhatIfTypes] = useState(false)
+  const [loadingWhatIfSkus, setLoadingWhatIfSkus] = useState(false)
   const [scenarioName, setScenarioName] = useState('')
   const [scenarioNotes, setScenarioNotes] = useState('')
   const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null)
@@ -176,40 +203,6 @@ export function MultiregionStrategyPage() {
     return customerSubs.map((s) => s.id)
   }, [selectedSubscriptionIds, customerSubs])
 
-  const whatIfGroupBy: WhatIfInventoryGroupBy =
-    whatIfSelection.inventoryGroupBy === 'serviceCategory' ? 'serviceCategory' : 'resourceGroup'
-
-  const resourceGroupOptions = useMemo(() => {
-    const groups = new Set<string>()
-    for (const item of workloadItems) {
-      groups.add(String(item.resourceGroup || '').trim() || '(no resource group)')
-    }
-    return [...groups].sort((a, b) => a.localeCompare(b))
-  }, [workloadItems])
-
-  const whatIfInventoryItems = useMemo(() => {
-    const focus = whatIfSelection.focusedResourceGroup
-    if (!focus) return workloadItems
-    return workloadItems.filter(
-      (item) => (String(item.resourceGroup || '').trim() || '(no resource group)') === focus,
-    )
-  }, [workloadItems, whatIfSelection.focusedResourceGroup])
-
-  const whatIfInventoryGroups = useMemo(
-    () => groupInventoryForWhatIf(whatIfInventoryItems, whatIfGroupBy),
-    [whatIfInventoryItems, whatIfGroupBy],
-  )
-
-  const selectedMoveItems = useMemo(
-    () => whatIfInventoryItems.filter((item) => whatIfSelection.selectedItemIds.includes(item.id)),
-    [whatIfInventoryItems, whatIfSelection.selectedItemIds],
-  )
-
-  const suggestedDependencies = useMemo(
-    () => suggestDependencyItems(selectedMoveItems, whatIfInventoryItems),
-    [selectedMoveItems, whatIfInventoryItems],
-  )
-
   const whatIfTarget = useMemo(() => {
     const id = whatIfSelection.targetRegionId
     if (id) {
@@ -221,6 +214,11 @@ export function MultiregionStrategyPage() {
     return candidateRegions[0] || null
   }, [whatIfSelection.targetRegionId, candidateRegions, regionOptions])
 
+  const plannedWorkloadItems = useMemo(
+    () => normalizeWhatIfWorkloadItems(whatIfSelection),
+    [whatIfSelection],
+  )
+
   useEffect(() => {
     if (!whatIfSelection.targetRegionId && candidateRegions[0]) {
       setWhatIfSelection((prev) => ({ ...prev, targetRegionId: candidateRegions[0].id }))
@@ -228,31 +226,57 @@ export function MultiregionStrategyPage() {
   }, [candidateRegions, whatIfSelection.targetRegionId])
 
   useEffect(() => {
-    const validIds = new Set(workloadItems.map((item) => item.id))
-    setWhatIfSelection((prev) => {
-      const selectedItemIds = prev.selectedItemIds.filter((id) => validIds.has(id))
-      const ignoredDependencyIds = prev.ignoredDependencyIds.filter((id) => validIds.has(id))
-      const focus = prev.focusedResourceGroup
-      const focusStillValid =
-        !focus ||
-        workloadItems.some(
-          (item) => (String(item.resourceGroup || '').trim() || '(no resource group)') === focus,
+    let cancelled = false
+    ;(async () => {
+      setLoadingWhatIfTypes(true)
+      try {
+        const data = await fetchInventoryResourceTypes()
+        if (cancelled) return
+        const fromDb = data.resourceTypes.map((t) => t.resourceType)
+        const types = [...new Set([...FALLBACK_RESOURCE_TYPES, ...fromDb])].sort((a, b) =>
+          a.localeCompare(b),
         )
-      if (
-        selectedItemIds.length === prev.selectedItemIds.length &&
-        ignoredDependencyIds.length === prev.ignoredDependencyIds.length &&
-        focusStillValid
-      ) {
-        return prev
+        if (types.length > 0) {
+          setWhatIfResourceTypes(types)
+          setWhatIfDraftType((prev) => (types.includes(prev) ? prev : types[0]))
+        }
+      } catch {
+        // Keep fallback resource types.
+      } finally {
+        if (!cancelled) setLoadingWhatIfTypes(false)
       }
-      return {
-        ...prev,
-        selectedItemIds,
-        ignoredDependencyIds,
-        focusedResourceGroup: focusStillValid ? prev.focusedResourceGroup : null,
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      if (!whatIfDraftType) return
+      setLoadingWhatIfSkus(true)
+      try {
+        const data = await fetchInventorySkus(whatIfDraftType)
+        if (cancelled) return
+        setWhatIfSkuOptions(data.skus)
+        setWhatIfDraftSku((prev) => {
+          if (data.skus.some((s) => s.sku === prev)) return prev
+          return data.skus[0]?.sku ?? ''
+        })
+      } catch {
+        if (!cancelled) {
+          setWhatIfSkuOptions([])
+          setWhatIfDraftSku('')
+        }
+      } finally {
+        if (!cancelled) setLoadingWhatIfSkus(false)
       }
-    })
-  }, [workloadItems])
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [whatIfDraftType])
 
   const dependencySlices = useMemo(
     () => buildDependencyMap(workloadItems, customerSubs),
@@ -295,10 +319,10 @@ export function MultiregionStrategyPage() {
     () =>
       customerId && whatIfTarget
         ? buildWhatIfPlan({
-            workloadItems: whatIfInventoryItems,
             selection: {
               ...whatIfSelection,
               targetRegionId: whatIfTarget.id,
+              workloadItems: plannedWorkloadItems,
             },
             customerId,
             quotas,
@@ -306,7 +330,7 @@ export function MultiregionStrategyPage() {
             targetRegionLabel: whatIfTarget.label,
           })
         : null,
-    [whatIfInventoryItems, whatIfSelection, customerId, quotas, whatIfTarget],
+    [plannedWorkloadItems, whatIfSelection, customerId, quotas, whatIfTarget],
   )
 
   const strategyRegionIds = useMemo(
@@ -418,7 +442,9 @@ export function MultiregionStrategyPage() {
     setLinkedEvaluationIds([])
     setCandidateRegionIds([])
     setWhatIfSelection(emptyWhatIfSelection())
-    setExpansionDraft({})
+    setWhatIfDraftType('Virtual Machine')
+    setWhatIfDraftSku('')
+    setWhatIfDraftCount('1')
     setStatusNote(null)
     setError(null)
   }
@@ -430,19 +456,19 @@ export function MultiregionStrategyPage() {
     setGroupBy(scenario.groupBy || 'resourceGroup')
     setSelectedGroupKey(scenario.selectedGroupKey)
     setCandidateRegionIds(scenario.candidateRegionIds || [])
+    const loadedItems = normalizeWhatIfWorkloadItems(scenario.whatIfSelection)
     setWhatIfSelection(
       scenario.whatIfSelection && typeof scenario.whatIfSelection === 'object'
         ? {
             targetRegionId: scenario.whatIfSelection.targetRegionId || '',
-            selectedItemIds: scenario.whatIfSelection.selectedItemIds || [],
-            ignoredDependencyIds: scenario.whatIfSelection.ignoredDependencyIds || [],
-            expansionAdds: scenario.whatIfSelection.expansionAdds || [],
-            inventoryGroupBy: scenario.whatIfSelection.inventoryGroupBy || 'resourceGroup',
-            focusedResourceGroup: scenario.whatIfSelection.focusedResourceGroup || null,
+            workloadItems: loadedItems,
+            expansionAdds: loadedItems,
           }
         : emptyWhatIfSelection(scenario.candidateRegionIds?.[0] || ''),
     )
-    setExpansionDraft({})
+    setWhatIfDraftType('Virtual Machine')
+    setWhatIfDraftSku('')
+    setWhatIfDraftCount('1')
     setLinkedEvaluationIds(scenario.linkedEvaluationIds || [])
     setScenarioName(scenario.name)
     setScenarioNotes(scenario.notes || '')
@@ -450,73 +476,37 @@ export function MultiregionStrategyPage() {
     setError(null)
   }
 
-  const toggleMoveItem = (itemId: string) => {
-    setWhatIfSelection((prev) => {
-      const selected = new Set(prev.selectedItemIds)
-      if (selected.has(itemId)) selected.delete(itemId)
-      else selected.add(itemId)
-      return { ...prev, selectedItemIds: [...selected] }
-    })
-  }
-
-  const toggleIgnoreDependency = (itemId: string) => {
-    setWhatIfSelection((prev) => {
-      const ignored = new Set(prev.ignoredDependencyIds)
-      if (ignored.has(itemId)) ignored.delete(itemId)
-      else ignored.add(itemId)
-      return { ...prev, ignoredDependencyIds: [...ignored] }
-    })
-  }
-
-  const selectAllInGroup = (itemIds: string[], select: boolean) => {
-    setWhatIfSelection((prev) => {
-      const selected = new Set(prev.selectedItemIds)
-      for (const id of itemIds) {
-        if (select) selected.add(id)
-        else selected.delete(id)
-      }
-      return { ...prev, selectedItemIds: [...selected] }
-    })
-  }
-
-  const addExpansionResource = (groupKey: string, defaultResourceType: string) => {
-    const draft = expansionDraft[groupKey] || {
-      resourceType: defaultResourceType,
-      sku: '',
-      size: '',
-      count: '1',
-    }
-    const resourceType = (draft.resourceType || defaultResourceType).trim()
-    const sku = draft.sku.trim()
-    const count = Math.max(1, Math.floor(Number(draft.count) || 0))
-    if (!sku) {
-      setError(`Enter a SKU to add an expansion resource for ${resourceType || groupKey}.`)
+  const addWhatIfWorkloadItem = () => {
+    const resourceType = whatIfDraftType.trim()
+    const sku = whatIfDraftSku.trim()
+    const count = Math.max(1, Math.floor(Number(whatIfDraftCount) || 0))
+    if (!resourceType) {
+      setError('Select a resource type.')
       return
     }
-    const add: WhatIfExpansionAdd = {
-      id: `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      resourceType: resourceType || 'Virtual Machine',
-      sku,
-      size: draft.size.trim() || undefined,
-      count,
-      groupKey,
+    if (!sku) {
+      setError('Select a SKU / series.')
+      return
     }
-    setWhatIfSelection((prev) => ({
-      ...prev,
-      expansionAdds: [...prev.expansionAdds, add],
-    }))
-    setExpansionDraft((prev) => ({
-      ...prev,
-      [groupKey]: { resourceType: resourceType || defaultResourceType, sku: '', size: '', count: '1' },
-    }))
+    const add: WhatIfWorkloadItem = {
+      id: `wl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      resourceType,
+      sku,
+      count,
+    }
+    setWhatIfSelection((prev) => {
+      const workloadItems = [...normalizeWhatIfWorkloadItems(prev), add]
+      return { ...prev, workloadItems, expansionAdds: workloadItems }
+    })
+    setWhatIfDraftCount('1')
     setError(null)
   }
 
-  const removeExpansionResource = (id: string) => {
-    setWhatIfSelection((prev) => ({
-      ...prev,
-      expansionAdds: prev.expansionAdds.filter((row) => row.id !== id),
-    }))
+  const removeWhatIfWorkloadItem = (id: string) => {
+    setWhatIfSelection((prev) => {
+      const workloadItems = normalizeWhatIfWorkloadItems(prev).filter((row) => row.id !== id)
+      return { ...prev, workloadItems, expansionAdds: workloadItems }
+    })
   }
 
   const onSaveScenario = async () => {
@@ -526,9 +516,11 @@ export function MultiregionStrategyPage() {
     }
     const name = scenarioName.trim() || `Strategy ${formatDate(new Date().toISOString())}`
     const safeLinkedIds = pruneLinkedEvaluationIds(linkedEvaluationIds, linkableEvaluations)
+    const workloadItemsToSave = plannedWorkloadItems
     const selectionToSave: WhatIfSelection = {
-      ...whatIfSelection,
       targetRegionId: whatIfTarget?.id || whatIfSelection.targetRegionId,
+      workloadItems: workloadItemsToSave,
+      expansionAdds: workloadItemsToSave,
     }
     setSaving(true)
     setError(null)
@@ -605,7 +597,7 @@ export function MultiregionStrategyPage() {
           {
             field: 'What-if',
             value: whatIfPlan
-              ? `Move ${whatIfPlan.moveItemCount} + deps ${whatIfPlan.dependencyItemCount} + expansion ${whatIfPlan.expansionItemCount} → ${whatIfPlan.projectedItemCount} resources / ${whatIfPlan.projectedVcpu} vCPU in ${whatIfTarget?.label || 'n/a'}`
+              ? `${whatIfPlan.workloadItemCount} service line(s) → ${whatIfPlan.projectedItemCount} resources / ${whatIfPlan.projectedVcpu} vCPU in ${whatIfTarget?.label || 'n/a'}`
               : 'n/a',
           },
           {
@@ -678,15 +670,12 @@ export function MultiregionStrategyPage() {
         rows: whatIfPlan
           ? [
               { field: 'Target region', value: whatIfTarget?.label || '' },
-              { field: 'Selected to move', value: whatIfPlan.moveItemCount },
-              { field: 'Dependencies included', value: whatIfPlan.dependencyItemCount },
-              { field: 'Dependencies ignored', value: whatIfPlan.ignoredDependencyCount },
-              { field: 'Expansion adds', value: whatIfPlan.expansionItemCount },
+              { field: 'Service lines', value: whatIfPlan.workloadItemCount },
               { field: 'Projected resources', value: whatIfPlan.projectedItemCount },
               { field: 'Projected vCPU', value: whatIfPlan.projectedVcpu },
               ...whatIfPlan.byServiceCategory.map((c) => ({
                 field: `Category: ${c.resourceType}`,
-                value: `move ${c.moveCount} · deps ${c.dependencyCount} · expansion ${c.expansionCount} · total ${c.projectedCount}`,
+                value: `${c.projectedCount} resources · ${c.projectedVcpu} vCPU`,
               })),
               ...whatIfPlan.bySkuFamily.map((f) => ({
                 field: `SKU family: ${f.family}`,
@@ -760,7 +749,7 @@ export function MultiregionStrategyPage() {
           },
           {
             owner: 'CSA + customer',
-            action: `Validate what-if move set (${whatIfPlan?.moveItemCount || 0} selected, ${whatIfPlan?.dependencyItemCount || 0} deps) into ${whatIfTarget?.label || 'target region'}.`,
+            action: `Validate planned workload (${whatIfPlan?.projectedItemCount || 0} resources / ${whatIfPlan?.projectedVcpu || 0} vCPU) in ${whatIfTarget?.label || 'target region'}.`,
           },
           {
             owner: 'CSA + customer',
@@ -791,8 +780,8 @@ export function MultiregionStrategyPage() {
         <div>
           <h3>Multiregion strategy</h3>
           <p>
-            Plan multiregion paths from live inventory: footprint, dependencies, selective
-            what-if moves with dependencies and expansion adds, and saved scenarios.
+            Plan multiregion paths from live inventory: footprint, dependencies, target-region
+            what-if workloads built from service types and SKU series, and saved scenarios.
           </p>
         </div>
         <div className="strategy-hero-actions">
@@ -1044,353 +1033,200 @@ export function MultiregionStrategyPage() {
           <div>
             <h4>What-if expansion planner</h4>
             <p>
-              Inventory from the selected workload
-              {selectedGroup ? ` (“${selectedGroup.label}”)` : ''}. Group by resource group or
-              service category, checkbox the resources to move, review dependencies, and add
-              expansion capacity.
+              Build a new workload for the target region using available service types and SKU /
+              series families (same catalogs as Constraints). Add as many service lines as needed.
             </p>
           </div>
-          <div className="strategy-whatif-header-controls">
-            <label className="field strategy-whatif-target">
-              <span>Target region</span>
-              <select
-                value={whatIfTarget?.id || ''}
-                onChange={(e) =>
-                  setWhatIfSelection((prev) => ({ ...prev, targetRegionId: e.target.value }))
-                }
-                disabled={candidateRegions.length === 0}
-              >
-                {candidateRegions.length === 0 ? (
-                  <option value="">Select candidate regions first</option>
-                ) : (
-                  candidateRegions.map((region) => (
-                    <option key={region.id} value={region.id}>
-                      {region.label}
-                    </option>
-                  ))
-                )}
-              </select>
-            </label>
-            <label className="field strategy-whatif-target">
-              <span>Group inventory by</span>
-              <select
-                value={whatIfGroupBy}
-                onChange={(e) =>
-                  setWhatIfSelection((prev) => ({
-                    ...prev,
-                    inventoryGroupBy: e.target.value as WhatIfInventoryGroupBy,
-                  }))
-                }
-              >
-                <option value="resourceGroup">Resource group</option>
-                <option value="serviceCategory">Service category</option>
-              </select>
-            </label>
-            <label className="field strategy-whatif-target">
-              <span>Resource group filter</span>
-              <select
-                value={whatIfSelection.focusedResourceGroup || ''}
-                onChange={(e) =>
-                  setWhatIfSelection((prev) => ({
-                    ...prev,
-                    focusedResourceGroup: e.target.value || null,
-                  }))
-                }
-              >
-                <option value="">All RGs in workload ({workloadItems.length})</option>
-                {resourceGroupOptions.map((rg) => (
-                  <option key={rg} value={rg}>
-                    {rg}
+          <label className="field strategy-whatif-target">
+            <span>Target region</span>
+            <select
+              value={whatIfTarget?.id || ''}
+              onChange={(e) =>
+                setWhatIfSelection((prev) => ({ ...prev, targetRegionId: e.target.value }))
+              }
+              disabled={candidateRegions.length === 0}
+            >
+              {candidateRegions.length === 0 ? (
+                <option value="">Select candidate regions first</option>
+              ) : (
+                candidateRegions.map((region) => (
+                  <option key={region.id} value={region.id}>
+                    {region.label}
                   </option>
-                ))}
-              </select>
-            </label>
-          </div>
+                ))
+              )}
+            </select>
+          </label>
         </div>
         <div className="panel-body stack">
-          {!customerId || workloadItems.length === 0 ? (
-            <div className="empty">
-              Select a customer and a workload group above to load inventory for what-if moves.
-            </div>
-          ) : whatIfInventoryItems.length === 0 ? (
-            <div className="empty">No inventory in the selected resource group filter.</div>
+          {!customerId ? (
+            <div className="empty">Select a customer to start building a target-region workload.</div>
           ) : (
             <>
               <div className="strategy-stat-row">
                 <div className="strategy-stat-card">
-                  <span className="muted">Inventory in view</span>
-                  <strong>{whatIfInventoryItems.length}</strong>
+                  <span className="muted">Service lines</span>
+                  <strong>{whatIfPlan?.workloadItemCount || 0}</strong>
                 </div>
                 <div className="strategy-stat-card">
-                  <span className="muted">Selected to move</span>
-                  <strong>{whatIfPlan?.moveItemCount || 0}</strong>
-                </div>
-                <div className="strategy-stat-card">
-                  <span className="muted">Dependencies included</span>
-                  <strong>
-                    {whatIfPlan?.dependencyItemCount || 0}
-                    {(whatIfPlan?.ignoredDependencyCount || 0) > 0 ? (
-                      <span className="muted"> · {whatIfPlan?.ignoredDependencyCount} ignored</span>
-                    ) : null}
-                  </strong>
-                </div>
-                <div className="strategy-stat-card">
-                  <span className="muted">Expansion adds</span>
-                  <strong>{whatIfPlan?.expansionItemCount || 0}</strong>
+                  <span className="muted">Projected resources</span>
+                  <strong>{whatIfPlan?.projectedItemCount || 0}</strong>
                 </div>
                 <div className="strategy-stat-card">
                   <span className="muted">Projected vCPU</span>
                   <strong>{whatIfPlan?.projectedVcpu || 0}</strong>
                 </div>
+                <div className="strategy-stat-card">
+                  <span className="muted">Target</span>
+                  <strong>{whatIfTarget?.label || '—'}</strong>
+                </div>
               </div>
 
-              {suggestedDependencies.length > 0 ? (
-                <div className="strategy-whatif-deps">
-                  <h6>Dependencies from selection</h6>
-                  <p className="muted">
-                    Included automatically with selected moves. Ignore any dependency that should
-                    not move to {whatIfTarget?.label || 'the target region'}.
-                  </p>
-                  <ul className="strategy-whatif-dep-list">
-                    {suggestedDependencies.map((item) => {
-                      const ignored = whatIfSelection.ignoredDependencyIds.includes(item.id)
-                      return (
-                        <li key={item.id} className={ignored ? 'is-ignored' : ''}>
-                          <label className="strategy-whatif-check">
-                            <input
-                              type="checkbox"
-                              checked={!ignored}
-                              onChange={() => toggleIgnoreDependency(item.id)}
-                            />
-                            <span>
-                              <strong>{item.name}</strong>
-                              <span className="muted">
-                                {' '}
-                                · {item.resourceType} · {item.sku}
-                                {item.resourceGroup ? ` · ${item.resourceGroup}` : ''}
-                              </span>
-                            </span>
-                          </label>
-                          <span className="muted strategy-whatif-dep-note">
-                            {dependencyNoteForType(item.resourceType)}
+              <div className="strategy-whatif-builder">
+                <h6>Add service to workload</h6>
+                <div className="strategy-whatif-add-grid has-type">
+                  <label className="field">
+                    <span>Resource type</span>
+                    <select
+                      value={whatIfDraftType}
+                      onChange={(e) => setWhatIfDraftType(e.target.value)}
+                      disabled={loadingWhatIfTypes}
+                    >
+                      {whatIfResourceTypes.map((type) => (
+                        <option key={type} value={type}>
+                          {type}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>SKU / series (family)</span>
+                    <select
+                      value={whatIfDraftSku}
+                      onChange={(e) => setWhatIfDraftSku(e.target.value)}
+                      disabled={loadingWhatIfSkus || whatIfSkuOptions.length === 0}
+                    >
+                      {whatIfSkuOptions.length === 0 ? (
+                        <option value="">
+                          {loadingWhatIfSkus
+                            ? 'Loading families…'
+                            : 'No families available for this type'}
+                        </option>
+                      ) : (
+                        whatIfSkuOptions.map((option) => (
+                          <option key={option.sku} value={option.sku}>
+                            {option.sku}
+                            {option.resourceCount > 0
+                              ? ` (${option.resourceCount} resource${
+                                  option.resourceCount === 1 ? '' : 's'
+                                })`
+                              : ' (suggested)'}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Count</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={whatIfDraftCount}
+                      onChange={(e) => setWhatIfDraftCount(e.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={addWhatIfWorkloadItem}
+                    disabled={!whatIfDraftSku || !whatIfTarget}
+                  >
+                    <Plus size={16} /> Add to workload
+                  </button>
+                </div>
+                <p className="muted" style={{ margin: '0.45rem 0 0' }}>
+                  Families come from inventory when available, with suggested series for Azure SQL,
+                  MySQL, PostgreSQL, and Container Apps — same as Constraints.
+                </p>
+              </div>
+
+              <div className="strategy-whatif-workload">
+                <h6>Planned workload in {whatIfTarget?.label || 'target region'}</h6>
+                {plannedWorkloadItems.length === 0 ? (
+                  <div className="empty">
+                    No services added yet. Choose a resource type and SKU / series, then add them to
+                    the scenario.
+                  </div>
+                ) : (
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Resource type</th>
+                          <th>SKU / series</th>
+                          <th>Count</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {plannedWorkloadItems.map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.resourceType}</td>
+                            <td>
+                              <strong>{row.sku}</strong>
+                              {row.size ? <span className="muted"> / {row.size}</span> : null}
+                            </td>
+                            <td>{row.count}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn btn-ghost"
+                                onClick={() => removeWhatIfWorkloadItem(row.id)}
+                              >
+                                <Trash2 size={14} /> Remove
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {whatIfPlan && whatIfPlan.byServiceCategory.length > 0 ? (
+                <div className="strategy-detail-cols">
+                  <div>
+                    <h6>By service category</h6>
+                    <ul className="strategy-plain-list">
+                      {whatIfPlan.byServiceCategory.map((c) => (
+                        <li key={c.resourceType}>
+                          {c.resourceType}{' '}
+                          <span className="muted">
+                            {c.projectedCount} · {c.projectedVcpu} vCPU
                           </span>
                         </li>
-                      )
-                    })}
-                  </ul>
-                </div>
-              ) : null}
-
-              <div className="strategy-whatif-categories">
-                {whatIfInventoryGroups.map((group) => {
-                  const selectedInGroup = group.items.filter((item) =>
-                    whatIfSelection.selectedItemIds.includes(item.id),
-                  ).length
-                  const draft = expansionDraft[group.key] || {
-                    resourceType: group.defaultResourceType,
-                    sku: '',
-                    size: '',
-                    count: '1',
-                  }
-                  const adds = whatIfSelection.expansionAdds.filter(
-                    (row) =>
-                      row.groupKey === group.key ||
-                      (!row.groupKey &&
-                        (whatIfGroupBy === 'serviceCategory'
-                          ? row.resourceType === group.key
-                          : false)),
-                  )
-                  return (
-                    <div key={group.key} className="strategy-whatif-category">
-                      <div className="strategy-whatif-category-head">
-                        <div>
-                          <strong>
-                            {whatIfGroupBy === 'resourceGroup' ? 'RG · ' : ''}
-                            {group.label}
-                          </strong>
-                          <div className="muted">
-                            {selectedInGroup}/{group.count} selected · ~{group.vcpuEstimate} vCPU
-                            {whatIfGroupBy === 'resourceGroup' && group.resourceTypes.length > 0
-                              ? ` · ${group.resourceTypes.length} service type${
-                                  group.resourceTypes.length === 1 ? '' : 's'
-                                }`
-                              : ''}
-                          </div>
-                        </div>
-                        <div className="strategy-whatif-category-actions">
-                          <button
-                            type="button"
-                            className="btn btn-ghost"
-                            onClick={() =>
-                              selectAllInGroup(
-                                group.items.map((item) => item.id),
-                                true,
-                              )
-                            }
-                          >
-                            Select all
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-ghost"
-                            onClick={() =>
-                              selectAllInGroup(
-                                group.items.map((item) => item.id),
-                                false,
-                              )
-                            }
-                          >
-                            Clear
-                          </button>
-                        </div>
-                      </div>
-
-                      <ul className="strategy-whatif-resource-list">
-                        {group.items.map((item) => (
-                          <li key={item.id}>
-                            <label className="strategy-whatif-check">
-                              <input
-                                type="checkbox"
-                                checked={whatIfSelection.selectedItemIds.includes(item.id)}
-                                onChange={() => toggleMoveItem(item.id)}
-                              />
-                              <span>
-                                <strong>{item.name}</strong>
-                                <span className="muted">
-                                  {' '}
-                                  · {item.resourceType} · {item.sku}
-                                  {item.size ? ` / ${item.size}` : ''} · {prettyRegion(item.region)}
-                                  {whatIfGroupBy === 'serviceCategory' && item.resourceGroup
-                                    ? ` · ${item.resourceGroup}`
-                                    : ''}
-                                </span>
-                              </span>
-                            </label>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <h6>Quota watch ({whatIfTarget?.label || 'target'})</h6>
+                    {whatIfPlan.quotaWatch.length === 0 ? (
+                      <p className="muted">No scoped quotas for this region.</p>
+                    ) : (
+                      <ul className="strategy-plain-list">
+                        {whatIfPlan.quotaWatch.map((q) => (
+                          <li key={`${q.region}-${q.name}`}>
+                            {q.name}{' '}
+                            <span className="muted">
+                              {q.usage}/{q.limit} ({q.usagePct}%) +{q.projectedExtra}
+                            </span>
+                            <div className="muted">{q.note}</div>
                           </li>
                         ))}
                       </ul>
-
-                      <div className="strategy-whatif-expansion">
-                        <h6>Expansion adds</h6>
-                        {adds.length > 0 ? (
-                          <ul className="strategy-plain-list">
-                            {adds.map((row) => (
-                              <li key={row.id} className="strategy-whatif-expansion-row">
-                                <span>
-                                  {row.count}× {row.resourceType} · {row.sku}
-                                  {row.size ? ` / ${row.size}` : ''}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="btn btn-ghost"
-                                  onClick={() => removeExpansionResource(row.id)}
-                                >
-                                  <Trash2 size={14} /> Remove
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p className="muted">No expansion capacity added for this group yet.</p>
-                        )}
-                        <div
-                          className={`strategy-whatif-add-grid${
-                            whatIfGroupBy === 'resourceGroup' ? ' has-type' : ''
-                          }`}
-                        >
-                          {whatIfGroupBy === 'resourceGroup' ? (
-                            <label className="field">
-                              <span>Service type</span>
-                              <select
-                                value={draft.resourceType || group.defaultResourceType}
-                                onChange={(e) =>
-                                  setExpansionDraft((prev) => ({
-                                    ...prev,
-                                    [group.key]: { ...draft, resourceType: e.target.value },
-                                  }))
-                                }
-                              >
-                                {(group.resourceTypes.length
-                                  ? group.resourceTypes
-                                  : [group.defaultResourceType]
-                                ).map((type) => (
-                                  <option key={type} value={type}>
-                                    {type}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                          ) : null}
-                          <label className="field">
-                            <span>SKU</span>
-                            <input
-                              value={draft.sku}
-                              onChange={(e) =>
-                                setExpansionDraft((prev) => ({
-                                  ...prev,
-                                  [group.key]: { ...draft, sku: e.target.value },
-                                }))
-                              }
-                              placeholder="e.g. Standard_D4s_v5"
-                            />
-                          </label>
-                          <label className="field">
-                            <span>Size (optional)</span>
-                            <input
-                              value={draft.size}
-                              onChange={(e) =>
-                                setExpansionDraft((prev) => ({
-                                  ...prev,
-                                  [group.key]: { ...draft, size: e.target.value },
-                                }))
-                              }
-                              placeholder="Optional"
-                            />
-                          </label>
-                          <label className="field">
-                            <span>Count</span>
-                            <input
-                              type="number"
-                              min={1}
-                              value={draft.count}
-                              onChange={(e) =>
-                                setExpansionDraft((prev) => ({
-                                  ...prev,
-                                  [group.key]: { ...draft, count: e.target.value },
-                                }))
-                              }
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            className="btn btn-secondary"
-                            onClick={() =>
-                              addExpansionResource(group.key, group.defaultResourceType)
-                            }
-                          >
-                            <Plus size={16} /> Add to scenario
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-
-              {whatIfPlan && whatIfPlan.quotaWatch.length > 0 ? (
-                <div>
-                  <h6>Quota watch ({whatIfTarget?.label || 'target'})</h6>
-                  <ul className="strategy-plain-list">
-                    {whatIfPlan.quotaWatch.map((q) => (
-                      <li key={`${q.region}-${q.name}`}>
-                        {q.name}{' '}
-                        <span className="muted">
-                          {q.usage}/{q.limit} ({q.usagePct}%) +{q.projectedExtra}
-                        </span>
-                        <div className="muted">{q.note}</div>
-                      </li>
-                    ))}
-                  </ul>
+                    )}
+                  </div>
                 </div>
               ) : null}
             </>

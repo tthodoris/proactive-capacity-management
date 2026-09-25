@@ -79,49 +79,42 @@ export type StrategyEvalLaunchState = {
   autoEvaluate?: boolean
 }
 
-export interface WhatIfExpansionAdd {
+export interface WhatIfWorkloadItem {
   id: string
   resourceType: string
   sku: string
   size?: string
   count: number
-  /** Optional planner group key (RG name or service category) that created this add. */
-  groupKey?: string
 }
 
-export type WhatIfInventoryGroupBy = 'serviceCategory' | 'resourceGroup'
+/** @deprecated use WhatIfWorkloadItem */
+export type WhatIfExpansionAdd = WhatIfWorkloadItem
 
 export interface WhatIfSelection {
   targetRegionId: string
-  selectedItemIds: string[]
-  ignoredDependencyIds: string[]
-  expansionAdds: WhatIfExpansionAdd[]
-  /** How inventory is grouped in the what-if planner. */
-  inventoryGroupBy?: WhatIfInventoryGroupBy
-  /** Optional focus on a single resource group within the selected workload. */
+  /** Planned new workload rows for the target region. */
+  workloadItems: WhatIfWorkloadItem[]
+  /** @deprecated legacy alias persisted as workloadItems */
+  expansionAdds?: WhatIfWorkloadItem[]
+  /** @deprecated inventory move selection removed */
+  selectedItemIds?: string[]
+  ignoredDependencyIds?: string[]
+  inventoryGroupBy?: 'serviceCategory' | 'resourceGroup'
   focusedResourceGroup?: string | null
 }
 
 export interface WhatIfPlan {
   targetRegionId: string
   targetRegionLabel: string
-  moveItemCount: number
-  dependencyItemCount: number
-  ignoredDependencyCount: number
-  expansionItemCount: number
+  workloadItemCount: number
   projectedItemCount: number
   projectedVcpu: number
-  movedItems: InventoryItem[]
-  dependencyItems: InventoryItem[]
   byServiceCategory: Array<{
     resourceType: string
-    moveCount: number
-    dependencyCount: number
-    expansionCount: number
     projectedCount: number
     projectedVcpu: number
   }>
-  bySkuFamily: Array<{ family: string; sourceCount: number; projectedCount: number }>
+  bySkuFamily: Array<{ family: string; projectedCount: number }>
   quotaWatch: Array<{
     region: string
     name: string
@@ -705,7 +698,7 @@ export type WhatIfInventoryGroup = {
 
 export function groupInventoryForWhatIf(
   items: InventoryItem[],
-  mode: WhatIfInventoryGroupBy,
+  mode: 'serviceCategory' | 'resourceGroup',
 ): WhatIfInventoryGroup[] {
   const map = new Map<string, InventoryItem[]>()
   for (const item of items) {
@@ -751,100 +744,64 @@ export function groupInventoryForWhatIf(
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
 }
 
+export function normalizeWhatIfWorkloadItems(selection: WhatIfSelection | null | undefined) {
+  const fromNew = Array.isArray(selection?.workloadItems) ? selection!.workloadItems : []
+  if (fromNew.length > 0) return fromNew
+  return Array.isArray(selection?.expansionAdds) ? selection!.expansionAdds! : []
+}
+
 export function emptyWhatIfSelection(targetRegionId = ''): WhatIfSelection {
   return {
     targetRegionId,
-    selectedItemIds: [],
-    ignoredDependencyIds: [],
+    workloadItems: [],
     expansionAdds: [],
-    inventoryGroupBy: 'resourceGroup',
-    focusedResourceGroup: null,
   }
 }
 
 export function buildWhatIfPlan(input: {
-  workloadItems: InventoryItem[]
   selection: WhatIfSelection
   customerId: string
   quotas: Quota[]
   targetRegionId: string
   targetRegionLabel: string
 }): WhatIfPlan {
-  const selectedIds = new Set(input.selection.selectedItemIds || [])
-  const ignoredIds = new Set(input.selection.ignoredDependencyIds || [])
-  const movedItems = input.workloadItems.filter((item) => selectedIds.has(item.id))
-  const suggestedDeps = suggestDependencyItems(movedItems, input.workloadItems)
-  const dependencyItems = suggestedDeps.filter((item) => !ignoredIds.has(item.id))
-  const ignoredDependencyCount = suggestedDeps.filter((item) => ignoredIds.has(item.id)).length
-
-  const expansionAdds = (input.selection.expansionAdds || []).filter(
+  const workloadAdds = normalizeWhatIfWorkloadItems(input.selection).filter(
     (row) => row.resourceType && row.sku && Number(row.count) > 0,
   )
 
-  const includedInventory = [...movedItems, ...dependencyItems]
   let projectedVcpu = 0
+  let projectedItemCount = 0
   const familyCounts = new Map<string, number>()
-  const categoryMove = new Map<string, number>()
-  const categoryDep = new Map<string, number>()
-  const categoryExp = new Map<string, number>()
+  const categoryCounts = new Map<string, number>()
   const categoryVcpu = new Map<string, number>()
 
-  for (const item of includedInventory) {
-    const vcpu = estimateVcpuFromSku(item.sku, item.size)
-    projectedVcpu += vcpu
-    const family = toSkuFamily(item.sku, item.size) || item.sku
-    familyCounts.set(family, (familyCounts.get(family) || 0) + 1)
-    const bucket = selectedIds.has(item.id) ? categoryMove : categoryDep
-    bucket.set(item.resourceType, (bucket.get(item.resourceType) || 0) + 1)
-    categoryVcpu.set(item.resourceType, (categoryVcpu.get(item.resourceType) || 0) + vcpu)
-  }
-
-  let expansionItemCount = 0
-  for (const add of expansionAdds) {
+  for (const add of workloadAdds) {
     const count = Math.max(1, Math.floor(Number(add.count) || 0))
-    expansionItemCount += count
+    projectedItemCount += count
     const vcpuEach = estimateVcpuFromSku(add.sku, add.size)
     projectedVcpu += vcpuEach * count
     const family = toSkuFamily(add.sku, add.size) || add.sku
     familyCounts.set(family, (familyCounts.get(family) || 0) + count)
-    categoryExp.set(add.resourceType, (categoryExp.get(add.resourceType) || 0) + count)
+    categoryCounts.set(add.resourceType, (categoryCounts.get(add.resourceType) || 0) + count)
     categoryVcpu.set(
       add.resourceType,
       (categoryVcpu.get(add.resourceType) || 0) + vcpuEach * count,
     )
   }
 
-  const allTypes = new Set([
-    ...categoryMove.keys(),
-    ...categoryDep.keys(),
-    ...categoryExp.keys(),
-  ])
-  const byServiceCategory = [...allTypes]
-    .map((resourceType) => {
-      const moveCount = categoryMove.get(resourceType) || 0
-      const dependencyCount = categoryDep.get(resourceType) || 0
-      const expansionCount = categoryExp.get(resourceType) || 0
-      return {
-        resourceType,
-        moveCount,
-        dependencyCount,
-        expansionCount,
-        projectedCount: moveCount + dependencyCount + expansionCount,
-        projectedVcpu: categoryVcpu.get(resourceType) || 0,
-      }
-    })
+  const byServiceCategory = [...categoryCounts.entries()]
+    .map(([resourceType, projectedCount]) => ({
+      resourceType,
+      projectedCount,
+      projectedVcpu: categoryVcpu.get(resourceType) || 0,
+    }))
     .sort((a, b) => b.projectedCount - a.projectedCount || a.resourceType.localeCompare(b.resourceType))
 
   const bySkuFamily = [...familyCounts.entries()]
-    .map(([family, projectedCount]) => ({
-      family,
-      sourceCount: projectedCount,
-      projectedCount,
-    }))
+    .map(([family, projectedCount]) => ({ family, projectedCount }))
     .sort((a, b) => b.projectedCount - a.projectedCount)
     .slice(0, 12)
 
-  const projectedItemCount = includedInventory.length + expansionItemCount
   const want = normalizeRegionKey(input.targetRegionId)
   const quotaWatch = input.quotas
     .filter((q) => {
@@ -884,14 +841,9 @@ export function buildWhatIfPlan(input: {
   return {
     targetRegionId: input.targetRegionId,
     targetRegionLabel: input.targetRegionLabel,
-    moveItemCount: movedItems.length,
-    dependencyItemCount: dependencyItems.length,
-    ignoredDependencyCount,
-    expansionItemCount,
+    workloadItemCount: workloadAdds.length,
     projectedItemCount,
     projectedVcpu,
-    movedItems,
-    dependencyItems,
     byServiceCategory,
     bySkuFamily,
     quotaWatch,
