@@ -26,6 +26,7 @@ import { CostManagementPage } from './pages/CostManagementPage'
 import { ForecastAgentPage } from './pages/ForecastAgentPage'
 import { ReportsPage } from './pages/ReportsPage'
 import { RewardsPage } from './pages/RewardsPage'
+import { UatsPage } from './pages/UatsPage'
 
 export default function App() {
   return (
@@ -55,6 +56,7 @@ export default function App() {
                 <Route path="region-evaluation/history" element={<RegionEvaluationsPage />} />
                 <Route path="region-evaluation/cost-analysis" element={<RegionCostAnalysisPage />} />
                 <Route path="forecast" element={<ForecastAgentPage />} />
+                <Route path="uats" element={<UatsPage />} />
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="alerts" element={<AlertsPage />} />
                 <Route path="rewards" element={<RewardsPage />} />

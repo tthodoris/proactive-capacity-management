@@ -56,6 +56,7 @@ import {
   listCapacityModels,
   resetCapacitySession,
 } from './agentChat.mjs'
+import { adoConfig, fetchAdoWorkItem } from './adoUat.mjs'
 
 const app = express()
 const PORT = Number(process.env.PCM_API_PORT || 8787)
@@ -3667,6 +3668,47 @@ app.get('/api/agent/chats/:id', async (req, res) => {
     res.json(chat)
   } catch (err) {
     sendRouteError(res, 500, err, 'Failed to load agent chat')
+  }
+})
+
+app.get('/api/uat/config', (_req, res) => {
+  const config = adoConfig()
+  res.json({
+    organization: config.organization,
+    defaultWorkItemId: config.defaultWorkItemId,
+    authMode: config.hasPat ? 'pat' : 'azure_cli',
+    testWorkItemUrl: `https://dev.azure.com/${config.organization}/_apis/wit/workitems/${config.defaultWorkItemId}?api-version=7.1`,
+  })
+})
+
+app.get('/api/uat/workitems/:id', async (req, res) => {
+  try {
+    const workItem = await fetchAdoWorkItem(req.params.id)
+    res.json(workItem)
+  } catch (err) {
+    const status = Number(err?.status) || 500
+    sendRouteError(
+      res,
+      status >= 400 && status < 600 ? status : 500,
+      err,
+      err?.hint || 'Failed to load Azure DevOps work item',
+    )
+  }
+})
+
+app.get('/api/uat/workitems', async (_req, res) => {
+  try {
+    const { defaultWorkItemId } = adoConfig()
+    const workItem = await fetchAdoWorkItem(defaultWorkItemId)
+    res.json(workItem)
+  } catch (err) {
+    const status = Number(err?.status) || 500
+    sendRouteError(
+      res,
+      status >= 400 && status < 600 ? status : 500,
+      err,
+      err?.hint || 'Failed to load Azure DevOps work item',
+    )
   }
 })
 

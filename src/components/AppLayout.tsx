@@ -17,6 +17,7 @@ import {
   Settings2,
   ShieldAlert,
   Trophy,
+  ClipboardList,
   Users,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -73,6 +74,7 @@ const nav: NavItem[] = [
     ],
   },
   { to: '/forecast', label: 'Capacity forecast', icon: MessageSquareText },
+  { to: '/uats', label: 'UATs', icon: ClipboardList },
   { to: '/reports', label: 'Reports', icon: BarChart3 },
   { to: '/alerts', label: 'Alerts & Engagement', icon: Bell },
   { to: '/rewards', label: 'Rewards', icon: Trophy },
@@ -151,6 +153,10 @@ const titles: Record<string, { title: string; subtitle: string }> = {
     title: 'Capacity forecasting agent',
     subtitle:
       'Ask natural-language questions about customer capacity outlook using MSX, Stratus, and CXObserve.',
+  },
+  '/uats': {
+    title: 'UATs',
+    subtitle: 'Unified Action Tracker work items from Azure DevOps.',
   },
   '/reports': {
     title: 'Reports',
