@@ -768,109 +768,131 @@ let cachedFieldMap = null
 const LIST_FIELD_DEFS = [
   {
     key: 'milestoneReason',
-    candidates: ['MilestoneReason', 'Milestone Reason'],
+    candidates: ['MilestoneReason', 'Milestone Reason', 'Custom.MilestoneReason'],
     env: 'ADO_FIELD_MILESTONE_REASON',
     fallback: 'Custom.MilestoneReason',
   },
   {
     key: 'account',
-    candidates: ['Account', 'Customer Account', 'Customer'],
+    candidates: ['Account', 'Customer Account', 'Custom.Account'],
     env: 'ADO_FIELD_ACCOUNT',
     fallback: 'Custom.Account',
   },
   {
     key: 'eou',
-    candidates: ['EOU', 'Eou', 'End of Use'],
+    candidates: ['EOU', 'Eou', 'End of Use', 'Custom.EOU'],
     env: 'ADO_FIELD_EOU',
     fallback: 'Custom.EOU',
   },
   {
     key: 'areaField',
-    candidates: ['AreaField', 'Area Field'],
+    candidates: ['AreaField', 'Area Field', 'Custom.AreaField'],
     env: 'ADO_FIELD_AREA',
-    fallback: 'System.AreaPath',
+    fallback: 'Custom.AreaField',
   },
   {
     key: 'requestors',
-    candidates: ['Requestors', 'Requestor', 'Requested By'],
+    candidates: ['Requestors', 'Requestor', 'Requested By', 'Custom.Requestors'],
     env: 'ADO_FIELD_REQUESTORS',
     fallback: 'Custom.Requestors',
   },
   {
     key: 'tpid',
-    candidates: ['TPID', 'TP Id', 'TPID'],
+    candidates: ['TPID', 'TP Id', 'Custom.TPID'],
     env: 'ADO_FIELD_TPID',
     fallback: 'Custom.TPID',
   },
   {
     key: 'noNaiSku1',
-    candidates: ['NoNAI_SKU_1', 'NoNAI SKU 1', 'NoNAI_SKU1'],
+    candidates: ['NoNAI_SKU_1', 'NoNAI SKU 1', 'Custom.NoNAI_SKU_1'],
     env: 'ADO_FIELD_NONAI_SKU_1',
     fallback: 'Custom.NoNAI_SKU_1',
   },
   {
     key: 'noNaiUom1',
-    candidates: ['NoNAI_UOM_1', 'NoNAI UOM 1', 'NoNAI_UOM1'],
+    candidates: ['NoNAI_UOM_1', 'NoNAI UOM 1', 'Custom.NoNAI_UOM_1'],
     env: 'ADO_FIELD_NONAI_UOM_1',
     fallback: 'Custom.NoNAI_UOM_1',
   },
   {
     key: 'noNaiQuantity1',
-    candidates: ['NoNAI_Quantity_1', 'NoNAI Quantity 1', 'NoNAI_Quantity1'],
+    candidates: ['NoNAI_Quantity_1', 'NoNAI Quantity 1', 'Custom.NoNAI_Quantity_1'],
     env: 'ADO_FIELD_NONAI_QUANTITY_1',
     fallback: 'Custom.NoNAI_Quantity_1',
   },
   {
     key: 'estMonthlyUsages',
-    candidates: ['Est Monthly Usages', 'EstMonthlyUsages', 'Estimated Monthly Usages'],
+    candidates: [
+      'Est Monthly Usages',
+      'EstMonthlyUsages',
+      'Estimated Monthly Usages',
+      'Custom.EstMonthlyUsages',
+      'Custom.Est_Monthly_Usages',
+    ],
     env: 'ADO_FIELD_EST_MONTHLY_USAGES',
     fallback: 'Custom.EstMonthlyUsages',
   },
   {
     key: 'requestedDate',
-    candidates: ['Requested Date', 'RequestedDate', 'Request Date'],
+    candidates: ['Requested Date', 'RequestedDate', 'Request Date', 'Custom.RequestedDate'],
     env: 'ADO_FIELD_REQUESTED_DATE',
     fallback: 'Custom.RequestedDate',
   },
   {
     key: 'opportunityId',
-    candidates: ['Opportunity_ID', 'Opportunity ID', 'OpportunityId'],
+    candidates: ['Opportunity_ID', 'Opportunity ID', 'OpportunityId', 'Custom.Opportunity_ID'],
     env: 'ADO_FIELD_OPPORTUNITY_ID',
     fallback: 'Custom.Opportunity_ID',
   },
   {
     key: 'milestoneId',
-    candidates: ['Milestone ID', 'MilestoneID', 'Milestone Id'],
+    candidates: ['Milestone ID', 'MilestoneID', 'Milestone Id', 'Custom.MilestoneID', 'Custom.Milestone_ID'],
     env: 'ADO_FIELD_MILESTONE_ID',
     fallback: 'Custom.MilestoneID',
   },
   {
     key: 'azurePreferredRegion',
-    candidates: ['AzurePreferredRegion', 'Azure Preferred Region'],
+    candidates: [
+      'AzurePreferredRegion',
+      'Azure Preferred Region',
+      'Custom.AzurePreferredRegion',
+    ],
     env: 'ADO_FIELD_AZURE_PREFERRED_REGION',
     fallback: 'Custom.AzurePreferredRegion',
   },
   {
     key: 'azureCapacityTypeMultiline',
-    candidates: ['AzureCapacityTypeMultiline', 'Azure Capacity Type Multiline', 'Azure Capacity Type'],
+    candidates: [
+      'AzureCapacityTypeMultiline',
+      'Azure Capacity Type Multiline',
+      'Azure Capacity Type',
+      'Custom.AzureCapacityTypeMultiline',
+    ],
     env: 'ADO_FIELD_AZURE_CAPACITY_TYPE',
     fallback: 'Custom.AzureCapacityTypeMultiline',
   },
   {
     key: 'primaryCompetitor',
-    candidates: ['PrimaryCompetitor', 'Primary Competitor'],
+    candidates: ['PrimaryCompetitor', 'Primary Competitor', 'Custom.PrimaryCompetitor'],
     env: 'ADO_FIELD_PRIMARY_COMPETITOR',
     fallback: 'Custom.PrimaryCompetitor',
   },
   {
     key: 'actionPriority',
-    candidates: ['Action Priority', 'ActionPriority'],
+    candidates: [
+      'ActionPriorityField',
+      'Action Priority Field',
+      'Action Priority',
+      'ActionPriority',
+      'Custom.ActionPriorityField',
+      'Custom.ActionPriority',
+    ],
     env: 'ADO_FIELD_ACTION_PRIORITY',
-    fallback: 'Custom.ActionPriority',
+    fallback: 'Custom.ActionPriorityField',
   },
   {
     key: 'noNaiRegional',
-    candidates: ['NoNAI_Regional', 'NoNAI Regional', 'NoNAIRegional'],
+    candidates: ['NoNAI_Regional', 'NoNAI Regional', 'NoNAIRegional', 'Custom.NoNAI_Regional'],
     env: 'ADO_FIELD_NONAI_REGIONAL',
     fallback: 'Custom.NoNAI_Regional',
   },
@@ -947,27 +969,87 @@ async function adoApi(pathname, { method = 'GET', body, query } = {}) {
   return payload
 }
 
+function normalizeFieldToken(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+}
+
+function candidateReferenceNames(candidate) {
+  const raw = String(candidate || '').trim()
+  if (!raw) return []
+  const names = new Set([raw])
+  if (!raw.includes('.')) {
+    const compact = raw.replace(/[^a-zA-Z0-9_]/g, '')
+    const underscored = raw.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '')
+    if (compact) names.add(`Custom.${compact}`)
+    if (underscored) names.add(`Custom.${underscored}`)
+  }
+  return [...names]
+}
+
+/**
+ * Resolve a field reference name from the org catalog.
+ * Exact referenceName / exact friendly name only — no fuzzy includes() matching
+ * (that was binding Action Priority to Custom.ActionPriority instead of
+ * Custom.ActionPriorityField and leaving columns empty).
+ */
 function pickFieldRef(fields, candidates, envValue) {
-  if (envValue) return envValue
-  const normalized = fields.map((field) => ({
-    referenceName: field.referenceName,
-    name: field.name || '',
-    nameKey: String(field.name || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, ''),
-    refKey: String(field.referenceName || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, ''),
-  }))
-  for (const candidate of candidates) {
-    const key = candidate.toLowerCase().replace(/[^a-z0-9]/g, '')
-    const hit =
-      normalized.find((field) => field.refKey === key || field.nameKey === key) ||
-      normalized.find((field) => field.refKey.endsWith(key) || field.nameKey.endsWith(key)) ||
-      normalized.find((field) => field.refKey.includes(key) || field.nameKey.includes(key))
-    if (hit) return hit.referenceName
+  const byRef = new Map(
+    fields.map((field) => [String(field.referenceName || '').toLowerCase(), field.referenceName]),
+  )
+  const byName = new Map(
+    fields.map((field) => [normalizeFieldToken(field.name), field.referenceName]),
+  )
+  const byRefToken = new Map(
+    fields.map((field) => [normalizeFieldToken(field.referenceName), field.referenceName]),
+  )
+
+  const tryOne = (candidate) => {
+    if (!candidate) return null
+    const direct = byRef.get(String(candidate).toLowerCase())
+    if (direct) return direct
+    for (const ref of candidateReferenceNames(candidate)) {
+      const hit = byRef.get(ref.toLowerCase())
+      if (hit) return hit
+    }
+    const token = normalizeFieldToken(candidate)
+    if (!token) return null
+    return byName.get(token) || byRefToken.get(token) || null
+  }
+
+  if (envValue) {
+    const forced = tryOne(envValue)
+    if (forced) return forced
+  }
+
+  for (const candidate of candidates || []) {
+    const hit = tryOne(candidate)
+    if (hit) return hit
   }
   return null
+}
+
+function readRawFieldValue(fields, referenceName, candidates = []) {
+  if (!fields || typeof fields !== 'object') return undefined
+  if (referenceName && Object.prototype.hasOwnProperty.call(fields, referenceName)) {
+    return fields[referenceName]
+  }
+  const keys = Object.keys(fields)
+  const wanted = []
+  if (referenceName) wanted.push(referenceName)
+  for (const candidate of candidates) {
+    wanted.push(candidate, ...candidateReferenceNames(candidate))
+  }
+  for (const want of wanted) {
+    const wantLower = String(want).toLowerCase()
+    const wantToken = normalizeFieldToken(want)
+    const hit = keys.find(
+      (key) => key.toLowerCase() === wantLower || normalizeFieldToken(key) === wantToken,
+    )
+    if (hit) return fields[hit]
+  }
+  return undefined
 }
 
 export async function resolveAdoFieldMap(force = false) {
@@ -987,7 +1069,9 @@ export async function resolveAdoFieldMap(force = false) {
   }
   for (const def of LIST_FIELD_DEFS) {
     map[def.key] =
-      pickFieldRef(fields, def.candidates, process.env[def.env]) || def.fallback
+      pickFieldRef(fields, def.candidates, process.env[def.env]) ||
+      pickFieldRef(fields, [def.fallback], null) ||
+      def.fallback
   }
   cachedFieldMap = map
   return map
@@ -1007,34 +1091,27 @@ function summarizeListItem(raw, fieldMap) {
       raw?._links?.html?.href ||
       (raw?.id ? `${config.organizationUrl}/_workitems/edit/${raw.id}` : null),
   }
-  for (const key of LIST_ITEM_KEYS) {
-    const ref = fieldMap[key]
-    item[key] = ref ? fieldDisplayValue(fields[ref]) || null : null
+  for (const def of LIST_FIELD_DEFS) {
+    const rawValue = readRawFieldValue(fields, fieldMap[def.key], def.candidates)
+    item[def.key] = fieldDisplayValue(rawValue) || null
   }
   return item
 }
 
 async function fetchWorkItemsByIds(ids, fieldMap) {
   if (!ids.length) return []
-  const fields = [
-    fieldMap.id,
-    fieldMap.title,
-    fieldMap.state,
-    fieldMap.changedDate,
-    'System.WorkItemType',
-    ...LIST_ITEM_KEYS.map((key) => fieldMap[key]),
-  ]
-  const uniqueFields = [...new Set(fields.filter(Boolean))]
   const chunks = []
   for (let i = 0; i < ids.length; i += 200) {
     chunks.push(ids.slice(i, i + 200))
   }
   const items = []
   for (const chunk of chunks) {
+    // Omit `fields=` so ADO returns the full field bag. Selecting a wrong/empty
+    // Custom.* ref (e.g. Custom.ActionPriority vs Custom.ActionPriorityField)
+    // previously left the new columns blank even though the real values existed.
     const payload = await adoApi('/_apis/wit/workitems', {
       query: {
         ids: chunk.join(','),
-        fields: uniqueFields.join(','),
         errorPolicy: 'omit',
         'api-version': '7.1',
       },
