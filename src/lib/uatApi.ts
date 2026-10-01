@@ -40,15 +40,48 @@ export type UatWorkItem = {
   raw?: Record<string, unknown>
 }
 
-export type UatConfig = {
+export type UatConnection = {
+  status:
+    | 'idle'
+    | 'awaiting_device_code'
+    | 'authenticating'
+    | 'connected'
+    | 'error'
+    | 'cancelled'
+  tenantId: string | null
   organization: string
-  defaultWorkItemId: number
-  authMode: 'pat' | 'azure_cli'
-  testWorkItemUrl: string
+  organizationUrl: string
+  deviceCode: string | null
+  verificationUrl: string
+  message: string | null
+  error: string | null
+  account: {
+    name?: string
+    tenantId?: string
+    user?: { name?: string }
+  } | null
+  startedAt: string | null
+  connectedAt: string | null
+  authMode: 'azure_cli' | 'pat' | 'none'
+  hasPat: boolean
 }
 
-async function api<T>(path: string): Promise<T> {
-  const res = await fetch(path)
+export type UatConfig = {
+  organization: string
+  organizationUrl: string
+  tenantId: string
+  defaultWorkItemId: number
+  authMode: 'azure_cli' | 'pat' | 'none'
+  hasPat: boolean
+  testWorkItemUrl: string
+  connection: UatConnection
+}
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+    ...init,
+  })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     throw apiErrorFromResponse(res, data)
@@ -58,6 +91,22 @@ async function api<T>(path: string): Promise<T> {
 
 export function fetchUatConfig() {
   return api<UatConfig>('/api/uat/config')
+}
+
+export function fetchUatStatus() {
+  return api<UatConnection>('/api/uat/status')
+}
+
+export function connectUat() {
+  return api<UatConnection>('/api/uat/connect', { method: 'POST', body: '{}' })
+}
+
+export function cancelUatLogin() {
+  return api<UatConnection>('/api/uat/cancel', { method: 'POST', body: '{}' })
+}
+
+export function disconnectUat() {
+  return api<UatConnection>('/api/uat/disconnect', { method: 'POST', body: '{}' })
 }
 
 export function fetchUatWorkItem(id?: number | string) {

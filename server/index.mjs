@@ -56,7 +56,15 @@ import {
   listCapacityModels,
   resetCapacitySession,
 } from './agentChat.mjs'
-import { adoConfig, fetchAdoWorkItem } from './adoUat.mjs'
+import {
+  adoConfig,
+  cancelAdoLogin,
+  disconnectAdoLogin,
+  fetchAdoWorkItem,
+  getAdoStatus,
+  publicAdoConnection,
+  startAdoLogin,
+} from './adoUat.mjs'
 
 const app = express()
 const PORT = Number(process.env.PCM_API_PORT || 8787)
@@ -3671,14 +3679,59 @@ app.get('/api/agent/chats/:id', async (req, res) => {
   }
 })
 
-app.get('/api/uat/config', (_req, res) => {
-  const config = adoConfig()
-  res.json({
-    organization: config.organization,
-    defaultWorkItemId: config.defaultWorkItemId,
-    authMode: config.hasPat ? 'pat' : 'azure_cli',
-    testWorkItemUrl: `https://dev.azure.com/${config.organization}/_apis/wit/workitems/${config.defaultWorkItemId}?api-version=7.1`,
-  })
+app.get('/api/uat/config', async (_req, res) => {
+  try {
+    const config = adoConfig()
+    const connection = await getAdoStatus()
+    res.json({
+      organization: config.organization,
+      organizationUrl: config.organizationUrl,
+      tenantId: config.tenantId,
+      defaultWorkItemId: config.defaultWorkItemId,
+      authMode: connection.authMode,
+      hasPat: config.hasPat,
+      testWorkItemUrl: `${config.organizationUrl}/_apis/wit/workitems/${config.defaultWorkItemId}?api-version=7.1`,
+      connection,
+    })
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Failed to load UAT config')
+  }
+})
+
+app.get('/api/uat/status', async (_req, res) => {
+  try {
+    res.json(await getAdoStatus())
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Failed to load Azure DevOps status')
+  }
+})
+
+app.post('/api/uat/connect', async (_req, res) => {
+  try {
+    const connection = await startAdoLogin()
+    res.status(202).json(connection)
+  } catch (err) {
+    const status = Number(err?.status) || 500
+    if (status === 409) {
+      return res.status(409).json({
+        error: err instanceof Error ? err.message : String(err),
+        connection: err.connection || publicAdoConnection(),
+      })
+    }
+    sendRouteError(res, status >= 400 && status < 600 ? status : 500, err, 'Azure DevOps login failed')
+  }
+})
+
+app.post('/api/uat/cancel', (_req, res) => {
+  res.json(cancelAdoLogin())
+})
+
+app.post('/api/uat/disconnect', async (_req, res) => {
+  try {
+    res.json(await disconnectAdoLogin())
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Azure DevOps disconnect failed')
+  }
 })
 
 app.get('/api/uat/workitems/:id', async (req, res) => {

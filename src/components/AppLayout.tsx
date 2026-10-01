@@ -156,7 +156,8 @@ const titles: Record<string, { title: string; subtitle: string }> = {
   },
   '/uats': {
     title: 'UATs',
-    subtitle: 'Unified Action Tracker work items from Azure DevOps.',
+    subtitle:
+      'Sign in to Azure DevOps (Microsoft tenant) and view Unified Action Tracker work items.',
   },
   '/reports': {
     title: 'Reports',
