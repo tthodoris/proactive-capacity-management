@@ -703,6 +703,12 @@ function fieldDisplayValue(value) {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     return String(value)
   }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => fieldDisplayValue(item))
+      .filter(Boolean)
+      .join(', ')
+  }
   if (typeof value === 'object') {
     return String(value.displayName || value.uniqueName || value.name || JSON.stringify(value))
   }
@@ -756,18 +762,140 @@ function isExcludedAreaField(areaField) {
   })
 }
 
-/** @type {null | {
- *  milestoneReason: string
- *  account: string
- *  eou: string
- *  areaField: string
- *  state: string
- *  id: string
- *  title: string
- *  changedDate: string
- *  all: Array<{ referenceName: string, name: string }>
- * }} */
+/** @type {null | Record<string, any>} */
 let cachedFieldMap = null
+
+const LIST_FIELD_DEFS = [
+  {
+    key: 'milestoneReason',
+    candidates: ['MilestoneReason', 'Milestone Reason'],
+    env: 'ADO_FIELD_MILESTONE_REASON',
+    fallback: 'Custom.MilestoneReason',
+  },
+  {
+    key: 'account',
+    candidates: ['Account', 'Customer Account', 'Customer'],
+    env: 'ADO_FIELD_ACCOUNT',
+    fallback: 'Custom.Account',
+  },
+  {
+    key: 'eou',
+    candidates: ['EOU', 'Eou', 'End of Use'],
+    env: 'ADO_FIELD_EOU',
+    fallback: 'Custom.EOU',
+  },
+  {
+    key: 'areaField',
+    candidates: ['AreaField', 'Area Field'],
+    env: 'ADO_FIELD_AREA',
+    fallback: 'System.AreaPath',
+  },
+  {
+    key: 'requestors',
+    candidates: ['Requestors', 'Requestor', 'Requested By'],
+    env: 'ADO_FIELD_REQUESTORS',
+    fallback: 'Custom.Requestors',
+  },
+  {
+    key: 'tpid',
+    candidates: ['TPID', 'TP Id', 'TPID'],
+    env: 'ADO_FIELD_TPID',
+    fallback: 'Custom.TPID',
+  },
+  {
+    key: 'noNaiSku1',
+    candidates: ['NoNAI_SKU_1', 'NoNAI SKU 1', 'NoNAI_SKU1'],
+    env: 'ADO_FIELD_NONAI_SKU_1',
+    fallback: 'Custom.NoNAI_SKU_1',
+  },
+  {
+    key: 'noNaiUom1',
+    candidates: ['NoNAI_UOM_1', 'NoNAI UOM 1', 'NoNAI_UOM1'],
+    env: 'ADO_FIELD_NONAI_UOM_1',
+    fallback: 'Custom.NoNAI_UOM_1',
+  },
+  {
+    key: 'noNaiQuantity1',
+    candidates: ['NoNAI_Quantity_1', 'NoNAI Quantity 1', 'NoNAI_Quantity1'],
+    env: 'ADO_FIELD_NONAI_QUANTITY_1',
+    fallback: 'Custom.NoNAI_Quantity_1',
+  },
+  {
+    key: 'estMonthlyUsages',
+    candidates: ['Est Monthly Usages', 'EstMonthlyUsages', 'Estimated Monthly Usages'],
+    env: 'ADO_FIELD_EST_MONTHLY_USAGES',
+    fallback: 'Custom.EstMonthlyUsages',
+  },
+  {
+    key: 'requestedDate',
+    candidates: ['Requested Date', 'RequestedDate', 'Request Date'],
+    env: 'ADO_FIELD_REQUESTED_DATE',
+    fallback: 'Custom.RequestedDate',
+  },
+  {
+    key: 'opportunityId',
+    candidates: ['Opportunity_ID', 'Opportunity ID', 'OpportunityId'],
+    env: 'ADO_FIELD_OPPORTUNITY_ID',
+    fallback: 'Custom.Opportunity_ID',
+  },
+  {
+    key: 'milestoneId',
+    candidates: ['Milestone ID', 'MilestoneID', 'Milestone Id'],
+    env: 'ADO_FIELD_MILESTONE_ID',
+    fallback: 'Custom.MilestoneID',
+  },
+  {
+    key: 'azurePreferredRegion',
+    candidates: ['AzurePreferredRegion', 'Azure Preferred Region'],
+    env: 'ADO_FIELD_AZURE_PREFERRED_REGION',
+    fallback: 'Custom.AzurePreferredRegion',
+  },
+  {
+    key: 'azureCapacityTypeMultiline',
+    candidates: ['AzureCapacityTypeMultiline', 'Azure Capacity Type Multiline', 'Azure Capacity Type'],
+    env: 'ADO_FIELD_AZURE_CAPACITY_TYPE',
+    fallback: 'Custom.AzureCapacityTypeMultiline',
+  },
+  {
+    key: 'primaryCompetitor',
+    candidates: ['PrimaryCompetitor', 'Primary Competitor'],
+    env: 'ADO_FIELD_PRIMARY_COMPETITOR',
+    fallback: 'Custom.PrimaryCompetitor',
+  },
+  {
+    key: 'actionPriority',
+    candidates: ['Action Priority', 'ActionPriority'],
+    env: 'ADO_FIELD_ACTION_PRIORITY',
+    fallback: 'Custom.ActionPriority',
+  },
+  {
+    key: 'noNaiRegional',
+    candidates: ['NoNAI_Regional', 'NoNAI Regional', 'NoNAIRegional'],
+    env: 'ADO_FIELD_NONAI_REGIONAL',
+    fallback: 'Custom.NoNAI_Regional',
+  },
+]
+
+const LIST_ITEM_KEYS = [
+  'account',
+  'eou',
+  'areaField',
+  'milestoneReason',
+  'requestors',
+  'tpid',
+  'noNaiSku1',
+  'noNaiUom1',
+  'noNaiQuantity1',
+  'estMonthlyUsages',
+  'requestedDate',
+  'opportunityId',
+  'milestoneId',
+  'azurePreferredRegion',
+  'azureCapacityTypeMultiline',
+  'primaryCompetitor',
+  'actionPriority',
+  'noNaiRegional',
+]
 
 async function adoApi(pathname, { method = 'GET', body, query } = {}) {
   const { organization } = adoConfig()
@@ -846,18 +974,8 @@ export async function resolveAdoFieldMap(force = false) {
   if (cachedFieldMap && !force) return cachedFieldMap
   const payload = await adoApi('/_apis/wit/fields', { query: { 'api-version': '7.1' } })
   const fields = Array.isArray(payload?.value) ? payload.value : []
+  /** @type {Record<string, any>} */
   const map = {
-    milestoneReason:
-      pickFieldRef(fields, ['MilestoneReason', 'Milestone Reason'], process.env.ADO_FIELD_MILESTONE_REASON) ||
-      'Custom.MilestoneReason',
-    account:
-      pickFieldRef(fields, ['Account', 'Customer Account', 'Customer'], process.env.ADO_FIELD_ACCOUNT) ||
-      'Custom.Account',
-    eou:
-      pickFieldRef(fields, ['EOU', 'Eou', 'End of Use'], process.env.ADO_FIELD_EOU) || 'Custom.EOU',
-    areaField:
-      pickFieldRef(fields, ['AreaField', 'Area Field', 'Area'], process.env.ADO_FIELD_AREA) ||
-      'System.AreaPath',
     state: 'System.State',
     id: 'System.Id',
     title: 'System.Title',
@@ -867,6 +985,10 @@ export async function resolveAdoFieldMap(force = false) {
       name: field.name,
     })),
   }
+  for (const def of LIST_FIELD_DEFS) {
+    map[def.key] =
+      pickFieldRef(fields, def.candidates, process.env[def.env]) || def.fallback
+  }
   cachedFieldMap = map
   return map
 }
@@ -874,20 +996,22 @@ export async function resolveAdoFieldMap(force = false) {
 function summarizeListItem(raw, fieldMap) {
   const fields = raw?.fields && typeof raw.fields === 'object' ? raw.fields : {}
   const config = adoConfig()
-  return {
+  /** @type {Record<string, any>} */
+  const item = {
     id: raw?.id ?? fields[fieldMap.id] ?? null,
     title: fieldDisplayValue(fields[fieldMap.title]) || null,
     state: fieldDisplayValue(fields[fieldMap.state]) || null,
-    account: fieldDisplayValue(fields[fieldMap.account]) || null,
-    eou: fieldDisplayValue(fields[fieldMap.eou]) || null,
-    areaField: fieldDisplayValue(fields[fieldMap.areaField]) || null,
-    milestoneReason: fieldDisplayValue(fields[fieldMap.milestoneReason]) || null,
     changedDate: fields[fieldMap.changedDate] || null,
     workItemType: fields['System.WorkItemType'] || null,
     htmlUrl:
       raw?._links?.html?.href ||
       (raw?.id ? `${config.organizationUrl}/_workitems/edit/${raw.id}` : null),
   }
+  for (const key of LIST_ITEM_KEYS) {
+    const ref = fieldMap[key]
+    item[key] = ref ? fieldDisplayValue(fields[ref]) || null : null
+  }
+  return item
 }
 
 async function fetchWorkItemsByIds(ids, fieldMap) {
@@ -896,12 +1020,9 @@ async function fetchWorkItemsByIds(ids, fieldMap) {
     fieldMap.id,
     fieldMap.title,
     fieldMap.state,
-    fieldMap.account,
-    fieldMap.eou,
-    fieldMap.areaField,
-    fieldMap.milestoneReason,
     fieldMap.changedDate,
     'System.WorkItemType',
+    ...LIST_ITEM_KEYS.map((key) => fieldMap[key]),
   ]
   const uniqueFields = [...new Set(fields.filter(Boolean))]
   const chunks = []
@@ -988,14 +1109,9 @@ export async function listCapacityWorkItems(filters = {}) {
   return {
     milestoneReason: milestoneValue,
     excludedAreaFields: excludedAreaFields(),
-    fieldMap: {
-      milestoneReason: fieldMap.milestoneReason,
-      account: fieldMap.account,
-      eou: fieldMap.eou,
-      areaField: fieldMap.areaField,
-      state: fieldMap.state,
-      id: fieldMap.id,
-    },
+    fieldMap: Object.fromEntries(
+      ['id', 'title', 'state', 'changedDate', ...LIST_ITEM_KEYS].map((key) => [key, fieldMap[key]]),
+    ),
     total: items.length,
     queried: ids.length,
     included: allItems.length,

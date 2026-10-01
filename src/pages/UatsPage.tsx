@@ -10,7 +10,7 @@ import {
   Search,
   X,
 } from 'lucide-react'
-import { formatRelative } from '../lib/format'
+import { formatDate, formatRelative } from '../lib/format'
 import {
   FilterableTh,
   collectCascadingOptions,
@@ -32,13 +32,48 @@ import {
   type UatWorkItemList,
 } from '../lib/uatApi'
 
-type UatSortKey = 'id' | 'title' | 'state' | 'account' | 'eou' | 'areaField' | 'changedDate'
+type UatSortKey =
+  | 'id'
+  | 'title'
+  | 'state'
+  | 'account'
+  | 'eou'
+  | 'areaField'
+  | 'requestors'
+  | 'tpid'
+  | 'noNaiSku1'
+  | 'noNaiUom1'
+  | 'noNaiQuantity1'
+  | 'estMonthlyUsages'
+  | 'requestedDate'
+  | 'opportunityId'
+  | 'milestoneId'
+  | 'azurePreferredRegion'
+  | 'azureCapacityTypeMultiline'
+  | 'primaryCompetitor'
+  | 'actionPriority'
+  | 'noNaiRegional'
+  | 'changedDate'
 
 const UAT_COLUMNS: Array<[UatSortKey, string]> = [
   ['id', 'Id'],
   ['title', 'Title'],
   ['state', 'Status'],
   ['account', 'Account'],
+  ['requestors', 'Requestors'],
+  ['tpid', 'TPID'],
+  ['noNaiSku1', 'NoNAI_SKU_1'],
+  ['noNaiUom1', 'NoNAI_UOM_1'],
+  ['noNaiQuantity1', 'NoNAI_Quantity_1'],
+  ['estMonthlyUsages', 'Est Monthly Usages'],
+  ['requestedDate', 'Requested Date'],
+  ['opportunityId', 'Opportunity_ID'],
+  ['milestoneId', 'Milestone ID'],
+  ['azurePreferredRegion', 'AzurePreferredRegion'],
+  ['azureCapacityTypeMultiline', 'AzureCapacityTypeMultiline'],
+  ['primaryCompetitor', 'PrimaryCompetitor'],
+  ['actionPriority', 'Action Priority'],
+  ['noNaiRegional', 'NoNAI_Regional'],
   ['eou', 'EOU'],
   ['areaField', 'AreaField'],
   ['changedDate', 'Changed'],
@@ -211,25 +246,21 @@ export function UatsPage() {
     switch (key) {
       case 'id':
         return item.id == null ? '' : String(item.id)
-      case 'title':
-        return item.title || ''
-      case 'state':
-        return item.state || ''
-      case 'account':
-        return item.account || ''
-      case 'eou':
-        return item.eou || ''
-      case 'areaField':
-        return item.areaField || ''
       case 'changedDate':
         return item.changedDate ? formatRelative(item.changedDate) : '—'
-      default:
-        return ''
+      case 'requestedDate':
+        return item.requestedDate ? formatDate(item.requestedDate) : '—'
+      default: {
+        const value = item[key as keyof UatListItem]
+        return value == null ? '' : String(value)
+      }
     }
   }, [])
 
   const getSortValue = useCallback((item: UatListItem, key: string) => {
-    if (key === 'changedDate') return item.changedDate || ''
+    if (key === 'changedDate' || key === 'requestedDate') {
+      return (item[key as 'changedDate' | 'requestedDate'] as string | null) || ''
+    }
     if (key === 'id') return item.id ?? 0
     return getValue(item, key)
   }, [getValue])
@@ -240,21 +271,13 @@ export function UatsPage() {
     const q = query.trim().toLowerCase()
     if (!q) return baseItems
     return baseItems.filter((item) => {
-      const hay = [
-        item.id,
-        item.title,
-        item.state,
-        item.account,
-        item.eou,
-        item.areaField,
-        item.milestoneReason,
-        item.workItemType,
-      ]
-        .map((value) => String(value || '').toLowerCase())
+      const hay = UAT_COLUMNS.map(([key]) => getValue(item, key))
+        .concat([item.milestoneReason || '', item.workItemType || ''])
         .join(' ')
+        .toLowerCase()
       return hay.includes(q)
     })
-  }, [baseItems, query])
+  }, [baseItems, query, getValue])
 
   const filtered = useMemo(() => {
     return searched.filter((item) =>
@@ -506,21 +529,24 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
                 <tbody>
                   {rows.map((item) => (
                     <tr key={String(item.id)}>
-                      <td>
-                        <code>{valueOrDash(item.id)}</code>
-                      </td>
-                      <td>
-                        <strong>{valueOrDash(item.title)}</strong>
-                      </td>
-                      <td>
-                        <span className="pill pill-medium">{valueOrDash(item.state)}</span>
-                      </td>
-                      <td>{valueOrDash(item.account)}</td>
-                      <td>{valueOrDash(item.eou)}</td>
-                      <td>{valueOrDash(item.areaField)}</td>
-                      <td className="muted">
-                        {item.changedDate ? formatRelative(item.changedDate) : '—'}
-                      </td>
+                      {UAT_COLUMNS.map(([column]) => (
+                        <td
+                          key={column}
+                          className={
+                            column === 'changedDate' || column === 'requestedDate' ? 'muted' : undefined
+                          }
+                        >
+                          {column === 'id' ? (
+                            <code>{valueOrDash(item.id)}</code>
+                          ) : column === 'title' ? (
+                            <strong>{valueOrDash(item.title)}</strong>
+                          ) : column === 'state' ? (
+                            <span className="pill pill-medium">{valueOrDash(item.state)}</span>
+                          ) : (
+                            valueOrDash(getValue(item, column))
+                          )}
+                        </td>
+                      ))}
                       <td>
                         {item.htmlUrl ? (
                           <a

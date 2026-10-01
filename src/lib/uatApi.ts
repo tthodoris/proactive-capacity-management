@@ -48,6 +48,20 @@ export type UatListItem = {
   eou: string | null
   areaField: string | null
   milestoneReason: string | null
+  requestors: string | null
+  tpid: string | null
+  noNaiSku1: string | null
+  noNaiUom1: string | null
+  noNaiQuantity1: string | null
+  estMonthlyUsages: string | null
+  requestedDate: string | null
+  opportunityId: string | null
+  milestoneId: string | null
+  azurePreferredRegion: string | null
+  azureCapacityTypeMultiline: string | null
+  primaryCompetitor: string | null
+  actionPriority: string | null
+  noNaiRegional: string | null
   changedDate: string | null
   workItemType: string | null
   htmlUrl: string | null
