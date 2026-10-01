@@ -63,9 +63,11 @@ export type UatWorkItemFilters = {
 
 export type UatWorkItemList = {
   milestoneReason: string
+  excludedAreaFields?: string[]
   fieldMap: Record<string, string>
   total: number
   queried: number
+  included?: number
   filters: Required<UatWorkItemFilters>
   facets: {
     state: string[]

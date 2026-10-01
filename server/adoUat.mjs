@@ -713,11 +713,47 @@ function escapeWiqlString(value) {
   return String(value).replace(/'/g, "''")
 }
 
-function matchesNeedle(haystack, needle) {
-  if (!needle) return true
-  return String(haystack || '')
+const DEFAULT_EXCLUDED_AREA_FIELDS = [
+  'United States',
+  'Japan',
+  'Korea',
+  'Latam',
+  'India',
+  'MEA',
+  'Canada',
+  'Germany & Austria',
+  'Greater China',
+  'ASEAN',
+  'UK & Ireland',
+  'France',
+  'ANZ',
+]
+
+function excludedAreaFields() {
+  const raw = process.env.ADO_EXCLUDED_AREA_FIELDS
+  if (!raw) return DEFAULT_EXCLUDED_AREA_FIELDS
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+}
+
+function normalizeAreaToken(value) {
+  return String(value || '')
+    .trim()
     .toLowerCase()
-    .includes(String(needle).toLowerCase())
+    .replace(/\s+/g, ' ')
+}
+
+function isExcludedAreaField(areaField) {
+  const text = String(areaField || '').trim()
+  if (!text) return false
+  const normalized = normalizeAreaToken(text)
+  const segments = normalized.split(/[\\/>|]+/).map((part) => part.trim()).filter(Boolean)
+  return excludedAreaFields().some((excluded) => {
+    const needle = normalizeAreaToken(excluded)
+    return normalized === needle || segments.includes(needle)
+  })
 }
 
 /** @type {null | {
@@ -926,7 +962,9 @@ export async function listCapacityWorkItems(filters = {}) {
     .map((item) => Number(item.id))
     .filter((value) => Number.isFinite(value) && value > 0)
 
-  const allItems = await fetchWorkItemsByIds(ids, fieldMap)
+  const allItems = (await fetchWorkItemsByIds(ids, fieldMap)).filter(
+    (item) => !isExcludedAreaField(item.areaField),
+  )
 
   const uniqueValues = (rows, key) =>
     [...new Set(rows.map((item) => item[key]).filter((value) => value != null && value !== ''))].sort(
@@ -949,6 +987,7 @@ export async function listCapacityWorkItems(filters = {}) {
 
   return {
     milestoneReason: milestoneValue,
+    excludedAreaFields: excludedAreaFields(),
     fieldMap: {
       milestoneReason: fieldMap.milestoneReason,
       account: fieldMap.account,
@@ -958,7 +997,8 @@ export async function listCapacityWorkItems(filters = {}) {
       id: fieldMap.id,
     },
     total: items.length,
-    queried: allItems.length,
+    queried: ids.length,
+    included: allItems.length,
     filters: { state, account, id, eou, areaField },
     facets,
     items,

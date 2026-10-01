@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ClipboardList,
   Copy,
   ExternalLink,
   Link2,
@@ -8,9 +7,17 @@ import {
   LogOut,
   PlugZap,
   RefreshCw,
+  Search,
+  X,
 } from 'lucide-react'
-import { MetricCard } from '../components/Badges'
 import { formatRelative } from '../lib/format'
+import {
+  FilterableTh,
+  collectCascadingOptions,
+  useColumnFilters,
+  useSortState,
+  useSortedRows,
+} from '../lib/tableSort'
 import {
   cancelUatLogin,
   connectUat,
@@ -22,29 +29,31 @@ import {
   type UatConfig,
   type UatConnection,
   type UatListItem,
-  type UatWorkItemFilters,
   type UatWorkItemList,
 } from '../lib/uatApi'
+
+type UatSortKey = 'id' | 'title' | 'state' | 'account' | 'eou' | 'areaField' | 'changedDate'
+
+const UAT_COLUMNS: Array<[UatSortKey, string]> = [
+  ['id', 'Id'],
+  ['title', 'Title'],
+  ['state', 'Status'],
+  ['account', 'Account'],
+  ['eou', 'EOU'],
+  ['areaField', 'AreaField'],
+  ['changedDate', 'Changed'],
+]
 
 function valueOrDash(value: string | number | null | undefined) {
   if (value == null || value === '') return '—'
   return String(value)
 }
 
-const EMPTY_FILTERS: UatWorkItemFilters = {
-  state: '',
-  account: '',
-  id: '',
-  eou: '',
-  areaField: '',
-}
-
 export function UatsPage() {
   const [config, setConfig] = useState<UatConfig | null>(null)
   const [connection, setConnection] = useState<UatConnection | null>(null)
   const [list, setList] = useState<UatWorkItemList | null>(null)
-  const [draftFilters, setDraftFilters] = useState<UatWorkItemFilters>(EMPTY_FILTERS)
-  const [appliedFilters, setAppliedFilters] = useState<UatWorkItemFilters>(EMPTY_FILTERS)
+  const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -52,6 +61,16 @@ export function UatsPage() {
   const [accessTokenInput, setAccessTokenInput] = useState('')
   const [submittingToken, setSubmittingToken] = useState(false)
   const pollRef = useRef<number | null>(null)
+
+  const { sortKey, sortDir, toggleSort } = useSortState<UatSortKey>('changedDate', 'desc')
+  const {
+    filters,
+    setColumnFilter,
+    clearAllFilters,
+    matchesColumnFilters,
+    pruneFiltersToOptions,
+    activeFilterCount,
+  } = useColumnFilters<UatSortKey>()
 
   const pending =
     connection?.status === 'awaiting_device_code' || connection?.status === 'authenticating'
@@ -61,26 +80,18 @@ export function UatsPage() {
     connection?.authMode === 'pat' ||
     connection?.authMode === 'pasted_token'
 
-  const loadList = useCallback(async (filters: UatWorkItemFilters = appliedFilters) => {
+  const loadList = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const next = await fetchUatWorkItemList(filters)
-      setList(next)
-      setAppliedFilters({
-        state: filters.state || '',
-        account: filters.account || '',
-        id: filters.id || '',
-        eou: filters.eou || '',
-        areaField: filters.areaField || '',
-      })
+      setList(await fetchUatWorkItemList())
     } catch (err) {
       setList(null)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
-  }, [appliedFilters])
+  }, [])
 
   const refreshStatus = useCallback(async () => {
     const [nextConfig, nextStatus] = await Promise.all([fetchUatConfig(), fetchUatStatus()])
@@ -98,15 +109,13 @@ export function UatsPage() {
           status.authMode === 'pat' ||
           status.authMode === 'pasted_token'
         ) {
-          await loadList(EMPTY_FILTERS)
+          await loadList()
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
       }
     })()
-    // intentionally run once on mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [refreshStatus, loadList])
 
   useEffect(() => {
     if (!pending) {
@@ -123,7 +132,7 @@ export function UatsPage() {
           setConnection(status)
           if (status.status === 'connected') {
             setConnecting(false)
-            await loadList(EMPTY_FILTERS)
+            await loadList()
           }
           if (status.status === 'error' || status.status === 'cancelled') {
             setConnecting(false)
@@ -148,8 +157,7 @@ export function UatsPage() {
     setError(null)
     setList(null)
     try {
-      const status = await connectUat()
-      setConnection(status)
+      setConnection(await connectUat())
     } catch (err) {
       setConnecting(false)
       setError(err instanceof Error ? err.message : String(err))
@@ -182,10 +190,9 @@ export function UatsPage() {
     setSubmittingToken(true)
     setError(null)
     try {
-      const status = await submitUatAccessToken(accessTokenInput.trim())
-      setConnection(status)
+      setConnection(await submitUatAccessToken(accessTokenInput.trim()))
       setAccessTokenInput('')
-      await loadList(EMPTY_FILTERS)
+      await loadList()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -200,18 +207,74 @@ export function UatsPage() {
     window.setTimeout(() => setCopied(false), 1500)
   }
 
-  function updateDraft<K extends keyof UatWorkItemFilters>(key: K, value: string) {
-    setDraftFilters((prev) => ({ ...prev, [key]: value }))
-  }
+  const getValue = useCallback((item: UatListItem, key: string) => {
+    switch (key) {
+      case 'id':
+        return item.id == null ? '' : String(item.id)
+      case 'title':
+        return item.title || ''
+      case 'state':
+        return item.state || ''
+      case 'account':
+        return item.account || ''
+      case 'eou':
+        return item.eou || ''
+      case 'areaField':
+        return item.areaField || ''
+      case 'changedDate':
+        return item.changedDate ? formatRelative(item.changedDate) : '—'
+      default:
+        return ''
+    }
+  }, [])
 
-  const items: UatListItem[] = list?.items || []
-  const facets = list?.facets
+  const getSortValue = useCallback((item: UatListItem, key: string) => {
+    if (key === 'changedDate') return item.changedDate || ''
+    if (key === 'id') return item.id ?? 0
+    return getValue(item, key)
+  }, [getValue])
 
-  const stateOptions = useMemo(() => {
-    const values = new Set([...(facets?.state || [])])
-    if (draftFilters.state) values.add(draftFilters.state)
-    return [...values].sort((a, b) => a.localeCompare(b))
-  }, [facets?.state, draftFilters.state])
+  const baseItems = list?.items || []
+
+  const searched = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return baseItems
+    return baseItems.filter((item) => {
+      const hay = [
+        item.id,
+        item.title,
+        item.state,
+        item.account,
+        item.eou,
+        item.areaField,
+        item.milestoneReason,
+        item.workItemType,
+      ]
+        .map((value) => String(value || '').toLowerCase())
+        .join(' ')
+      return hay.includes(q)
+    })
+  }, [baseItems, query])
+
+  const filtered = useMemo(() => {
+    return searched.filter((item) =>
+      matchesColumnFilters((column) => String(getValue(item, column) ?? '')),
+    )
+  }, [searched, matchesColumnFilters, getValue])
+
+  const rows = useSortedRows(filtered, sortKey, sortDir, getSortValue)
+  const columnKeys = UAT_COLUMNS.map(([key]) => key)
+
+  const columnOptions = useMemo(
+    () => collectCascadingOptions(searched, columnKeys, filters, getValue),
+    [searched, filters, getValue],
+  )
+
+  useEffect(() => {
+    pruneFiltersToOptions(columnOptions)
+  }, [columnOptions, pruneFiltersToOptions])
+
+  const hasFilters = Boolean(query) || activeFilterCount > 0
 
   return (
     <div className="stack">
@@ -221,14 +284,15 @@ export function UatsPage() {
           <p>
             Unified Action Tracker work items where MilestoneReason ={' '}
             <strong>Capacity/Service Availability</strong>
-            {config ? ` (${config.organization})` : ''}.
+            {config ? ` (${config.organization})` : ''}. Regional AreaFields such as United States,
+            Japan, and UK & Ireland are excluded. Click a column name to filter values.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => void loadList(draftFilters)}
+            onClick={() => void loadList()}
             disabled={loading || !canQuery}
           >
             <RefreshCw size={16} />
@@ -380,205 +444,114 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
 
       {canQuery ? (
         <>
-          <div className="metrics">
-            <MetricCard
-              label="Matching"
-              value={list?.total ?? 0}
-              hint={list ? `of ${list.queried} Capacity/Service Availability` : 'Not loaded yet'}
-            />
-            <MetricCard
-              label="Milestone"
-              value="Capacity/SA"
-              hint={list?.milestoneReason || 'Capacity/Service Availability'}
-              delay={60}
-            />
-            <MetricCard
-              label="States"
-              value={facets?.state.length ?? 0}
-              hint="Distinct status values"
-              delay={120}
-            />
-            <MetricCard
-              label="Accounts"
-              value={facets?.account.length ?? 0}
-              hint="Distinct account values"
-              delay={180}
-            />
+          <div className="filters" style={{ alignItems: 'center' }}>
+            <div className="search">
+              <Search size={16} />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search id, title, status, account, EOU, or AreaField"
+              />
+            </div>
+            {hasFilters ? (
+              <button
+                className="btn btn-ghost"
+                type="button"
+                onClick={() => {
+                  setQuery('')
+                  clearAllFilters()
+                }}
+              >
+                <X size={16} /> Clear filters
+              </button>
+            ) : null}
           </div>
 
           <section className="panel">
             <div className="panel-header">
               <div>
-                <h4>Filters</h4>
-                <p>Status, Account, Id, EOU, and AreaField</p>
-              </div>
-              <ClipboardList size={18} color="#0e7c86" />
-            </div>
-            <div className="panel-body">
-              <form
-                className="uat-filter-grid"
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  void loadList(draftFilters)
-                }}
-              >
-                <label>
-                  <span className="muted">Status</span>
-                  <select
-                    value={draftFilters.state || ''}
-                    onChange={(e) => updateDraft('state', e.target.value)}
-                  >
-                    <option value="">All statuses</option>
-                    {stateOptions.map((value) => (
-                      <option key={value} value={value}>
-                        {value}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span className="muted">Account</span>
-                  <input
-                    list="uat-account-options"
-                    value={draftFilters.account || ''}
-                    onChange={(e) => updateDraft('account', e.target.value)}
-                    placeholder="Contains…"
-                  />
-                  <datalist id="uat-account-options">
-                    {(facets?.account || []).map((value) => (
-                      <option key={value} value={value} />
-                    ))}
-                  </datalist>
-                </label>
-                <label>
-                  <span className="muted">Id</span>
-                  <input
-                    value={draftFilters.id || ''}
-                    onChange={(e) => updateDraft('id', e.target.value)}
-                    placeholder="Work item id"
-                  />
-                </label>
-                <label>
-                  <span className="muted">EOU</span>
-                  <input
-                    list="uat-eou-options"
-                    value={draftFilters.eou || ''}
-                    onChange={(e) => updateDraft('eou', e.target.value)}
-                    placeholder="Contains…"
-                  />
-                  <datalist id="uat-eou-options">
-                    {(facets?.eou || []).map((value) => (
-                      <option key={value} value={value} />
-                    ))}
-                  </datalist>
-                </label>
-                <label>
-                  <span className="muted">AreaField</span>
-                  <input
-                    list="uat-area-options"
-                    value={draftFilters.areaField || ''}
-                    onChange={(e) => updateDraft('areaField', e.target.value)}
-                    placeholder="Contains…"
-                  />
-                  <datalist id="uat-area-options">
-                    {(facets?.areaField || []).map((value) => (
-                      <option key={value} value={value} />
-                    ))}
-                  </datalist>
-                </label>
-                <div className="uat-filter-actions">
-                  <button type="submit" className="btn btn-primary" disabled={loading}>
-                    Apply filters
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    disabled={loading}
-                    onClick={() => {
-                      setDraftFilters(EMPTY_FILTERS)
-                      void loadList(EMPTY_FILTERS)
-                    }}
-                  >
-                    Clear
-                  </button>
-                </div>
-              </form>
-              {list?.fieldMap ? (
-                <div className="muted" style={{ marginTop: '0.75rem', fontSize: '0.82rem' }}>
-                  Resolved fields: MilestoneReason=<code>{list.fieldMap.milestoneReason}</code>, Account=
-                  <code>{list.fieldMap.account}</code>, EOU=<code>{list.fieldMap.eou}</code>, AreaField=
-                  <code>{list.fieldMap.areaField}</code>
-                </div>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="panel">
-            <div className="panel-header">
-              <div>
-                <h4>Work items</h4>
+                <h4>Capacity / Service Availability</h4>
                 <p>
                   {loading
                     ? 'Loading…'
                     : list
-                      ? `${list.total} shown (queried ${list.queried})`
+                      ? `${rows.length} of ${list.included ?? list.total} work items`
                       : 'Sign in to load work items'}
+                  {list?.excludedAreaFields?.length
+                    ? ` · excluded AreaFields: ${list.excludedAreaFields.join(', ')}`
+                    : ''}
                 </p>
               </div>
             </div>
-            <div className="panel-body" style={{ overflowX: 'auto' }}>
-              {loading && !list ? (
-                <div className="empty">Querying Azure DevOps…</div>
-              ) : items.length === 0 ? (
-                <div className="empty">No work items match the current filters.</div>
-              ) : (
-                <table className="uat-fields-table">
-                  <thead>
-                    <tr>
-                      <th>Id</th>
-                      <th>Title</th>
-                      <th>Status</th>
-                      <th>Account</th>
-                      <th>EOU</th>
-                      <th>AreaField</th>
-                      <th>Changed</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.map((item) => (
-                      <tr key={String(item.id)}>
-                        <td>
-                          <code>{valueOrDash(item.id)}</code>
-                        </td>
-                        <td>{valueOrDash(item.title)}</td>
-                        <td>
-                          <span className="pill pill-medium">{valueOrDash(item.state)}</span>
-                        </td>
-                        <td>{valueOrDash(item.account)}</td>
-                        <td>{valueOrDash(item.eou)}</td>
-                        <td>{valueOrDash(item.areaField)}</td>
-                        <td>
-                          {item.changedDate ? formatRelative(item.changedDate) : '—'}
-                        </td>
-                        <td>
-                          {item.htmlUrl ? (
-                            <a
-                              className="btn btn-ghost"
-                              href={item.htmlUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              <ExternalLink size={14} />
-                              Open
-                            </a>
-                          ) : null}
-                        </td>
-                      </tr>
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    {UAT_COLUMNS.map(([column, label]) => (
+                      <FilterableTh
+                        key={column}
+                        label={label}
+                        column={column}
+                        sortKey={sortKey}
+                        sortDir={sortDir}
+                        onSort={(c) => toggleSort(c as UatSortKey)}
+                        options={columnOptions[column]}
+                        selected={filters[column]}
+                        onFilterChange={(values) => setColumnFilter(column, values)}
+                      />
                     ))}
-                  </tbody>
-                </table>
-              )}
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((item) => (
+                    <tr key={String(item.id)}>
+                      <td>
+                        <code>{valueOrDash(item.id)}</code>
+                      </td>
+                      <td>
+                        <strong>{valueOrDash(item.title)}</strong>
+                      </td>
+                      <td>
+                        <span className="pill pill-medium">{valueOrDash(item.state)}</span>
+                      </td>
+                      <td>{valueOrDash(item.account)}</td>
+                      <td>{valueOrDash(item.eou)}</td>
+                      <td>{valueOrDash(item.areaField)}</td>
+                      <td className="muted">
+                        {item.changedDate ? formatRelative(item.changedDate) : '—'}
+                      </td>
+                      <td>
+                        {item.htmlUrl ? (
+                          <a
+                            className="btn btn-ghost"
+                            href={item.htmlUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <ExternalLink size={14} />
+                            Open
+                          </a>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                  {!loading && rows.length === 0 ? (
+                    <tr>
+                      <td colSpan={UAT_COLUMNS.length + 1}>
+                        <div className="empty">No work items match the current filters.</div>
+                      </td>
+                    </tr>
+                  ) : null}
+                  {loading && rows.length === 0 ? (
+                    <tr>
+                      <td colSpan={UAT_COLUMNS.length + 1}>
+                        <div className="empty">Querying Azure DevOps…</div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
             </div>
           </section>
         </>
