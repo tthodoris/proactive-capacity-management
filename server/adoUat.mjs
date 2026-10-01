@@ -697,3 +697,271 @@ export async function fetchAdoWorkItem(workItemId) {
 
   return summarizeWorkItem(body)
 }
+
+function fieldDisplayValue(value) {
+  if (value == null) return ''
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  if (typeof value === 'object') {
+    return String(value.displayName || value.uniqueName || value.name || JSON.stringify(value))
+  }
+  return String(value)
+}
+
+function escapeWiqlString(value) {
+  return String(value).replace(/'/g, "''")
+}
+
+function matchesNeedle(haystack, needle) {
+  if (!needle) return true
+  return String(haystack || '')
+    .toLowerCase()
+    .includes(String(needle).toLowerCase())
+}
+
+/** @type {null | {
+ *  milestoneReason: string
+ *  account: string
+ *  eou: string
+ *  areaField: string
+ *  state: string
+ *  id: string
+ *  title: string
+ *  changedDate: string
+ *  all: Array<{ referenceName: string, name: string }>
+ * }} */
+let cachedFieldMap = null
+
+async function adoApi(pathname, { method = 'GET', body, query } = {}) {
+  const { organization } = adoConfig()
+  const authorization = await getAuthorizationHeader()
+  const url = new URL(
+    `https://dev.azure.com/${encodeURIComponent(organization)}${pathname.startsWith('/') ? '' : '/'}${pathname}`,
+  )
+  if (query && typeof query === 'object') {
+    for (const [key, value] of Object.entries(query)) {
+      if (value == null || value === '') continue
+      url.searchParams.set(key, String(value))
+    }
+  }
+  if (!url.searchParams.has('api-version')) {
+    url.searchParams.set('api-version', '7.1')
+  }
+
+  const response = await fetch(url, {
+    method,
+    headers: {
+      Authorization: authorization,
+      Accept: 'application/json',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+
+  const text = await response.text()
+  let payload
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = { message: text }
+  }
+
+  if (!response.ok) {
+    const message =
+      payload?.message ||
+      payload?.value?.Message ||
+      payload?.error ||
+      `Azure DevOps request failed (${response.status})`
+    const err = new Error(message)
+    err.status = response.status
+    err.hint =
+      response.status === 401 || response.status === 403 ? CA_DEVICE_CODE_HINT : undefined
+    throw err
+  }
+
+  return payload
+}
+
+function pickFieldRef(fields, candidates, envValue) {
+  if (envValue) return envValue
+  const normalized = fields.map((field) => ({
+    referenceName: field.referenceName,
+    name: field.name || '',
+    nameKey: String(field.name || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, ''),
+    refKey: String(field.referenceName || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, ''),
+  }))
+  for (const candidate of candidates) {
+    const key = candidate.toLowerCase().replace(/[^a-z0-9]/g, '')
+    const hit =
+      normalized.find((field) => field.refKey === key || field.nameKey === key) ||
+      normalized.find((field) => field.refKey.endsWith(key) || field.nameKey.endsWith(key)) ||
+      normalized.find((field) => field.refKey.includes(key) || field.nameKey.includes(key))
+    if (hit) return hit.referenceName
+  }
+  return null
+}
+
+export async function resolveAdoFieldMap(force = false) {
+  if (cachedFieldMap && !force) return cachedFieldMap
+  const payload = await adoApi('/_apis/wit/fields', { query: { 'api-version': '7.1' } })
+  const fields = Array.isArray(payload?.value) ? payload.value : []
+  const map = {
+    milestoneReason:
+      pickFieldRef(fields, ['MilestoneReason', 'Milestone Reason'], process.env.ADO_FIELD_MILESTONE_REASON) ||
+      'Custom.MilestoneReason',
+    account:
+      pickFieldRef(fields, ['Account', 'Customer Account', 'Customer'], process.env.ADO_FIELD_ACCOUNT) ||
+      'Custom.Account',
+    eou:
+      pickFieldRef(fields, ['EOU', 'Eou', 'End of Use'], process.env.ADO_FIELD_EOU) || 'Custom.EOU',
+    areaField:
+      pickFieldRef(fields, ['AreaField', 'Area Field', 'Area'], process.env.ADO_FIELD_AREA) ||
+      'System.AreaPath',
+    state: 'System.State',
+    id: 'System.Id',
+    title: 'System.Title',
+    changedDate: 'System.ChangedDate',
+    all: fields.map((field) => ({
+      referenceName: field.referenceName,
+      name: field.name,
+    })),
+  }
+  cachedFieldMap = map
+  return map
+}
+
+function summarizeListItem(raw, fieldMap) {
+  const fields = raw?.fields && typeof raw.fields === 'object' ? raw.fields : {}
+  const config = adoConfig()
+  return {
+    id: raw?.id ?? fields[fieldMap.id] ?? null,
+    title: fieldDisplayValue(fields[fieldMap.title]) || null,
+    state: fieldDisplayValue(fields[fieldMap.state]) || null,
+    account: fieldDisplayValue(fields[fieldMap.account]) || null,
+    eou: fieldDisplayValue(fields[fieldMap.eou]) || null,
+    areaField: fieldDisplayValue(fields[fieldMap.areaField]) || null,
+    milestoneReason: fieldDisplayValue(fields[fieldMap.milestoneReason]) || null,
+    changedDate: fields[fieldMap.changedDate] || null,
+    workItemType: fields['System.WorkItemType'] || null,
+    htmlUrl:
+      raw?._links?.html?.href ||
+      (raw?.id ? `${config.organizationUrl}/_workitems/edit/${raw.id}` : null),
+  }
+}
+
+async function fetchWorkItemsByIds(ids, fieldMap) {
+  if (!ids.length) return []
+  const fields = [
+    fieldMap.id,
+    fieldMap.title,
+    fieldMap.state,
+    fieldMap.account,
+    fieldMap.eou,
+    fieldMap.areaField,
+    fieldMap.milestoneReason,
+    fieldMap.changedDate,
+    'System.WorkItemType',
+  ]
+  const uniqueFields = [...new Set(fields.filter(Boolean))]
+  const chunks = []
+  for (let i = 0; i < ids.length; i += 200) {
+    chunks.push(ids.slice(i, i + 200))
+  }
+  const items = []
+  for (const chunk of chunks) {
+    const payload = await adoApi('/_apis/wit/workitems', {
+      query: {
+        ids: chunk.join(','),
+        fields: uniqueFields.join(','),
+        errorPolicy: 'omit',
+        'api-version': '7.1',
+      },
+    })
+    for (const raw of payload?.value || []) {
+      items.push(summarizeListItem(raw, fieldMap))
+    }
+  }
+  return items
+}
+
+/**
+ * List UATs with MilestoneReason = Capacity/Service Availability.
+ * Optional filters: state/status, account, id, eou, areaField.
+ */
+export async function listCapacityWorkItems(filters = {}) {
+  const fieldMap = await resolveAdoFieldMap()
+  const milestoneValue =
+    process.env.ADO_MILESTONE_REASON_VALUE || 'Capacity/Service Availability'
+  const top = Math.min(Number(filters.top) || Number(process.env.ADO_WIQL_TOP) || 1000, 20000)
+
+  const clauses = [
+    `[${fieldMap.milestoneReason}] = '${escapeWiqlString(milestoneValue)}'`,
+  ]
+
+  const state = String(filters.state || filters.status || '').trim()
+  const account = String(filters.account || '').trim()
+  const id = String(filters.id || '').trim()
+  const eou = String(filters.eou || '').trim()
+  const areaField = String(filters.areaField || '').trim()
+
+  const wiql = `
+    SELECT [${fieldMap.id}], [${fieldMap.title}], [${fieldMap.state}]
+    FROM WorkItems
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY [${fieldMap.changedDate}] DESC
+  `.replace(/\s+/g, ' ').trim()
+
+  const queryResult = await adoApi('/_apis/wit/wiql', {
+    method: 'POST',
+    query: { $top: String(top), 'api-version': '7.1' },
+    body: { query: wiql },
+  })
+
+  const ids = (queryResult?.workItems || [])
+    .map((item) => Number(item.id))
+    .filter((value) => Number.isFinite(value) && value > 0)
+
+  const allItems = await fetchWorkItemsByIds(ids, fieldMap)
+
+  const uniqueValues = (rows, key) =>
+    [...new Set(rows.map((item) => item[key]).filter((value) => value != null && value !== ''))].sort(
+      (a, b) => String(a).localeCompare(String(b)),
+    )
+
+  const facets = {
+    state: uniqueValues(allItems, 'state'),
+    account: uniqueValues(allItems, 'account'),
+    eou: uniqueValues(allItems, 'eou'),
+    areaField: uniqueValues(allItems, 'areaField'),
+  }
+
+  let items = allItems
+  if (state) items = items.filter((item) => matchesNeedle(item.state, state))
+  if (id) items = items.filter((item) => matchesNeedle(item.id, id))
+  if (account) items = items.filter((item) => matchesNeedle(item.account, account))
+  if (eou) items = items.filter((item) => matchesNeedle(item.eou, eou))
+  if (areaField) items = items.filter((item) => matchesNeedle(item.areaField, areaField))
+
+  return {
+    milestoneReason: milestoneValue,
+    fieldMap: {
+      milestoneReason: fieldMap.milestoneReason,
+      account: fieldMap.account,
+      eou: fieldMap.eou,
+      areaField: fieldMap.areaField,
+      state: fieldMap.state,
+      id: fieldMap.id,
+    },
+    total: items.length,
+    queried: allItems.length,
+    filters: { state, account, id, eou, areaField },
+    facets,
+    items,
+  }
+}
+

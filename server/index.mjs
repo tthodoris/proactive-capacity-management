@@ -62,6 +62,7 @@ import {
   disconnectAdoLogin,
   fetchAdoWorkItem,
   getAdoStatus,
+  listCapacityWorkItems,
   publicAdoConnection,
   setAdoAccessToken,
   startAdoLogin,
@@ -3767,18 +3768,24 @@ app.get('/api/uat/workitems/:id', async (req, res) => {
   }
 })
 
-app.get('/api/uat/workitems', async (_req, res) => {
+app.get('/api/uat/workitems', async (req, res) => {
   try {
-    const { defaultWorkItemId } = adoConfig()
-    const workItem = await fetchAdoWorkItem(defaultWorkItemId)
-    res.json(workItem)
+    const result = await listCapacityWorkItems({
+      state: req.query.state || req.query.status,
+      account: req.query.account,
+      id: req.query.id,
+      eou: req.query.eou,
+      areaField: req.query.areaField,
+      top: req.query.top,
+    })
+    res.json(result)
   } catch (err) {
     const status = Number(err?.status) || 500
     sendRouteError(
       res,
       status >= 400 && status < 600 ? status : 500,
       err,
-      err?.hint || 'Failed to load Azure DevOps work item',
+      err?.hint || 'Failed to query Azure DevOps work items',
     )
   }
 })

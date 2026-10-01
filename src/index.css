@@ -3787,4 +3787,36 @@ tr.is-selected-row td {
   font-size: 0.82rem;
 }
 
+.uat-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.75rem 0.85rem;
+  align-items: end;
+}
+
+.uat-filter-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.uat-filter-grid input,
+.uat-filter-grid select,
+.uat-filter-grid textarea {
+  width: 100%;
+}
+
+.uat-filter-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1100px) {
+  .uat-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 

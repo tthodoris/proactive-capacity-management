@@ -40,6 +40,42 @@ export type UatWorkItem = {
   raw?: Record<string, unknown>
 }
 
+export type UatListItem = {
+  id: number | null
+  title: string | null
+  state: string | null
+  account: string | null
+  eou: string | null
+  areaField: string | null
+  milestoneReason: string | null
+  changedDate: string | null
+  workItemType: string | null
+  htmlUrl: string | null
+}
+
+export type UatWorkItemFilters = {
+  state?: string
+  account?: string
+  id?: string
+  eou?: string
+  areaField?: string
+}
+
+export type UatWorkItemList = {
+  milestoneReason: string
+  fieldMap: Record<string, string>
+  total: number
+  queried: number
+  filters: Required<UatWorkItemFilters>
+  facets: {
+    state: string[]
+    account: string[]
+    eou: string[]
+    areaField: string[]
+  }
+  items: UatListItem[]
+}
+
 export type UatConnection = {
   status:
     | 'idle'
@@ -116,9 +152,20 @@ export function submitUatAccessToken(accessToken: string, expiresOn?: string | n
   })
 }
 
+export function fetchUatWorkItemList(filters: UatWorkItemFilters = {}) {
+  const params = new URLSearchParams()
+  if (filters.state) params.set('state', filters.state)
+  if (filters.account) params.set('account', filters.account)
+  if (filters.id) params.set('id', filters.id)
+  if (filters.eou) params.set('eou', filters.eou)
+  if (filters.areaField) params.set('areaField', filters.areaField)
+  const qs = params.toString()
+  return api<UatWorkItemList>(`/api/uat/workitems${qs ? `?${qs}` : ''}`)
+}
+
 export function fetchUatWorkItem(id?: number | string) {
   if (id == null || id === '') {
-    return api<UatWorkItem>('/api/uat/workitems')
+    return api<UatWorkItemList>('/api/uat/workitems')
   }
   return api<UatWorkItem>(`/api/uat/workitems/${encodeURIComponent(String(id))}`)
 }

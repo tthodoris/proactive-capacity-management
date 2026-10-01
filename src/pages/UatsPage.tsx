@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ClipboardList,
   Copy,
@@ -17,11 +17,13 @@ import {
   disconnectUat,
   fetchUatConfig,
   fetchUatStatus,
-  fetchUatWorkItem,
+  fetchUatWorkItemList,
   submitUatAccessToken,
   type UatConfig,
   type UatConnection,
-  type UatWorkItem,
+  type UatListItem,
+  type UatWorkItemFilters,
+  type UatWorkItemList,
 } from '../lib/uatApi'
 
 function valueOrDash(value: string | number | null | undefined) {
@@ -29,15 +31,23 @@ function valueOrDash(value: string | number | null | undefined) {
   return String(value)
 }
 
+const EMPTY_FILTERS: UatWorkItemFilters = {
+  state: '',
+  account: '',
+  id: '',
+  eou: '',
+  areaField: '',
+}
+
 export function UatsPage() {
   const [config, setConfig] = useState<UatConfig | null>(null)
   const [connection, setConnection] = useState<UatConnection | null>(null)
-  const [workItem, setWorkItem] = useState<UatWorkItem | null>(null)
+  const [list, setList] = useState<UatWorkItemList | null>(null)
+  const [draftFilters, setDraftFilters] = useState<UatWorkItemFilters>(EMPTY_FILTERS)
+  const [appliedFilters, setAppliedFilters] = useState<UatWorkItemFilters>(EMPTY_FILTERS)
   const [loading, setLoading] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [showAllFields, setShowAllFields] = useState(false)
-  const [showRaw, setShowRaw] = useState(false)
   const [copied, setCopied] = useState(false)
   const [accessTokenInput, setAccessTokenInput] = useState('')
   const [submittingToken, setSubmittingToken] = useState(false)
@@ -46,20 +56,31 @@ export function UatsPage() {
   const pending =
     connection?.status === 'awaiting_device_code' || connection?.status === 'authenticating'
   const connected = connection?.status === 'connected'
+  const canQuery =
+    connected ||
+    connection?.authMode === 'pat' ||
+    connection?.authMode === 'pasted_token'
 
-  const loadWorkItem = useCallback(async () => {
+  const loadList = useCallback(async (filters: UatWorkItemFilters = appliedFilters) => {
     setLoading(true)
     setError(null)
     try {
-      const nextItem = await fetchUatWorkItem()
-      setWorkItem(nextItem)
+      const next = await fetchUatWorkItemList(filters)
+      setList(next)
+      setAppliedFilters({
+        state: filters.state || '',
+        account: filters.account || '',
+        id: filters.id || '',
+        eou: filters.eou || '',
+        areaField: filters.areaField || '',
+      })
     } catch (err) {
-      setWorkItem(null)
+      setList(null)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [appliedFilters])
 
   const refreshStatus = useCallback(async () => {
     const [nextConfig, nextStatus] = await Promise.all([fetchUatConfig(), fetchUatStatus()])
@@ -72,14 +93,20 @@ export function UatsPage() {
     void (async () => {
       try {
         const status = await refreshStatus()
-        if (status.status === 'connected' || status.authMode === 'pat' || status.authMode === 'pasted_token') {
-          await loadWorkItem()
+        if (
+          status.status === 'connected' ||
+          status.authMode === 'pat' ||
+          status.authMode === 'pasted_token'
+        ) {
+          await loadList(EMPTY_FILTERS)
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
       }
     })()
-  }, [refreshStatus, loadWorkItem])
+    // intentionally run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (!pending) {
@@ -96,7 +123,7 @@ export function UatsPage() {
           setConnection(status)
           if (status.status === 'connected') {
             setConnecting(false)
-            await loadWorkItem()
+            await loadList(EMPTY_FILTERS)
           }
           if (status.status === 'error' || status.status === 'cancelled') {
             setConnecting(false)
@@ -114,12 +141,12 @@ export function UatsPage() {
         pollRef.current = null
       }
     }
-  }, [pending, loadWorkItem])
+  }, [pending, loadList])
 
   async function onConnect() {
     setConnecting(true)
     setError(null)
-    setWorkItem(null)
+    setList(null)
     try {
       const status = await connectUat()
       setConnection(status)
@@ -143,7 +170,7 @@ export function UatsPage() {
     setError(null)
     try {
       setConnection(await disconnectUat())
-      setWorkItem(null)
+      setList(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -158,7 +185,7 @@ export function UatsPage() {
       const status = await submitUatAccessToken(accessTokenInput.trim())
       setConnection(status)
       setAccessTokenInput('')
-      await loadWorkItem()
+      await loadList(EMPTY_FILTERS)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -173,10 +200,18 @@ export function UatsPage() {
     window.setTimeout(() => setCopied(false), 1500)
   }
 
-  const tags = (workItem?.tags || '')
-    .split(';')
-    .map((tag) => tag.trim())
-    .filter(Boolean)
+  function updateDraft<K extends keyof UatWorkItemFilters>(key: K, value: string) {
+    setDraftFilters((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const items: UatListItem[] = list?.items || []
+  const facets = list?.facets
+
+  const stateOptions = useMemo(() => {
+    const values = new Set([...(facets?.state || [])])
+    if (draftFilters.state) values.add(draftFilters.state)
+    return [...values].sort((a, b) => a.localeCompare(b))
+  }, [facets?.state, draftFilters.state])
 
   return (
     <div className="stack">
@@ -184,31 +219,20 @@ export function UatsPage() {
         <div>
           <h3>UATs</h3>
           <p>
-            Unified Action Tracker work items from Azure DevOps
-            {config ? ` (${config.organization})` : ''}. Sign in with the Microsoft tenant, then load
-            work item {config?.defaultWorkItemId ?? 780831}.
+            Unified Action Tracker work items where MilestoneReason ={' '}
+            <strong>Capacity/Service Availability</strong>
+            {config ? ` (${config.organization})` : ''}.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
-          {workItem?.htmlUrl ? (
-            <a className="btn btn-secondary" href={workItem.htmlUrl} target="_blank" rel="noreferrer">
-              <ExternalLink size={16} />
-              Open in ADO
-            </a>
-          ) : null}
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => void loadWorkItem()}
-            disabled={
-              loading ||
-              (!connected &&
-                connection?.authMode !== 'pat' &&
-                connection?.authMode !== 'pasted_token')
-            }
+            onClick={() => void loadList(draftFilters)}
+            disabled={loading || !canQuery}
           >
             <RefreshCw size={16} />
-            {loading ? 'Loading…' : 'Refresh work item'}
+            {loading ? 'Loading…' : 'Refresh list'}
           </button>
         </div>
       </div>
@@ -340,15 +364,6 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
               </button>
             </div>
           ) : null}
-
-          {config ? (
-            <div className="muted" style={{ fontSize: '0.86rem' }}>
-              API test URL:{' '}
-              <a href={config.testWorkItemUrl} target="_blank" rel="noreferrer">
-                {config.testWorkItemUrl}
-              </a>
-            </div>
-          ) : null}
         </div>
       </section>
 
@@ -356,41 +371,37 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
         <section className="panel">
           <div className="panel-body">
             <div className="empty" style={{ textAlign: 'left' }}>
-              <strong>Could not load UAT work item</strong>
+              <strong>Could not load UAT work items</strong>
               <p style={{ marginTop: '0.55rem' }}>{error}</p>
             </div>
           </div>
         </section>
       ) : null}
 
-      {loading && !workItem ? (
-        <section className="panel">
-          <div className="panel-body">
-            <div className="empty">Loading work item from Azure DevOps…</div>
-          </div>
-        </section>
-      ) : null}
-
-      {workItem ? (
+      {canQuery ? (
         <>
           <div className="metrics">
-            <MetricCard label="ID" value={valueOrDash(workItem.id)} hint={workItem.workItemType || 'Work item'} />
             <MetricCard
-              label="State"
-              value={valueOrDash(workItem.state)}
-              hint={workItem.reason || 'Current workflow state'}
+              label="Matching"
+              value={list?.total ?? 0}
+              hint={list ? `of ${list.queried} Capacity/Service Availability` : 'Not loaded yet'}
+            />
+            <MetricCard
+              label="Milestone"
+              value="Capacity/SA"
+              hint={list?.milestoneReason || 'Capacity/Service Availability'}
               delay={60}
             />
             <MetricCard
-              label="Assigned to"
-              value={valueOrDash(workItem.assignedTo?.displayName)}
-              hint={workItem.assignedTo?.uniqueName || 'Unassigned'}
+              label="States"
+              value={facets?.state.length ?? 0}
+              hint="Distinct status values"
               delay={120}
             />
             <MetricCard
-              label="Changed"
-              value={workItem.changedDate ? formatRelative(workItem.changedDate) : '—'}
-              hint={workItem.changedBy?.displayName || 'Last update'}
+              label="Accounts"
+              value={facets?.account.length ?? 0}
+              hint="Distinct account values"
               delay={180}
             />
           </div>
@@ -398,71 +409,105 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
           <section className="panel">
             <div className="panel-header">
               <div>
-                <h4>{workItem.title || `Work item ${workItem.id}`}</h4>
-                <p>
-                  {workItem.teamProject || '—'} · {workItem.areaPath || '—'} ·{' '}
-                  {workItem.iterationPath || '—'}
-                </p>
+                <h4>Filters</h4>
+                <p>Status, Account, Id, EOU, and AreaField</p>
               </div>
               <ClipboardList size={18} color="#0e7c86" />
             </div>
-            <div className="panel-body stack">
-              <div className="grid-2">
-                <div>
-                  <div className="muted">Priority</div>
-                  <strong>{valueOrDash(workItem.priority)}</strong>
+            <div className="panel-body">
+              <form
+                className="uat-filter-grid"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  void loadList(draftFilters)
+                }}
+              >
+                <label>
+                  <span className="muted">Status</span>
+                  <select
+                    value={draftFilters.state || ''}
+                    onChange={(e) => updateDraft('state', e.target.value)}
+                  >
+                    <option value="">All statuses</option>
+                    {stateOptions.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span className="muted">Account</span>
+                  <input
+                    list="uat-account-options"
+                    value={draftFilters.account || ''}
+                    onChange={(e) => updateDraft('account', e.target.value)}
+                    placeholder="Contains…"
+                  />
+                  <datalist id="uat-account-options">
+                    {(facets?.account || []).map((value) => (
+                      <option key={value} value={value} />
+                    ))}
+                  </datalist>
+                </label>
+                <label>
+                  <span className="muted">Id</span>
+                  <input
+                    value={draftFilters.id || ''}
+                    onChange={(e) => updateDraft('id', e.target.value)}
+                    placeholder="Work item id"
+                  />
+                </label>
+                <label>
+                  <span className="muted">EOU</span>
+                  <input
+                    list="uat-eou-options"
+                    value={draftFilters.eou || ''}
+                    onChange={(e) => updateDraft('eou', e.target.value)}
+                    placeholder="Contains…"
+                  />
+                  <datalist id="uat-eou-options">
+                    {(facets?.eou || []).map((value) => (
+                      <option key={value} value={value} />
+                    ))}
+                  </datalist>
+                </label>
+                <label>
+                  <span className="muted">AreaField</span>
+                  <input
+                    list="uat-area-options"
+                    value={draftFilters.areaField || ''}
+                    onChange={(e) => updateDraft('areaField', e.target.value)}
+                    placeholder="Contains…"
+                  />
+                  <datalist id="uat-area-options">
+                    {(facets?.areaField || []).map((value) => (
+                      <option key={value} value={value} />
+                    ))}
+                  </datalist>
+                </label>
+                <div className="uat-filter-actions">
+                  <button type="submit" className="btn btn-primary" disabled={loading}>
+                    Apply filters
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={loading}
+                    onClick={() => {
+                      setDraftFilters(EMPTY_FILTERS)
+                      void loadList(EMPTY_FILTERS)
+                    }}
+                  >
+                    Clear
+                  </button>
                 </div>
-                <div>
-                  <div className="muted">Severity</div>
-                  <strong>{valueOrDash(workItem.severity)}</strong>
-                </div>
-                <div>
-                  <div className="muted">Created</div>
-                  <strong>
-                    {workItem.createdDate ? formatRelative(workItem.createdDate) : '—'}
-                    {workItem.createdBy?.displayName ? ` · ${workItem.createdBy.displayName}` : ''}
-                  </strong>
-                </div>
-                <div>
-                  <div className="muted">Revision</div>
-                  <strong>{valueOrDash(workItem.rev)}</strong>
-                </div>
-              </div>
-
-              {tags.length ? (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-                  {tags.map((tag) => (
-                    <span key={tag} className="pill pill-medium">
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-
-              {workItem.description ? (
-                <div>
-                  <div className="muted" style={{ marginBottom: '0.35rem' }}>
-                    Description
-                  </div>
-                  <pre className="uat-text-block">{workItem.description}</pre>
-                </div>
-              ) : null}
-
-              {workItem.acceptanceCriteria ? (
-                <div>
-                  <div className="muted" style={{ marginBottom: '0.35rem' }}>
-                    Acceptance criteria
-                  </div>
-                  <pre className="uat-text-block">{workItem.acceptanceCriteria}</pre>
-                </div>
-              ) : null}
-
-              {workItem.reproSteps ? (
-                <div>
-                  <div className="muted" style={{ marginBottom: '0.35rem' }}>
-                    Repro steps
-                  </div>
-                  <pre className="uat-text-block">{workItem.reproSteps}</pre>
+              </form>
+              {list?.fieldMap ? (
+                <div className="muted" style={{ marginTop: '0.75rem', fontSize: '0.82rem' }}>
+                  Resolved fields: MilestoneReason=<code>{list.fieldMap.milestoneReason}</code>, Account=
+                  <code>{list.fieldMap.account}</code>, EOU=<code>{list.fieldMap.eou}</code>, AreaField=
+                  <code>{list.fieldMap.areaField}</code>
                 </div>
               ) : null}
             </div>
@@ -471,86 +516,70 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
           <section className="panel">
             <div className="panel-header">
               <div>
-                <h4>Work item fields</h4>
+                <h4>Work items</h4>
                 <p>
-                  {showAllFields
-                    ? `${workItem.fields.length} fields from Azure DevOps`
-                    : 'Key System / VSTS fields'}
+                  {loading
+                    ? 'Loading…'
+                    : list
+                      ? `${list.total} shown (queried ${list.queried})`
+                      : 'Sign in to load work items'}
                 </p>
               </div>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={() => setShowAllFields((prev) => !prev)}
-              >
-                {showAllFields ? 'Show key fields' : 'Show all fields'}
-              </button>
             </div>
             <div className="panel-body" style={{ overflowX: 'auto' }}>
-              <table className="uat-fields-table">
-                <thead>
-                  <tr>
-                    <th>Field</th>
-                    <th>Value</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(showAllFields
-                    ? workItem.fields
-                    : workItem.fields.filter((row) =>
-                        workItem.priorityFieldNames.includes(row.name),
-                      )
-                  ).map((row) => (
-                    <tr key={row.name}>
-                      <td>
-                        <code>{row.name}</code>
-                      </td>
-                      <td>{row.value || '—'}</td>
+              {loading && !list ? (
+                <div className="empty">Querying Azure DevOps…</div>
+              ) : items.length === 0 ? (
+                <div className="empty">No work items match the current filters.</div>
+              ) : (
+                <table className="uat-fields-table">
+                  <thead>
+                    <tr>
+                      <th>Id</th>
+                      <th>Title</th>
+                      <th>Status</th>
+                      <th>Account</th>
+                      <th>EOU</th>
+                      <th>AreaField</th>
+                      <th>Changed</th>
+                      <th />
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {items.map((item) => (
+                      <tr key={String(item.id)}>
+                        <td>
+                          <code>{valueOrDash(item.id)}</code>
+                        </td>
+                        <td>{valueOrDash(item.title)}</td>
+                        <td>
+                          <span className="pill pill-medium">{valueOrDash(item.state)}</span>
+                        </td>
+                        <td>{valueOrDash(item.account)}</td>
+                        <td>{valueOrDash(item.eou)}</td>
+                        <td>{valueOrDash(item.areaField)}</td>
+                        <td>
+                          {item.changedDate ? formatRelative(item.changedDate) : '—'}
+                        </td>
+                        <td>
+                          {item.htmlUrl ? (
+                            <a
+                              className="btn btn-ghost"
+                              href={item.htmlUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <ExternalLink size={14} />
+                              Open
+                            </a>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
-          </section>
-
-          {workItem.relations.length ? (
-            <section className="panel">
-              <div className="panel-header">
-                <div>
-                  <h4>Relations</h4>
-                  <p>{workItem.relations.length} linked artifacts</p>
-                </div>
-              </div>
-              <div className="panel-body stack">
-                {workItem.relations.map((relation, index) => (
-                  <div key={`${String(relation.rel)}-${index}`} className="list-row">
-                    <div style={{ flex: 1 }}>
-                      <strong>{String(relation.rel || 'relation')}</strong>
-                      <div className="muted" style={{ marginTop: '0.25rem', wordBreak: 'break-all' }}>
-                        {String(relation.url || '—')}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
-          <section className="panel">
-            <div className="panel-header">
-              <div>
-                <h4>Raw API payload</h4>
-                <p>Full Azure DevOps work item JSON</p>
-              </div>
-              <button type="button" className="btn btn-ghost" onClick={() => setShowRaw((prev) => !prev)}>
-                {showRaw ? 'Hide' : 'Show'}
-              </button>
-            </div>
-            {showRaw ? (
-              <div className="panel-body">
-                <pre className="uat-text-block">{JSON.stringify(workItem.raw ?? workItem, null, 2)}</pre>
-              </div>
-            ) : null}
           </section>
         </>
       ) : null}
