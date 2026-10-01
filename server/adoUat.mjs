@@ -30,7 +30,7 @@ try {
  *  startedAt: string | null
  *  connectedAt: string | null
  *  loginPid: number | null
- *  authMode: 'azure_cli' | 'pat' | 'none'
+ *  authMode: 'azure_cli' | 'pasted_token' | 'pat' | 'none'
  * }} */
 const adoConnection = {
   status: 'idle',
@@ -48,8 +48,28 @@ const adoConnection = {
   authMode: 'none',
 }
 
+/** @type {{ accessToken: string, expiresAt: number | null } | null} */
+let pastedAdoToken = null
+
 /** @type {import('node:child_process').ChildProcess | null} */
 let adoLoginProcess = null
+
+const CA_DEVICE_CODE_HINT =
+  'Error 53003: Microsoft Conditional Access blocks device-code login for this tenant. ' +
+  'On Windows, run az login --tenant microsoft.onmicrosoft.com (no --use-device-code), then: ' +
+  'az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv ' +
+  'and paste the token on the UATs page.'
+
+function isConditionalAccessDeviceCodeError(text) {
+  const value = String(text || '')
+  return (
+    /AADSTS53003/i.test(value) ||
+    /Error Code:\s*53003/i.test(value) ||
+    /53003/i.test(value) ||
+    /Block Device Code Flow/i.test(value) ||
+    /authentication flow checks by Conditional Access/i.test(value)
+  )
+}
 
 function quoteWinArg(arg) {
   const s = String(arg)
@@ -225,11 +245,31 @@ async function refreshAdoSessionStatus() {
   }
 }
 
+function getPastedAuthorization() {
+  if (!pastedAdoToken?.accessToken) return null
+  if (pastedAdoToken.expiresAt && Date.now() >= pastedAdoToken.expiresAt) {
+    pastedAdoToken = null
+    if (adoConnection.authMode === 'pasted_token') {
+      adoConnection.status = 'idle'
+      adoConnection.authMode = 'none'
+      adoConnection.message = 'Pasted Azure DevOps token expired. Paste a new access token.'
+      adoConnection.connectedAt = null
+    }
+    return null
+  }
+  return `Bearer ${pastedAdoToken.accessToken}`
+}
+
 /**
- * Prefer the working az login + ADO resource bearer token flow.
- * PAT remains an optional fallback only.
+ * Prefer pasted Windows WAM token (works under CA), then az CLI profile, then PAT.
  */
 async function getAuthorizationHeader() {
+  const pasted = getPastedAuthorization()
+  if (pasted) {
+    adoConnection.authMode = 'pasted_token'
+    return pasted
+  }
+
   try {
     const token = await getAdoBearerToken()
     adoConnection.authMode = 'azure_cli'
@@ -240,16 +280,85 @@ async function getAuthorizationHeader() {
       adoConnection.authMode = 'pat'
       return `Basic ${Buffer.from(`:${pat}`, 'utf8').toString('base64')}`
     }
+    const detail = cliErr instanceof Error ? cliErr.message : String(cliErr)
     const err = new Error(
-      cliErr instanceof Error
-        ? cliErr.message
-        : 'Azure DevOps sign-in required',
+      isConditionalAccessDeviceCodeError(detail) ? CA_DEVICE_CODE_HINT : detail || 'Azure DevOps sign-in required',
     )
     err.status = 401
-    err.hint =
-      `Sign in on the UATs page with tenant ${adoConfig().tenantId} (device code), matching: az login --tenant ${adoConfig().tenantId}`
+    err.hint = CA_DEVICE_CODE_HINT
     throw err
   }
+}
+
+async function validateAdoBearerToken(accessToken) {
+  const { organization } = adoConfig()
+  const url = `https://dev.azure.com/${encodeURIComponent(organization)}/_apis/connectionData?api-version=7.1-preview.1`
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+    },
+  })
+  const text = await response.text()
+  let body
+  try {
+    body = text ? JSON.parse(text) : null
+  } catch {
+    body = null
+  }
+  if (!response.ok) {
+    const message =
+      body?.message ||
+      body?.value?.Message ||
+      `Azure DevOps rejected the access token (${response.status})`
+    const err = new Error(message)
+    err.status = response.status
+    throw err
+  }
+  return body
+}
+
+export async function setAdoAccessToken(accessToken, expiresOn) {
+  const token = String(accessToken || '').trim()
+  if (!token) {
+    const err = new Error('accessToken is required')
+    err.status = 400
+    throw err
+  }
+
+  const connectionData = await validateAdoBearerToken(token)
+  let expiresAt = null
+  if (expiresOn) {
+    const parsed = Date.parse(String(expiresOn))
+    if (Number.isFinite(parsed)) expiresAt = parsed
+  }
+  // Default: treat as ~55 minutes if expiry unknown (ADO AAD tokens are usually ~1h).
+  if (!expiresAt) expiresAt = Date.now() + 55 * 60 * 1000
+
+  pastedAdoToken = { accessToken: token, expiresAt }
+  const authenticated =
+    connectionData?.authenticatedUser?.providerDisplayName ||
+    connectionData?.authenticatedUser?.customDisplayName ||
+    connectionData?.authorizedUser?.providerDisplayName ||
+    null
+
+  adoConnection.status = 'connected'
+  adoConnection.authMode = 'pasted_token'
+  adoConnection.tenantId = adoConfig().tenantId
+  adoConnection.deviceCode = null
+  adoConnection.error = null
+  adoConnection.connectedAt = new Date().toISOString()
+  adoConnection.startedAt = adoConnection.startedAt || adoConnection.connectedAt
+  adoConnection.account = {
+    name: authenticated || 'Pasted access token',
+    tenantId: adoConfig().tenantId,
+    user: { name: authenticated || 'Pasted access token' },
+  }
+  adoConnection.message =
+    `Using pasted Azure DevOps bearer token` +
+    (authenticated ? ` as ${authenticated}` : '') +
+    `. Token expires around ${new Date(expiresAt).toISOString()}.`
+  return publicAdoConnection()
 }
 
 export async function startAdoLogin() {
@@ -370,9 +479,12 @@ export async function startAdoLogin() {
       }
     } else if (adoConnection.status !== 'connected') {
       adoConnection.status = 'error'
-      adoConnection.error = combined.trim() || `az login exited with code ${code}`
-      adoConnection.message = 'Azure DevOps login did not complete.'
+      const detail = combined.trim() || `az login exited with code ${code}`
+      adoConnection.error = detail
       adoConnection.authMode = 'none'
+      adoConnection.message = isConditionalAccessDeviceCodeError(detail)
+        ? CA_DEVICE_CODE_HINT
+        : 'Azure DevOps login did not complete.'
     }
   })
 
@@ -397,6 +509,7 @@ export async function disconnectAdoLogin() {
     adoLoginProcess.kill()
     adoLoginProcess = null
   }
+  pastedAdoToken = null
   const config = adoConfig()
   try {
     await runAzAdo(['logout', '--tenant', config.tenantId], 30_000)
@@ -425,6 +538,11 @@ export async function getAdoStatus() {
     adoConnection.status === 'awaiting_device_code' ||
     adoConnection.status === 'authenticating'
   ) {
+    return publicAdoConnection()
+  }
+  if (getPastedAuthorization()) {
+    adoConnection.status = 'connected'
+    adoConnection.authMode = 'pasted_token'
     return publicAdoConnection()
   }
   return refreshAdoSessionStatus()
@@ -573,9 +691,7 @@ export async function fetchAdoWorkItem(workItemId) {
     const err = new Error(message)
     err.status = response.status
     err.hint =
-      response.status === 401 || response.status === 403
-        ? `Sign in on the UATs page (az login --tenant ${adoConfig().tenantId}), then retry. Org: ${organizationUrl}`
-        : undefined
+      response.status === 401 || response.status === 403 ? CA_DEVICE_CODE_HINT : undefined
     throw err
   }
 

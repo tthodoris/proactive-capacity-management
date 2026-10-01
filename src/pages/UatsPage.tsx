@@ -18,6 +18,7 @@ import {
   fetchUatConfig,
   fetchUatStatus,
   fetchUatWorkItem,
+  submitUatAccessToken,
   type UatConfig,
   type UatConnection,
   type UatWorkItem,
@@ -38,6 +39,8 @@ export function UatsPage() {
   const [showAllFields, setShowAllFields] = useState(false)
   const [showRaw, setShowRaw] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [accessTokenInput, setAccessTokenInput] = useState('')
+  const [submittingToken, setSubmittingToken] = useState(false)
   const pollRef = useRef<number | null>(null)
 
   const pending =
@@ -69,7 +72,7 @@ export function UatsPage() {
     void (async () => {
       try {
         const status = await refreshStatus()
-        if (status.status === 'connected' || status.authMode === 'pat') {
+        if (status.status === 'connected' || status.authMode === 'pat' || status.authMode === 'pasted_token') {
           await loadWorkItem()
         }
       } catch (err) {
@@ -148,6 +151,21 @@ export function UatsPage() {
     }
   }
 
+  async function onSubmitToken() {
+    setSubmittingToken(true)
+    setError(null)
+    try {
+      const status = await submitUatAccessToken(accessTokenInput.trim())
+      setConnection(status)
+      setAccessTokenInput('')
+      await loadWorkItem()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSubmittingToken(false)
+    }
+  }
+
   async function copyCode() {
     if (!connection?.deviceCode) return
     await navigator.clipboard.writeText(connection.deviceCode)
@@ -182,7 +200,12 @@ export function UatsPage() {
             type="button"
             className="btn btn-primary"
             onClick={() => void loadWorkItem()}
-            disabled={loading || (!connected && connection?.authMode !== 'pat')}
+            disabled={
+              loading ||
+              (!connected &&
+                connection?.authMode !== 'pat' &&
+                connection?.authMode !== 'pasted_token')
+            }
           >
             <RefreshCw size={16} />
             {loading ? 'Loading…' : 'Refresh work item'}
@@ -195,32 +218,50 @@ export function UatsPage() {
           <div>
             <h4>Azure DevOps sign-in</h4>
             <p>
-              Uses the same flow as{' '}
-              <code>az login --tenant {config?.tenantId || 'microsoft.onmicrosoft.com'}</code>, then
-              a bearer token for resource <code>499b84ac-1321-427f-aa17-267ca6975798</code>.
+              Microsoft tenant Conditional Access blocks device-code login (error 53003) in Container
+              Apps. Use a Windows WAM token from PowerShell, then paste it here.
             </p>
           </div>
           <PlugZap size={18} color="#0e7c86" />
         </div>
         <div className="panel-body stack">
           {!connected && !pending ? (
-            <div className="list-row">
-              <div style={{ flex: 1 }}>
-                <strong>Not signed in</strong>
-                <div className="muted" style={{ marginTop: '0.25rem' }}>
-                  Organization {config?.organizationUrl || 'https://dev.azure.com/unifiedactiontracker'}{' '}
-                  · Tenant {config?.tenantId || 'microsoft.onmicrosoft.com'}
+            <div className="stack">
+              <div>
+                <strong>Recommended: paste access token</strong>
+                <pre className="uat-text-block" style={{ marginTop: '0.55rem' }}>
+{`az login --tenant microsoft.onmicrosoft.com
+az devops configure --defaults organization=https://dev.azure.com/unifiedactiontracker
+az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv`}
+                </pre>
+                <textarea
+                  value={accessTokenInput}
+                  onChange={(e) => setAccessTokenInput(e.target.value)}
+                  placeholder="Paste the access token from PowerShell"
+                  rows={3}
+                  style={{ width: '100%', marginTop: '0.65rem' }}
+                />
+                <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap', marginTop: '0.65rem' }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => void onSubmitToken()}
+                    disabled={submittingToken || !accessTokenInput.trim()}
+                  >
+                    {submittingToken ? 'Validating…' : 'Use pasted token'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => void onConnect()}
+                    disabled={connecting}
+                    title="Likely blocked by Conditional Access (53003) on Microsoft tenant"
+                  >
+                    <PlugZap size={16} />
+                    Try device-code login
+                  </button>
                 </div>
               </div>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => void onConnect()}
-                disabled={connecting}
-              >
-                <PlugZap size={16} />
-                Sign in with Microsoft tenant
-              </button>
             </div>
           ) : null}
 
@@ -277,7 +318,11 @@ export function UatsPage() {
                 <div className="muted">
                   {connection?.organizationUrl || config?.organizationUrl} · Tenant{' '}
                   {connection?.tenantId || config?.tenantId} · Auth:{' '}
-                  {connection?.authMode === 'azure_cli' ? 'Azure CLI bearer token' : connection?.authMode}
+                  {connection?.authMode === 'azure_cli'
+                    ? 'Azure CLI bearer token'
+                    : connection?.authMode === 'pasted_token'
+                      ? 'Pasted WAM access token'
+                      : connection?.authMode}
                 </div>
                 {connection?.message ? (
                   <div className="muted" style={{ marginTop: '0.25rem' }}>

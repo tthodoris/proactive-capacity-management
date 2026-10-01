@@ -63,6 +63,7 @@ import {
   fetchAdoWorkItem,
   getAdoStatus,
   publicAdoConnection,
+  setAdoAccessToken,
   startAdoLogin,
 } from './adoUat.mjs'
 
@@ -3731,6 +3732,23 @@ app.post('/api/uat/disconnect', async (_req, res) => {
     res.json(await disconnectAdoLogin())
   } catch (err) {
     sendRouteError(res, 500, err, 'Azure DevOps disconnect failed')
+  }
+})
+
+app.post('/api/uat/token', async (req, res) => {
+  try {
+    const accessToken = String(req.body?.accessToken || '').trim()
+    const expiresOn = req.body?.expiresOn || null
+    const connection = await setAdoAccessToken(accessToken, expiresOn)
+    res.json(connection)
+  } catch (err) {
+    const status = Number(err?.status) || 500
+    sendRouteError(
+      res,
+      status >= 400 && status < 600 ? status : 500,
+      err,
+      'Invalid Azure DevOps access token',
+    )
   }
 })
 

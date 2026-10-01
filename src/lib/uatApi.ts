@@ -62,7 +62,7 @@ export type UatConnection = {
   } | null
   startedAt: string | null
   connectedAt: string | null
-  authMode: 'azure_cli' | 'pat' | 'none'
+  authMode: 'azure_cli' | 'pasted_token' | 'pat' | 'none'
   hasPat: boolean
 }
 
@@ -71,7 +71,7 @@ export type UatConfig = {
   organizationUrl: string
   tenantId: string
   defaultWorkItemId: number
-  authMode: 'azure_cli' | 'pat' | 'none'
+  authMode: 'azure_cli' | 'pasted_token' | 'pat' | 'none'
   hasPat: boolean
   testWorkItemUrl: string
   connection: UatConnection
@@ -107,6 +107,13 @@ export function cancelUatLogin() {
 
 export function disconnectUat() {
   return api<UatConnection>('/api/uat/disconnect', { method: 'POST', body: '{}' })
+}
+
+export function submitUatAccessToken(accessToken: string, expiresOn?: string | null) {
+  return api<UatConnection>('/api/uat/token', {
+    method: 'POST',
+    body: JSON.stringify({ accessToken, expiresOn: expiresOn || null }),
+  })
 }
 
 export function fetchUatWorkItem(id?: number | string) {
