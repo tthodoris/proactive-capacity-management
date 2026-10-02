@@ -719,6 +719,13 @@ function escapeWiqlString(value) {
   return String(value).replace(/'/g, "''")
 }
 
+function matchesNeedle(haystack, needle) {
+  if (!needle) return true
+  return String(haystack || '')
+    .toLowerCase()
+    .includes(String(needle).toLowerCase())
+}
+
 const DEFAULT_EXCLUDED_AREA_FIELDS = [
   'United States',
   'Japan',
@@ -735,9 +742,31 @@ const DEFAULT_EXCLUDED_AREA_FIELDS = [
   'ANZ',
 ]
 
+const DEFAULT_EXCLUDED_PREFERRED_REGIONS = [
+  'Australia East',
+  'Israel Central',
+  'Qatar Central',
+  'UAE North',
+  'US West',
+  'US East',
+  'US West 2',
+  'US East 2',
+  'US Sec Central',
+  'Canada Central',
+]
+
 function excludedAreaFields() {
   const raw = process.env.ADO_EXCLUDED_AREA_FIELDS
   if (!raw) return DEFAULT_EXCLUDED_AREA_FIELDS
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+}
+
+function excludedPreferredRegions() {
+  const raw = process.env.ADO_EXCLUDED_PREFERRED_REGIONS
+  if (!raw) return DEFAULT_EXCLUDED_PREFERRED_REGIONS
   return raw
     .split(',')
     .map((value) => value.trim())
@@ -760,6 +789,22 @@ function isExcludedAreaField(areaField) {
     const needle = normalizeAreaToken(excluded)
     return normalized === needle || segments.includes(needle)
   })
+}
+
+function preferredRegionTokens(value) {
+  return String(value || '')
+    .split(/[;,\n|/]+/)
+    .map((part) => normalizeAreaToken(part))
+    .filter(Boolean)
+}
+
+function isExcludedPreferredRegion(azurePreferredRegion) {
+  const tokens = preferredRegionTokens(azurePreferredRegion)
+  if (!tokens.length) return false
+  const excluded = excludedPreferredRegions().map(normalizeAreaToken)
+  return tokens.some((token) =>
+    excluded.some((needle) => token === needle || token.includes(needle) || needle.includes(token)),
+  )
 }
 
 /** @type {null | Record<string, any>} */
@@ -1161,7 +1206,9 @@ export async function listCapacityWorkItems(filters = {}) {
     .filter((value) => Number.isFinite(value) && value > 0)
 
   const allItems = (await fetchWorkItemsByIds(ids, fieldMap)).filter(
-    (item) => !isExcludedAreaField(item.areaField),
+    (item) =>
+      !isExcludedAreaField(item.areaField) &&
+      !isExcludedPreferredRegion(item.azurePreferredRegion),
   )
 
   const uniqueValues = (rows, key) =>
@@ -1174,6 +1221,7 @@ export async function listCapacityWorkItems(filters = {}) {
     account: uniqueValues(allItems, 'account'),
     eou: uniqueValues(allItems, 'eou'),
     areaField: uniqueValues(allItems, 'areaField'),
+    azurePreferredRegion: uniqueValues(allItems, 'azurePreferredRegion'),
   }
 
   let items = allItems
@@ -1186,6 +1234,7 @@ export async function listCapacityWorkItems(filters = {}) {
   return {
     milestoneReason: milestoneValue,
     excludedAreaFields: excludedAreaFields(),
+    excludedPreferredRegions: excludedPreferredRegions(),
     fieldMap: Object.fromEntries(
       ['id', 'title', 'state', 'changedDate', ...LIST_ITEM_KEYS].map((key) => [key, fieldMap[key]]),
     ),

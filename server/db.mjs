@@ -239,6 +239,41 @@ export async function initDb() {
       ON cost_line_items(customer_id);
     CREATE INDEX IF NOT EXISTS idx_cost_retrievals_retrieved
       ON cost_retrievals(retrieved_at DESC);
+
+    CREATE TABLE IF NOT EXISTS uat_work_items (
+      work_item_id BIGINT PRIMARY KEY,
+      title TEXT,
+      state TEXT,
+      account TEXT,
+      eou TEXT,
+      area_field TEXT,
+      milestone_reason TEXT,
+      requestors TEXT,
+      tpid TEXT,
+      no_nai_sku_1 TEXT,
+      no_nai_uom_1 TEXT,
+      no_nai_quantity_1 TEXT,
+      est_monthly_usages TEXT,
+      requested_date TEXT,
+      opportunity_id TEXT,
+      milestone_id TEXT,
+      azure_preferred_region TEXT,
+      azure_capacity_type_multiline TEXT,
+      primary_competitor TEXT,
+      action_priority TEXT,
+      no_nai_regional TEXT,
+      work_item_type TEXT,
+      html_url TEXT,
+      changed_date TIMESTAMPTZ,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      retrieved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_uat_work_items_state ON uat_work_items(state);
+    CREATE INDEX IF NOT EXISTS idx_uat_work_items_account ON uat_work_items(account);
+    CREATE INDEX IF NOT EXISTS idx_uat_work_items_region ON uat_work_items(azure_preferred_region);
+    CREATE INDEX IF NOT EXISTS idx_uat_work_items_updated ON uat_work_items(updated_at DESC);
   `)
 
   await pool.query(`
@@ -1543,3 +1578,149 @@ export async function listStoredCosts({ azureSubscriptionIds = [] } = {}) {
 function randomId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
+
+function mapUatWorkItem(row) {
+  const payload = row.payload && typeof row.payload === 'object' ? row.payload : {}
+  return {
+    id: Number(row.work_item_id),
+    title: row.title ?? payload.title ?? null,
+    state: row.state ?? payload.state ?? null,
+    account: row.account ?? payload.account ?? null,
+    eou: row.eou ?? payload.eou ?? null,
+    areaField: row.area_field ?? payload.areaField ?? null,
+    milestoneReason: row.milestone_reason ?? payload.milestoneReason ?? null,
+    requestors: row.requestors ?? payload.requestors ?? null,
+    tpid: row.tpid ?? payload.tpid ?? null,
+    noNaiSku1: row.no_nai_sku_1 ?? payload.noNaiSku1 ?? null,
+    noNaiUom1: row.no_nai_uom_1 ?? payload.noNaiUom1 ?? null,
+    noNaiQuantity1: row.no_nai_quantity_1 ?? payload.noNaiQuantity1 ?? null,
+    estMonthlyUsages: row.est_monthly_usages ?? payload.estMonthlyUsages ?? null,
+    requestedDate: row.requested_date ?? payload.requestedDate ?? null,
+    opportunityId: row.opportunity_id ?? payload.opportunityId ?? null,
+    milestoneId: row.milestone_id ?? payload.milestoneId ?? null,
+    azurePreferredRegion: row.azure_preferred_region ?? payload.azurePreferredRegion ?? null,
+    azureCapacityTypeMultiline:
+      row.azure_capacity_type_multiline ?? payload.azureCapacityTypeMultiline ?? null,
+    primaryCompetitor: row.primary_competitor ?? payload.primaryCompetitor ?? null,
+    actionPriority: row.action_priority ?? payload.actionPriority ?? null,
+    noNaiRegional: row.no_nai_regional ?? payload.noNaiRegional ?? null,
+    changedDate: row.changed_date
+      ? new Date(row.changed_date).toISOString()
+      : payload.changedDate ?? null,
+    workItemType: row.work_item_type ?? payload.workItemType ?? null,
+    htmlUrl: row.html_url ?? payload.htmlUrl ?? null,
+    retrievedAt: row.retrieved_at ? new Date(row.retrieved_at).toISOString() : null,
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+  }
+}
+
+/** Upsert UAT work items by Azure DevOps work item id. */
+export async function upsertUatWorkItems(items = []) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return { saved: 0, updated: 0 }
+  }
+
+  let saved = 0
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    for (const item of items) {
+      const workItemId = Number(item?.id)
+      if (!Number.isFinite(workItemId) || workItemId <= 0) continue
+      const changedDate = item.changedDate ? new Date(item.changedDate) : null
+      await client.query(
+        `
+        INSERT INTO uat_work_items (
+          work_item_id, title, state, account, eou, area_field, milestone_reason,
+          requestors, tpid, no_nai_sku_1, no_nai_uom_1, no_nai_quantity_1,
+          est_monthly_usages, requested_date, opportunity_id, milestone_id,
+          azure_preferred_region, azure_capacity_type_multiline, primary_competitor,
+          action_priority, no_nai_regional, work_item_type, html_url, changed_date,
+          payload, retrieved_at, updated_at
+        ) VALUES (
+          $1,$2,$3,$4,$5,$6,$7,
+          $8,$9,$10,$11,$12,
+          $13,$14,$15,$16,
+          $17,$18,$19,
+          $20,$21,$22,$23,$24,
+          $25::jsonb, NOW(), NOW()
+        )
+        ON CONFLICT (work_item_id) DO UPDATE SET
+          title = EXCLUDED.title,
+          state = EXCLUDED.state,
+          account = EXCLUDED.account,
+          eou = EXCLUDED.eou,
+          area_field = EXCLUDED.area_field,
+          milestone_reason = EXCLUDED.milestone_reason,
+          requestors = EXCLUDED.requestors,
+          tpid = EXCLUDED.tpid,
+          no_nai_sku_1 = EXCLUDED.no_nai_sku_1,
+          no_nai_uom_1 = EXCLUDED.no_nai_uom_1,
+          no_nai_quantity_1 = EXCLUDED.no_nai_quantity_1,
+          est_monthly_usages = EXCLUDED.est_monthly_usages,
+          requested_date = EXCLUDED.requested_date,
+          opportunity_id = EXCLUDED.opportunity_id,
+          milestone_id = EXCLUDED.milestone_id,
+          azure_preferred_region = EXCLUDED.azure_preferred_region,
+          azure_capacity_type_multiline = EXCLUDED.azure_capacity_type_multiline,
+          primary_competitor = EXCLUDED.primary_competitor,
+          action_priority = EXCLUDED.action_priority,
+          no_nai_regional = EXCLUDED.no_nai_regional,
+          work_item_type = EXCLUDED.work_item_type,
+          html_url = EXCLUDED.html_url,
+          changed_date = EXCLUDED.changed_date,
+          payload = EXCLUDED.payload,
+          retrieved_at = NOW(),
+          updated_at = NOW()
+        `,
+        [
+          workItemId,
+          item.title || null,
+          item.state || null,
+          item.account || null,
+          item.eou || null,
+          item.areaField || null,
+          item.milestoneReason || null,
+          item.requestors || null,
+          item.tpid || null,
+          item.noNaiSku1 || null,
+          item.noNaiUom1 || null,
+          item.noNaiQuantity1 || null,
+          item.estMonthlyUsages || null,
+          item.requestedDate || null,
+          item.opportunityId || null,
+          item.milestoneId || null,
+          item.azurePreferredRegion || null,
+          item.azureCapacityTypeMultiline || null,
+          item.primaryCompetitor || null,
+          item.actionPriority || null,
+          item.noNaiRegional || null,
+          item.workItemType || null,
+          item.htmlUrl || null,
+          changedDate && !Number.isNaN(changedDate.getTime()) ? changedDate.toISOString() : null,
+          JSON.stringify(item),
+        ],
+      )
+      saved += 1
+    }
+    await client.query('COMMIT')
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+  return { saved }
+}
+
+export async function listStoredUatWorkItems() {
+  const res = await pool.query(
+    `
+    SELECT *
+    FROM uat_work_items
+    ORDER BY changed_date DESC NULLS LAST, work_item_id DESC
+    `,
+  )
+  return res.rows.map(mapUatWorkItem)
+}
+

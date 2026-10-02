@@ -307,8 +307,9 @@ export function UatsPage() {
           <p>
             Unified Action Tracker work items where MilestoneReason ={' '}
             <strong>Capacity/Service Availability</strong>
-            {config ? ` (${config.organization})` : ''}. Regional AreaFields such as United States,
-            Japan, and UK & Ireland are excluded. Click a column name to filter values.
+            {config ? ` (${config.organization})` : ''}. Regional AreaFields and selected
+            AzurePreferredRegion values are excluded. Retrieved rows are upserted into Postgres.
+            Click a column name to filter values.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
@@ -500,8 +501,12 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
                     : list
                       ? `${rows.length} of ${list.included ?? list.total} work items`
                       : 'Sign in to load work items'}
+                  {typeof list?.saved === 'number' ? ` · saved ${list.saved}` : ''}
                   {list?.excludedAreaFields?.length
                     ? ` · excluded AreaFields: ${list.excludedAreaFields.join(', ')}`
+                    : ''}
+                  {list?.excludedPreferredRegions?.length
+                    ? ` · excluded AzurePreferredRegion: ${list.excludedPreferredRegions.join(', ')}`
                     : ''}
                 </p>
               </div>

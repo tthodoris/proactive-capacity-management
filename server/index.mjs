@@ -36,6 +36,8 @@ import {
   appendAgentChatTurn,
   replaceSubscriptionCosts,
   listStoredCosts,
+  upsertUatWorkItems,
+  listStoredUatWorkItems,
 } from './db.mjs'
 import { toSkuFamily } from './skuFamily.mjs'
 import { enrichResultsWithRetailPrices } from './retailPrices.mjs'
@@ -3770,6 +3772,22 @@ app.get('/api/uat/workitems/:id', async (req, res) => {
 
 app.get('/api/uat/workitems', async (req, res) => {
   try {
+    const source = String(req.query.source || 'ado').toLowerCase()
+    if (source === 'db') {
+      const items = await listStoredUatWorkItems()
+      return res.json({
+        milestoneReason: process.env.ADO_MILESTONE_REASON_VALUE || 'Capacity/Service Availability',
+        source: 'db',
+        total: items.length,
+        queried: items.length,
+        included: items.length,
+        saved: items.length,
+        excludedAreaFields: [],
+        excludedPreferredRegions: [],
+        items,
+      })
+    }
+
     const result = await listCapacityWorkItems({
       state: req.query.state || req.query.status,
       account: req.query.account,
@@ -3778,7 +3796,12 @@ app.get('/api/uat/workitems', async (req, res) => {
       areaField: req.query.areaField,
       top: req.query.top,
     })
-    res.json(result)
+    const persist = await upsertUatWorkItems(result.items)
+    res.json({
+      ...result,
+      source: 'ado',
+      saved: persist.saved,
+    })
   } catch (err) {
     const status = Number(err?.status) || 500
     sendRouteError(

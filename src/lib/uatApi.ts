@@ -78,16 +78,20 @@ export type UatWorkItemFilters = {
 export type UatWorkItemList = {
   milestoneReason: string
   excludedAreaFields?: string[]
-  fieldMap: Record<string, string>
+  excludedPreferredRegions?: string[]
+  fieldMap?: Record<string, string>
   total: number
   queried: number
   included?: number
-  filters: Required<UatWorkItemFilters>
-  facets: {
+  saved?: number
+  source?: 'ado' | 'db'
+  filters?: Required<UatWorkItemFilters>
+  facets?: {
     state: string[]
     account: string[]
     eou: string[]
     areaField: string[]
+    azurePreferredRegion?: string[]
   }
   items: UatListItem[]
 }
