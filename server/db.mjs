@@ -1721,6 +1721,14 @@ export async function listStoredUatWorkItems() {
     ORDER BY changed_date DESC NULLS LAST, work_item_id DESC
     `,
   )
-  return res.rows.map(mapUatWorkItem)
+  const items = res.rows.map(mapUatWorkItem)
+  let lastRetrievedAt = null
+  for (const item of items) {
+    if (!item.retrievedAt) continue
+    if (!lastRetrievedAt || item.retrievedAt > lastRetrievedAt) {
+      lastRetrievedAt = item.retrievedAt
+    }
+  }
+  return { items, lastRetrievedAt }
 }
 

@@ -85,6 +85,7 @@ export type UatWorkItemList = {
   included?: number
   saved?: number
   source?: 'ado' | 'db'
+  lastRetrievedAt?: string | null
   filters?: Required<UatWorkItemFilters>
   facets?: {
     state: string[]
@@ -172,8 +173,11 @@ export function submitUatAccessToken(accessToken: string, expiresOn?: string | n
   })
 }
 
-export function fetchUatWorkItemList(filters: UatWorkItemFilters = {}) {
+export function fetchUatWorkItemList(
+  filters: UatWorkItemFilters & { source?: 'ado' | 'db' } = {},
+) {
   const params = new URLSearchParams()
+  if (filters.source) params.set('source', filters.source)
   if (filters.state) params.set('state', filters.state)
   if (filters.account) params.set('account', filters.account)
   if (filters.id) params.set('id', filters.id)

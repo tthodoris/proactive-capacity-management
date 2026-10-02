@@ -3774,17 +3774,18 @@ app.get('/api/uat/workitems', async (req, res) => {
   try {
     const source = String(req.query.source || 'ado').toLowerCase()
     if (source === 'db') {
-      const items = await listStoredUatWorkItems()
+      const stored = await listStoredUatWorkItems()
       return res.json({
         milestoneReason: process.env.ADO_MILESTONE_REASON_VALUE || 'Capacity/Service Availability',
         source: 'db',
-        total: items.length,
-        queried: items.length,
-        included: items.length,
-        saved: items.length,
+        total: stored.items.length,
+        queried: stored.items.length,
+        included: stored.items.length,
+        saved: stored.items.length,
+        lastRetrievedAt: stored.lastRetrievedAt,
         excludedAreaFields: [],
         excludedPreferredRegions: [],
-        items,
+        items: stored.items,
       })
     }
 
@@ -3797,10 +3798,12 @@ app.get('/api/uat/workitems', async (req, res) => {
       top: req.query.top,
     })
     const persist = await upsertUatWorkItems(result.items)
+    const lastRetrievedAt = new Date().toISOString()
     res.json({
       ...result,
       source: 'ado',
       saved: persist.saved,
+      lastRetrievedAt,
     })
   } catch (err) {
     const status = Number(err?.status) || 500

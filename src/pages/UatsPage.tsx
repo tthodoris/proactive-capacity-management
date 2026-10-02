@@ -90,6 +90,7 @@ export function UatsPage() {
   const [list, setList] = useState<UatWorkItemList | null>(null)
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -115,16 +116,28 @@ export function UatsPage() {
     connection?.authMode === 'pat' ||
     connection?.authMode === 'pasted_token'
 
-  const loadList = useCallback(async () => {
+  const loadSavedList = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      setList(await fetchUatWorkItemList())
+      setList(await fetchUatWorkItemList({ source: 'db' }))
     } catch (err) {
       setList(null)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
+    }
+  }, [])
+
+  const refreshFromAdo = useCallback(async () => {
+    setRefreshing(true)
+    setError(null)
+    try {
+      setList(await fetchUatWorkItemList({ source: 'ado' }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRefreshing(false)
     }
   }, [])
 
@@ -138,19 +151,12 @@ export function UatsPage() {
   useEffect(() => {
     void (async () => {
       try {
-        const status = await refreshStatus()
-        if (
-          status.status === 'connected' ||
-          status.authMode === 'pat' ||
-          status.authMode === 'pasted_token'
-        ) {
-          await loadList()
-        }
+        await Promise.all([refreshStatus(), loadSavedList()])
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
       }
     })()
-  }, [refreshStatus, loadList])
+  }, [refreshStatus, loadSavedList])
 
   useEffect(() => {
     if (!pending) {
@@ -167,7 +173,7 @@ export function UatsPage() {
           setConnection(status)
           if (status.status === 'connected') {
             setConnecting(false)
-            await loadList()
+            await refreshFromAdo()
           }
           if (status.status === 'error' || status.status === 'cancelled') {
             setConnecting(false)
@@ -185,12 +191,11 @@ export function UatsPage() {
         pollRef.current = null
       }
     }
-  }, [pending, loadList])
+  }, [pending, refreshFromAdo])
 
   async function onConnect() {
     setConnecting(true)
     setError(null)
-    setList(null)
     try {
       setConnection(await connectUat())
     } catch (err) {
@@ -213,7 +218,6 @@ export function UatsPage() {
     setError(null)
     try {
       setConnection(await disconnectUat())
-      setList(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -227,7 +231,7 @@ export function UatsPage() {
     try {
       setConnection(await submitUatAccessToken(accessTokenInput.trim()))
       setAccessTokenInput('')
-      await loadList()
+      await refreshFromAdo()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -307,20 +311,24 @@ export function UatsPage() {
           <p>
             Unified Action Tracker work items where MilestoneReason ={' '}
             <strong>Capacity/Service Availability</strong>
-            {config ? ` (${config.organization})` : ''}. Regional AreaFields and selected
-            AzurePreferredRegion values are excluded. Retrieved rows are upserted into Postgres.
-            Click a column name to filter values.
+            {config ? ` (${config.organization})` : ''}. Opens the last saved list from Postgres;
+            use Refresh to pull from Azure DevOps and upsert. Click a column name to filter values.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => void loadList()}
-            disabled={loading || !canQuery}
+            onClick={() => void refreshFromAdo()}
+            disabled={refreshing || loading || !canQuery}
+            title={
+              canQuery
+                ? 'Refresh from Azure DevOps and save to Postgres'
+                : 'Sign in to Azure DevOps to refresh'
+            }
           >
             <RefreshCw size={16} />
-            {loading ? 'Loading…' : 'Refresh list'}
+            {refreshing ? 'Refreshing…' : 'Refresh from Azure DevOps'}
           </button>
         </div>
       </div>
@@ -466,8 +474,15 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
         </section>
       ) : null}
 
-      {canQuery ? (
-        <>
+      {canQuery ? null : (
+        <section className="panel" style={{ marginBottom: '1rem' }}>
+          <p className="muted" style={{ margin: 0 }}>
+            Showing the last saved list from Postgres. Sign in above to refresh from Azure DevOps.
+          </p>
+        </section>
+      )}
+
+      <>
           <div className="filters" style={{ alignItems: 'center' }}>
             <div className="search">
               <Search size={16} />
@@ -497,11 +512,17 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
                 <h4>Capacity / Service Availability</h4>
                 <p>
                   {loading
-                    ? 'Loading…'
-                    : list
-                      ? `${rows.length} of ${list.included ?? list.total} work items`
-                      : 'Sign in to load work items'}
+                    ? 'Loading saved list…'
+                    : refreshing
+                      ? 'Refreshing from Azure DevOps…'
+                      : list
+                        ? `${rows.length} of ${list.included ?? list.total} work items`
+                        : 'No saved UAT work items yet'}
                   {typeof list?.saved === 'number' ? ` · saved ${list.saved}` : ''}
+                  {list?.lastRetrievedAt
+                    ? ` · last saved ${new Date(list.lastRetrievedAt).toLocaleString()}`
+                    : ''}
+                  {list?.source ? ` · source: ${list.source}` : ''}
                   {list?.excludedAreaFields?.length
                     ? ` · excluded AreaFields: ${list.excludedAreaFields.join(', ')}`
                     : ''}
@@ -567,17 +588,23 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
                       </td>
                     </tr>
                   ))}
-                  {!loading && rows.length === 0 ? (
+                  {!loading && !refreshing && rows.length === 0 ? (
                     <tr>
                       <td colSpan={UAT_COLUMNS.length + 1}>
-                        <div className="empty">No work items match the current filters.</div>
+                        <div className="empty">
+                          {list
+                            ? 'No work items match the current filters.'
+                            : 'No saved UAT work items yet. Sign in and refresh from Azure DevOps.'}
+                        </div>
                       </td>
                     </tr>
                   ) : null}
-                  {loading && rows.length === 0 ? (
+                  {(loading || refreshing) && rows.length === 0 ? (
                     <tr>
                       <td colSpan={UAT_COLUMNS.length + 1}>
-                        <div className="empty">Querying Azure DevOps…</div>
+                        <div className="empty">
+                          {refreshing ? 'Querying Azure DevOps…' : 'Loading saved list…'}
+                        </div>
                       </td>
                     </tr>
                   ) : null}
@@ -585,8 +612,7 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
               </table>
             </div>
           </section>
-        </>
-      ) : null}
+      </>
     </div>
   )
 }
