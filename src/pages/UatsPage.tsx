@@ -53,6 +53,9 @@ type UatSortKey =
   | 'primaryCompetitor'
   | 'actionPriority'
   | 'noNaiRegional'
+  | 'noNaiRequestType'
+  | 'noNaiSubscriptionId'
+  | 'noNaiSr'
   | 'changedDate'
 
 const UAT_COLUMNS: Array<[UatSortKey, string]> = [
@@ -66,6 +69,9 @@ const UAT_COLUMNS: Array<[UatSortKey, string]> = [
   ['noNaiQuantity1', 'NoNAI_Quantity_1'],
   ['azurePreferredRegion', 'AzurePreferredRegion'],
   ['noNaiRegional', 'NoNAI_Regional'],
+  ['noNaiRequestType', 'NoNAI_RequestType'],
+  ['noNaiSubscriptionId', 'NoNAI_SubscriptionID'],
+  ['noNaiSr', 'NoNAI_SR'],
   ['areaField', 'AreaField'],
   ['tpid', 'TPID'],
   ['requestedDate', 'Requested Date'],
@@ -75,6 +81,13 @@ const UAT_COLUMNS: Array<[UatSortKey, string]> = [
 function valueOrDash(value: string | number | null | undefined) {
   if (value == null || value === '') return '—'
   return String(value)
+}
+
+function formatEstMonthlyUsages(value: string | number | null | undefined) {
+  if (value == null || value === '') return ''
+  const num = Number(String(value).replace(/,/g, '').trim())
+  if (!Number.isFinite(num)) return String(value)
+  return num.toFixed(2)
 }
 
 export function UatsPage() {
@@ -247,6 +260,8 @@ export function UatsPage() {
         return item.changedDate ? formatRelative(item.changedDate) : '—'
       case 'requestedDate':
         return item.requestedDate ? formatDate(item.requestedDate) : '—'
+      case 'estMonthlyUsages':
+        return formatEstMonthlyUsages(item.estMonthlyUsages)
       default: {
         const value = item[key as keyof UatListItem]
         return value == null ? '' : String(value)
@@ -259,6 +274,10 @@ export function UatsPage() {
       return (item[key as 'changedDate' | 'requestedDate'] as string | null) || ''
     }
     if (key === 'id') return item.id ?? 0
+    if (key === 'estMonthlyUsages') {
+      const num = Number(String(item.estMonthlyUsages ?? '').replace(/,/g, '').trim())
+      return Number.isFinite(num) ? num : 0
+    }
     return getValue(item, key)
   }, [getValue])
 

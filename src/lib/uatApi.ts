@@ -62,6 +62,9 @@ export type UatListItem = {
   primaryCompetitor: string | null
   actionPriority: string | null
   noNaiRegional: string | null
+  noNaiRequestType: string | null
+  noNaiSubscriptionId: string | null
+  noNaiSr: string | null
   changedDate: string | null
   workItemType: string | null
   htmlUrl: string | null

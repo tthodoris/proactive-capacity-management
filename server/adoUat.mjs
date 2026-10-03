@@ -715,6 +715,15 @@ function fieldDisplayValue(value) {
   return String(value)
 }
 
+/** Round Est Monthly Usages to two decimal places when numeric. */
+export function formatEstMonthlyUsages(value) {
+  const display = fieldDisplayValue(value)
+  if (!display) return null
+  const num = Number(String(display).replace(/,/g, '').trim())
+  if (!Number.isFinite(num)) return display
+  return num.toFixed(2)
+}
+
 function escapeWiqlString(value) {
   return String(value).replace(/'/g, "''")
 }
@@ -941,6 +950,34 @@ const LIST_FIELD_DEFS = [
     env: 'ADO_FIELD_NONAI_REGIONAL',
     fallback: 'Custom.NoNAI_Regional',
   },
+  {
+    key: 'noNaiRequestType',
+    candidates: [
+      'NoNAI_RequestType',
+      'NoNAI Request Type',
+      'NoNAIRequestType',
+      'Custom.NoNAI_RequestType',
+    ],
+    env: 'ADO_FIELD_NONAI_REQUEST_TYPE',
+    fallback: 'Custom.NoNAI_RequestType',
+  },
+  {
+    key: 'noNaiSubscriptionId',
+    candidates: [
+      'NoNAI_SubscriptionID',
+      'NoNAI Subscription ID',
+      'NoNAISubscriptionID',
+      'Custom.NoNAI_SubscriptionID',
+    ],
+    env: 'ADO_FIELD_NONAI_SUBSCRIPTION_ID',
+    fallback: 'Custom.NoNAI_SubscriptionID',
+  },
+  {
+    key: 'noNaiSr',
+    candidates: ['NoNAI_SR', 'NoNAI SR', 'NoNAISR', 'Custom.NoNAI_SR'],
+    env: 'ADO_FIELD_NONAI_SR',
+    fallback: 'Custom.NoNAI_SR',
+  },
 ]
 
 const LIST_ITEM_KEYS = [
@@ -962,6 +999,9 @@ const LIST_ITEM_KEYS = [
   'primaryCompetitor',
   'actionPriority',
   'noNaiRegional',
+  'noNaiRequestType',
+  'noNaiSubscriptionId',
+  'noNaiSr',
 ]
 
 async function adoApi(pathname, { method = 'GET', body, query } = {}) {
@@ -1138,7 +1178,11 @@ function summarizeListItem(raw, fieldMap) {
   }
   for (const def of LIST_FIELD_DEFS) {
     const rawValue = readRawFieldValue(fields, fieldMap[def.key], def.candidates)
-    item[def.key] = fieldDisplayValue(rawValue) || null
+    if (def.key === 'estMonthlyUsages') {
+      item[def.key] = formatEstMonthlyUsages(rawValue)
+    } else {
+      item[def.key] = fieldDisplayValue(rawValue) || null
+    }
   }
   return item
 }
