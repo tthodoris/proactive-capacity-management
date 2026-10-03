@@ -3814,23 +3814,37 @@ app.get('/api/uat/workitems', async (req, res) => {
       areaField: req.query.areaField,
       top: req.query.top,
     })
-    const persist = await saveUatSnapshot({
-      items: result.items,
-      queriedCount: result.queried,
-      milestoneReason: result.milestoneReason,
-      excludedAreaFields: result.excludedAreaFields,
-      excludedPreferredRegions: result.excludedPreferredRegions,
-      source: 'ado',
-      meta: { fieldMap: result.fieldMap || null },
-    })
-    const snapshots = await listUatSnapshots()
+
+    let persist = null
+    let snapshotError = null
+    try {
+      persist = await saveUatSnapshot({
+        items: result.items,
+        queriedCount: result.queried,
+        milestoneReason: result.milestoneReason,
+        excludedAreaFields: result.excludedAreaFields,
+        excludedPreferredRegions: result.excludedPreferredRegions,
+        source: 'ado',
+        meta: {
+          fieldMap: result.fieldMap || null,
+          exclusionsAppliedInWiql: result.exclusionsAppliedInWiql ?? null,
+        },
+      })
+    } catch (err) {
+      // Still return ADO rows if snapshot persistence fails (timeout/schema/etc).
+      snapshotError = err?.message || String(err)
+      console.error('UAT snapshot save failed:', snapshotError)
+    }
+
+    const snapshots = persist ? await listUatSnapshots() : undefined
     res.json({
       ...result,
       source: 'ado',
-      saved: persist.saved,
-      snapshot: persist.snapshot,
-      snapshots,
-      lastRetrievedAt: persist.snapshot.retrievedAt,
+      saved: persist?.saved ?? 0,
+      snapshot: persist?.snapshot ?? null,
+      snapshots: snapshots || [],
+      lastRetrievedAt: persist?.snapshot?.retrievedAt || new Date().toISOString(),
+      snapshotError,
     })
   } catch (err) {
     const status = Number(err?.status) || 500

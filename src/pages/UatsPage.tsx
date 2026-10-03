@@ -591,6 +591,7 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
                       : ''}
                   {list?.source ? ` · source: ${list.source}` : ''}
                   {snapshots.length ? ` · ${snapshots.length} snapshot${snapshots.length === 1 ? '' : 's'}` : ''}
+                  {list?.snapshotError ? ` · snapshot save warning: ${list.snapshotError}` : ''}
                   {list?.excludedAreaFields?.length
                     ? ` · excluded AreaFields: ${list.excludedAreaFields.join(', ')}`
                     : ''}

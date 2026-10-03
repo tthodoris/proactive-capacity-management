@@ -1713,13 +1713,88 @@ function mapUatSnapshot(row) {
 }
 
 async function insertUatSnapshotItems(client, snapshotId, items = []) {
-  let saved = 0
+  const rows = []
   for (const item of items) {
     const workItemId = Number(item?.id)
     if (!Number.isFinite(workItemId) || workItemId <= 0) continue
     const changedDate = item.changedDate ? new Date(item.changedDate) : null
     const changedDateIso =
       changedDate && !Number.isNaN(changedDate.getTime()) ? changedDate.toISOString() : null
+    rows.push({
+      workItemId,
+      title: item.title || null,
+      state: item.state || null,
+      account: item.account || null,
+      eou: item.eou || null,
+      areaField: item.areaField || null,
+      milestoneReason: item.milestoneReason || null,
+      requestors: item.requestors || null,
+      tpid: item.tpid || null,
+      noNaiSku1: item.noNaiSku1 || null,
+      noNaiUom1: item.noNaiUom1 || null,
+      noNaiQuantity1: item.noNaiQuantity1 || null,
+      estMonthlyUsages: item.estMonthlyUsages || null,
+      requestedDate: item.requestedDate || null,
+      opportunityId: item.opportunityId || null,
+      milestoneId: item.milestoneId || null,
+      azurePreferredRegion: item.azurePreferredRegion || null,
+      azureCapacityTypeMultiline: item.azureCapacityTypeMultiline || null,
+      primaryCompetitor: item.primaryCompetitor || null,
+      actionPriority: item.actionPriority || null,
+      noNaiRegional: item.noNaiRegional || null,
+      noNaiRequestType: item.noNaiRequestType || null,
+      noNaiSubscriptionId: item.noNaiSubscriptionId || null,
+      noNaiSr: item.noNaiSr || null,
+      workItemType: item.workItemType || null,
+      htmlUrl: item.htmlUrl || null,
+      changedDateIso,
+      payloadJson: JSON.stringify(item),
+    })
+  }
+
+  const chunkSize = 100
+  let saved = 0
+  for (let offset = 0; offset < rows.length; offset += chunkSize) {
+    const chunk = rows.slice(offset, offset + chunkSize)
+    const values = []
+    const params = []
+    let p = 1
+    for (const row of chunk) {
+      values.push(
+        `($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++}::jsonb)`,
+      )
+      params.push(
+        snapshotId,
+        row.workItemId,
+        row.title,
+        row.state,
+        row.account,
+        row.eou,
+        row.areaField,
+        row.milestoneReason,
+        row.requestors,
+        row.tpid,
+        row.noNaiSku1,
+        row.noNaiUom1,
+        row.noNaiQuantity1,
+        row.estMonthlyUsages,
+        row.requestedDate,
+        row.opportunityId,
+        row.milestoneId,
+        row.azurePreferredRegion,
+        row.azureCapacityTypeMultiline,
+        row.primaryCompetitor,
+        row.actionPriority,
+        row.noNaiRegional,
+        row.noNaiRequestType,
+        row.noNaiSubscriptionId,
+        row.noNaiSr,
+        row.workItemType,
+        row.htmlUrl,
+        row.changedDateIso,
+        row.payloadJson,
+      )
+    }
     await client.query(
       `
       INSERT INTO uat_snapshot_items (
@@ -1729,49 +1804,12 @@ async function insertUatSnapshotItems(client, snapshotId, items = []) {
         azure_preferred_region, azure_capacity_type_multiline, primary_competitor,
         action_priority, no_nai_regional, no_nai_request_type, no_nai_subscription_id,
         no_nai_sr, work_item_type, html_url, changed_date, payload
-      ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,
-        $9,$10,$11,$12,$13,
-        $14,$15,$16,$17,
-        $18,$19,$20,
-        $21,$22,$23,$24,
-        $25,$26,$27,$28,$29::jsonb
-      )
+      ) VALUES ${values.join(',\n')}
       ON CONFLICT (snapshot_id, work_item_id) DO NOTHING
       `,
-      [
-        snapshotId,
-        workItemId,
-        item.title || null,
-        item.state || null,
-        item.account || null,
-        item.eou || null,
-        item.areaField || null,
-        item.milestoneReason || null,
-        item.requestors || null,
-        item.tpid || null,
-        item.noNaiSku1 || null,
-        item.noNaiUom1 || null,
-        item.noNaiQuantity1 || null,
-        item.estMonthlyUsages || null,
-        item.requestedDate || null,
-        item.opportunityId || null,
-        item.milestoneId || null,
-        item.azurePreferredRegion || null,
-        item.azureCapacityTypeMultiline || null,
-        item.primaryCompetitor || null,
-        item.actionPriority || null,
-        item.noNaiRegional || null,
-        item.noNaiRequestType || null,
-        item.noNaiSubscriptionId || null,
-        item.noNaiSr || null,
-        item.workItemType || null,
-        item.htmlUrl || null,
-        changedDateIso,
-        JSON.stringify(item),
-      ],
+      params,
     )
-    saved += 1
+    saved += chunk.length
   }
   return saved
 }

@@ -822,19 +822,26 @@ function wiqlStringList(values) {
     .join(', ')
 }
 
-/** Push AreaField / PreferredRegion exclusions into WIQL so $top applies after filtering. */
+/**
+ * Push AreaField / PreferredRegion exclusions into WIQL so $top applies after filtering.
+ * Uses NOT IN (exact) for both; multi-value PreferredRegion rows are still trimmed
+ * by the local post-filter. Empty field values are kept (OR [Field] = '').
+ */
 function buildExclusionWiqlClauses(fieldMap) {
   const clauses = []
   const areas = excludedAreaFields()
   if (areas.length && fieldMap.areaField) {
-    clauses.push(`[${fieldMap.areaField}] NOT IN (${wiqlStringList(areas)})`)
+    clauses.push(
+      `([${fieldMap.areaField}] = '' OR [${fieldMap.areaField}] NOT IN (${wiqlStringList(areas)}))`,
+    )
   }
   const regions = excludedPreferredRegions()
   if (regions.length && fieldMap.azurePreferredRegion) {
-    // CONTAINS covers multi-value region fields (e.g. "Sweden Central; US East").
-    for (const region of regions) {
-      clauses.push(`NOT [${fieldMap.azurePreferredRegion}] CONTAINS '${escapeWiqlString(region)}'`)
-    }
+    // Exact NOT IN keeps the WIQL simple/compatible. Multi-value region strings
+    // (e.g. "Sweden Central; US East") are removed later by isExcludedPreferredRegion.
+    clauses.push(
+      `([${fieldMap.azurePreferredRegion}] = '' OR [${fieldMap.azurePreferredRegion}] NOT IN (${wiqlStringList(regions)}))`,
+    )
   }
   return clauses
 }
@@ -1263,41 +1270,61 @@ export async function listCapacityWorkItems(filters = {}) {
     process.env.ADO_MILESTONE_REASON_VALUE || 'Capacity/Service Availability'
   const top = Math.min(Number(filters.top) || Number(process.env.ADO_WIQL_TOP) || 1000, 20000)
 
-  const clauses = [
-    `[${fieldMap.milestoneReason}] = '${escapeWiqlString(milestoneValue)}'`,
-    ...buildExclusionWiqlClauses(fieldMap),
-  ]
-
   const state = String(filters.state || filters.status || '').trim()
   const account = String(filters.account || '').trim()
   const id = String(filters.id || '').trim()
   const eou = String(filters.eou || '').trim()
   const areaField = String(filters.areaField || '').trim()
 
-  const wiql = `
-    SELECT [${fieldMap.id}], [${fieldMap.title}], [${fieldMap.state}]
-    FROM WorkItems
-    WHERE ${clauses.join(' AND ')}
-    ORDER BY [${fieldMap.changedDate}] DESC
-  `.replace(/\s+/g, ' ').trim()
+  const milestoneClause = `[${fieldMap.milestoneReason}] = '${escapeWiqlString(milestoneValue)}'`
+  const exclusionClauses = buildExclusionWiqlClauses(fieldMap)
 
-  const queryResult = await adoApi('/_apis/wit/wiql', {
-    method: 'POST',
-    query: { $top: String(top), 'api-version': '7.1' },
-    body: { query: wiql },
-  })
+  async function runWiql(clauses) {
+    const wiql = `
+      SELECT [${fieldMap.id}], [${fieldMap.title}], [${fieldMap.state}]
+      FROM WorkItems
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY [${fieldMap.changedDate}] DESC
+    `.replace(/\s+/g, ' ').trim()
 
-  const ids = (queryResult?.workItems || [])
-    .map((item) => Number(item.id))
-    .filter((value) => Number.isFinite(value) && value > 0)
+    const queryResult = await adoApi('/_apis/wit/wiql', {
+      method: 'POST',
+      query: { $top: String(top), 'api-version': '7.1' },
+      body: { query: wiql },
+    })
+    return (queryResult?.workItems || [])
+      .map((item) => Number(item.id))
+      .filter((value) => Number.isFinite(value) && value > 0)
+  }
 
-  // Keep a local safety net for path-style AreaFields / odd multi-value regions
-  // that WIQL NOT IN / CONTAINS may not fully cover.
-  const allItems = (await fetchWorkItemsByIds(ids, fieldMap)).filter(
-    (item) =>
-      !isExcludedAreaField(item.areaField) &&
-      !isExcludedPreferredRegion(item.azurePreferredRegion),
+  let ids = []
+  let usedExclusions = exclusionClauses.length > 0
+  try {
+    ids = await runWiql([milestoneClause, ...exclusionClauses])
+  } catch (err) {
+    // Fall back if org/field quirks reject the exclusion WIQL.
+    console.warn(
+      'UAT exclusion WIQL failed; falling back to milestone-only query:',
+      err?.message || err,
+    )
+    usedExclusions = false
+    ids = await runWiql([milestoneClause])
+  }
+
+  // Keep WIQL order (ChangedDate DESC). Batch GET does not guarantee order.
+  const fetchedById = new Map(
+    (await fetchWorkItemsByIds(ids, fieldMap)).map((item) => [Number(item.id), item]),
   )
+  // Keep a local safety net for path-style AreaFields / multi-value regions
+  // that WIQL NOT IN may not fully cover.
+  const allItems = ids
+    .map((workItemId) => fetchedById.get(workItemId))
+    .filter(Boolean)
+    .filter(
+      (item) =>
+        !isExcludedAreaField(item.areaField) &&
+        !isExcludedPreferredRegion(item.azurePreferredRegion),
+    )
 
   const uniqueValues = (rows, key) =>
     [...new Set(rows.map((item) => item[key]).filter((value) => value != null && value !== ''))].sort(
@@ -1323,6 +1350,7 @@ export async function listCapacityWorkItems(filters = {}) {
     milestoneReason: milestoneValue,
     excludedAreaFields: excludedAreaFields(),
     excludedPreferredRegions: excludedPreferredRegions(),
+    exclusionsAppliedInWiql: usedExclusions,
     fieldMap: Object.fromEntries(
       ['id', 'title', 'state', 'changedDate', ...LIST_ITEM_KEYS].map((key) => [key, fieldMap[key]]),
     ),

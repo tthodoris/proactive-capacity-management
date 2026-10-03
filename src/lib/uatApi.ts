@@ -106,6 +106,8 @@ export type UatWorkItemList = {
   lastRetrievedAt?: string | null
   snapshot?: UatSnapshot | null
   snapshots?: UatSnapshot[]
+  snapshotError?: string | null
+  exclusionsAppliedInWiql?: boolean
   filters?: Required<Omit<UatWorkItemFilters, 'snapshotId'>>
   facets?: {
     state: string[]
