@@ -36,8 +36,9 @@ import {
   appendAgentChatTurn,
   replaceSubscriptionCosts,
   listStoredCosts,
-  upsertUatWorkItems,
+  saveUatSnapshot,
   listStoredUatWorkItems,
+  listUatSnapshots,
 } from './db.mjs'
 import { toSkuFamily } from './skuFamily.mjs'
 import { enrichResultsWithRetailPrices } from './retailPrices.mjs'
@@ -3770,21 +3771,37 @@ app.get('/api/uat/workitems/:id', async (req, res) => {
   }
 })
 
+app.get('/api/uat/snapshots', async (_req, res) => {
+  try {
+    const snapshots = await listUatSnapshots()
+    res.json({ snapshots, total: snapshots.length })
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Failed to list UAT snapshots')
+  }
+})
+
 app.get('/api/uat/workitems', async (req, res) => {
   try {
     const source = String(req.query.source || 'ado').toLowerCase()
+    const snapshotId = req.query.snapshotId ? String(req.query.snapshotId) : null
+
     if (source === 'db') {
-      const stored = await listStoredUatWorkItems()
+      const stored = await listStoredUatWorkItems(snapshotId)
       return res.json({
-        milestoneReason: process.env.ADO_MILESTONE_REASON_VALUE || 'Capacity/Service Availability',
+        milestoneReason:
+          stored.snapshot?.milestoneReason ||
+          process.env.ADO_MILESTONE_REASON_VALUE ||
+          'Capacity/Service Availability',
         source: 'db',
         total: stored.items.length,
         queried: stored.items.length,
         included: stored.items.length,
         saved: stored.items.length,
         lastRetrievedAt: stored.lastRetrievedAt,
-        excludedAreaFields: [],
-        excludedPreferredRegions: [],
+        snapshot: stored.snapshot,
+        snapshots: stored.snapshots,
+        excludedAreaFields: stored.snapshot?.excludedAreaFields || [],
+        excludedPreferredRegions: stored.snapshot?.excludedPreferredRegions || [],
         items: stored.items,
       })
     }
@@ -3797,16 +3814,23 @@ app.get('/api/uat/workitems', async (req, res) => {
       areaField: req.query.areaField,
       top: req.query.top,
     })
-    const persist = await upsertUatWorkItems(result.items)
-    const lastRetrievedAt = new Date().toISOString()
+    const persist = await saveUatSnapshot({
+      items: result.items,
+      queriedCount: result.queried,
+      milestoneReason: result.milestoneReason,
+      excludedAreaFields: result.excludedAreaFields,
+      excludedPreferredRegions: result.excludedPreferredRegions,
+      source: 'ado',
+      meta: { fieldMap: result.fieldMap || null },
+    })
+    const snapshots = await listUatSnapshots()
     res.json({
       ...result,
       source: 'ado',
       saved: persist.saved,
-      inserted: persist.inserted,
-      updated: persist.updated,
-      unchanged: persist.unchanged,
-      lastRetrievedAt,
+      snapshot: persist.snapshot,
+      snapshots,
+      lastRetrievedAt: persist.snapshot.retrievedAt,
     })
   } catch (err) {
     const status = Number(err?.status) || 500

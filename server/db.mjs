@@ -277,6 +277,63 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_uat_work_items_account ON uat_work_items(account);
     CREATE INDEX IF NOT EXISTS idx_uat_work_items_region ON uat_work_items(azure_preferred_region);
     CREATE INDEX IF NOT EXISTS idx_uat_work_items_updated ON uat_work_items(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS uat_snapshots (
+      id TEXT PRIMARY KEY,
+      retrieved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      source TEXT NOT NULL DEFAULT 'ado',
+      item_count INTEGER NOT NULL DEFAULT 0,
+      queried_count INTEGER NOT NULL DEFAULT 0,
+      milestone_reason TEXT,
+      excluded_area_fields JSONB NOT NULL DEFAULT '[]'::jsonb,
+      excluded_preferred_regions JSONB NOT NULL DEFAULT '[]'::jsonb,
+      meta JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_uat_snapshots_retrieved
+      ON uat_snapshots(retrieved_at DESC);
+
+    CREATE TABLE IF NOT EXISTS uat_snapshot_items (
+      snapshot_id TEXT NOT NULL REFERENCES uat_snapshots(id) ON DELETE CASCADE,
+      work_item_id BIGINT NOT NULL,
+      title TEXT,
+      state TEXT,
+      account TEXT,
+      eou TEXT,
+      area_field TEXT,
+      milestone_reason TEXT,
+      requestors TEXT,
+      tpid TEXT,
+      no_nai_sku_1 TEXT,
+      no_nai_uom_1 TEXT,
+      no_nai_quantity_1 TEXT,
+      est_monthly_usages TEXT,
+      requested_date TEXT,
+      opportunity_id TEXT,
+      milestone_id TEXT,
+      azure_preferred_region TEXT,
+      azure_capacity_type_multiline TEXT,
+      primary_competitor TEXT,
+      action_priority TEXT,
+      no_nai_regional TEXT,
+      no_nai_request_type TEXT,
+      no_nai_subscription_id TEXT,
+      no_nai_sr TEXT,
+      work_item_type TEXT,
+      html_url TEXT,
+      changed_date TIMESTAMPTZ,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      PRIMARY KEY (snapshot_id, work_item_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_uat_snapshot_items_work_item
+      ON uat_snapshot_items(work_item_id);
+    CREATE INDEX IF NOT EXISTS idx_uat_snapshot_items_state
+      ON uat_snapshot_items(state);
+    CREATE INDEX IF NOT EXISTS idx_uat_snapshot_items_account
+      ON uat_snapshot_items(account);
+    CREATE INDEX IF NOT EXISTS idx_uat_snapshot_items_region
+      ON uat_snapshot_items(azure_preferred_region);
   `)
 
   await pool.query(`
@@ -286,6 +343,8 @@ export async function initDb() {
   for (const column of ['no_nai_request_type', 'no_nai_subscription_id', 'no_nai_sr']) {
     await pool.query(`ALTER TABLE uat_work_items ADD COLUMN IF NOT EXISTS ${column} TEXT`)
   }
+
+  await migrateLegacyUatWorkItemsToSnapshot()
 
   const { initDomainTables } = await import('./domain-db.mjs')
   await initDomainTables()
@@ -1591,10 +1650,16 @@ function coalesceUatField(columnValue, payloadValue) {
   return columnValue ?? payloadValue ?? null
 }
 
-function mapUatWorkItem(row) {
+function mapUatWorkItem(row, snapshotRetrievedAt = null) {
   const payload = row.payload && typeof row.payload === 'object' ? row.payload : {}
+  const retrievedAt =
+    snapshotRetrievedAt ||
+    (row.retrieved_at ? new Date(row.retrieved_at).toISOString() : null) ||
+    payload.retrievedAt ||
+    null
   return {
     id: Number(row.work_item_id),
+    snapshotId: row.snapshot_id || payload.snapshotId || null,
     title: coalesceUatField(row.title, payload.title),
     state: coalesceUatField(row.state, payload.state),
     account: coalesceUatField(row.account, payload.account),
@@ -1626,206 +1691,125 @@ function mapUatWorkItem(row) {
       : payload.changedDate ?? null,
     workItemType: coalesceUatField(row.work_item_type, payload.workItemType),
     htmlUrl: coalesceUatField(row.html_url, payload.htmlUrl),
-    retrievedAt: row.retrieved_at ? new Date(row.retrieved_at).toISOString() : null,
+    retrievedAt,
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
   }
 }
 
-function uatItemSnapshot(item) {
-  return JSON.stringify({
-    title: item.title ?? null,
-    state: item.state ?? null,
-    account: item.account ?? null,
-    eou: item.eou ?? null,
-    areaField: item.areaField ?? null,
-    milestoneReason: item.milestoneReason ?? null,
-    requestors: item.requestors ?? null,
-    tpid: item.tpid ?? null,
-    noNaiSku1: item.noNaiSku1 ?? null,
-    noNaiUom1: item.noNaiUom1 ?? null,
-    noNaiQuantity1: item.noNaiQuantity1 ?? null,
-    estMonthlyUsages: item.estMonthlyUsages ?? null,
-    requestedDate: item.requestedDate ?? null,
-    opportunityId: item.opportunityId ?? null,
-    milestoneId: item.milestoneId ?? null,
-    azurePreferredRegion: item.azurePreferredRegion ?? null,
-    azureCapacityTypeMultiline: item.azureCapacityTypeMultiline ?? null,
-    primaryCompetitor: item.primaryCompetitor ?? null,
-    actionPriority: item.actionPriority ?? null,
-    noNaiRegional: item.noNaiRegional ?? null,
-    noNaiRequestType: item.noNaiRequestType ?? null,
-    noNaiSubscriptionId: item.noNaiSubscriptionId ?? null,
-    noNaiSr: item.noNaiSr ?? null,
-    changedDate: item.changedDate ?? null,
-    workItemType: item.workItemType ?? null,
-    htmlUrl: item.htmlUrl ?? null,
-  })
+function mapUatSnapshot(row) {
+  return {
+    id: row.id,
+    retrievedAt: row.retrieved_at ? new Date(row.retrieved_at).toISOString() : null,
+    source: row.source || 'ado',
+    itemCount: Number(row.item_count) || 0,
+    queriedCount: Number(row.queried_count) || 0,
+    milestoneReason: row.milestone_reason || null,
+    excludedAreaFields: Array.isArray(row.excluded_area_fields) ? row.excluded_area_fields : [],
+    excludedPreferredRegions: Array.isArray(row.excluded_preferred_regions)
+      ? row.excluded_preferred_regions
+      : [],
+    meta: row.meta && typeof row.meta === 'object' ? row.meta : {},
+  }
 }
 
-/** Upsert UAT work items by Azure DevOps work item id; overwrite fields when ADO data changed. */
-export async function upsertUatWorkItems(items = []) {
-  if (!Array.isArray(items) || items.length === 0) {
-    return { saved: 0, inserted: 0, updated: 0, unchanged: 0 }
+async function insertUatSnapshotItems(client, snapshotId, items = []) {
+  let saved = 0
+  for (const item of items) {
+    const workItemId = Number(item?.id)
+    if (!Number.isFinite(workItemId) || workItemId <= 0) continue
+    const changedDate = item.changedDate ? new Date(item.changedDate) : null
+    const changedDateIso =
+      changedDate && !Number.isNaN(changedDate.getTime()) ? changedDate.toISOString() : null
+    await client.query(
+      `
+      INSERT INTO uat_snapshot_items (
+        snapshot_id, work_item_id, title, state, account, eou, area_field, milestone_reason,
+        requestors, tpid, no_nai_sku_1, no_nai_uom_1, no_nai_quantity_1,
+        est_monthly_usages, requested_date, opportunity_id, milestone_id,
+        azure_preferred_region, azure_capacity_type_multiline, primary_competitor,
+        action_priority, no_nai_regional, no_nai_request_type, no_nai_subscription_id,
+        no_nai_sr, work_item_type, html_url, changed_date, payload
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,
+        $9,$10,$11,$12,$13,
+        $14,$15,$16,$17,
+        $18,$19,$20,
+        $21,$22,$23,$24,
+        $25,$26,$27,$28,$29::jsonb
+      )
+      ON CONFLICT (snapshot_id, work_item_id) DO NOTHING
+      `,
+      [
+        snapshotId,
+        workItemId,
+        item.title || null,
+        item.state || null,
+        item.account || null,
+        item.eou || null,
+        item.areaField || null,
+        item.milestoneReason || null,
+        item.requestors || null,
+        item.tpid || null,
+        item.noNaiSku1 || null,
+        item.noNaiUom1 || null,
+        item.noNaiQuantity1 || null,
+        item.estMonthlyUsages || null,
+        item.requestedDate || null,
+        item.opportunityId || null,
+        item.milestoneId || null,
+        item.azurePreferredRegion || null,
+        item.azureCapacityTypeMultiline || null,
+        item.primaryCompetitor || null,
+        item.actionPriority || null,
+        item.noNaiRegional || null,
+        item.noNaiRequestType || null,
+        item.noNaiSubscriptionId || null,
+        item.noNaiSr || null,
+        item.workItemType || null,
+        item.htmlUrl || null,
+        changedDateIso,
+        JSON.stringify(item),
+      ],
+    )
+    saved += 1
+  }
+  return saved
+}
+
+/** One-time: move legacy uat_work_items rows into a single historical snapshot. */
+async function migrateLegacyUatWorkItemsToSnapshot() {
+  const snapCount = await pool.query('SELECT COUNT(*)::int AS n FROM uat_snapshots')
+  if ((snapCount.rows[0]?.n || 0) > 0) return
+
+  const legacy = await pool.query(`SELECT * FROM uat_work_items ORDER BY work_item_id`)
+  if (legacy.rows.length === 0) return
+
+  const items = legacy.rows.map((row) => mapUatWorkItem(row))
+  let retrievedAt = null
+  for (const item of items) {
+    if (!item.retrievedAt) continue
+    if (!retrievedAt || item.retrievedAt > retrievedAt) retrievedAt = item.retrievedAt
   }
 
-  let saved = 0
-  let inserted = 0
-  let updated = 0
-  let unchanged = 0
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    for (const item of items) {
-      const workItemId = Number(item?.id)
-      if (!Number.isFinite(workItemId) || workItemId <= 0) continue
-      const changedDate = item.changedDate ? new Date(item.changedDate) : null
-      const changedDateIso =
-        changedDate && !Number.isNaN(changedDate.getTime()) ? changedDate.toISOString() : null
-      const payloadJson = JSON.stringify(item)
-
-      const existing = await client.query(
-        `SELECT * FROM uat_work_items WHERE work_item_id = $1`,
-        [workItemId],
-      )
-      const prior = existing.rows[0] ? mapUatWorkItem(existing.rows[0]) : null
-      const nextSnapshot = uatItemSnapshot(item)
-      const priorSnapshot = prior ? uatItemSnapshot(prior) : null
-      const fieldsChanged = !prior || priorSnapshot !== nextSnapshot
-
-      if (!prior) {
-        await client.query(
-          `
-          INSERT INTO uat_work_items (
-            work_item_id, title, state, account, eou, area_field, milestone_reason,
-            requestors, tpid, no_nai_sku_1, no_nai_uom_1, no_nai_quantity_1,
-            est_monthly_usages, requested_date, opportunity_id, milestone_id,
-            azure_preferred_region, azure_capacity_type_multiline, primary_competitor,
-            action_priority, no_nai_regional, no_nai_request_type, no_nai_subscription_id,
-            no_nai_sr, work_item_type, html_url, changed_date,
-            payload, retrieved_at, updated_at
-          ) VALUES (
-            $1,$2,$3,$4,$5,$6,$7,
-            $8,$9,$10,$11,$12,
-            $13,$14,$15,$16,
-            $17,$18,$19,
-            $20,$21,$22,$23,
-            $24,$25,$26,$27,
-            $28::jsonb, NOW(), NOW()
-          )
-          `,
-          [
-            workItemId,
-            item.title || null,
-            item.state || null,
-            item.account || null,
-            item.eou || null,
-            item.areaField || null,
-            item.milestoneReason || null,
-            item.requestors || null,
-            item.tpid || null,
-            item.noNaiSku1 || null,
-            item.noNaiUom1 || null,
-            item.noNaiQuantity1 || null,
-            item.estMonthlyUsages || null,
-            item.requestedDate || null,
-            item.opportunityId || null,
-            item.milestoneId || null,
-            item.azurePreferredRegion || null,
-            item.azureCapacityTypeMultiline || null,
-            item.primaryCompetitor || null,
-            item.actionPriority || null,
-            item.noNaiRegional || null,
-            item.noNaiRequestType || null,
-            item.noNaiSubscriptionId || null,
-            item.noNaiSr || null,
-            item.workItemType || null,
-            item.htmlUrl || null,
-            changedDateIso,
-            payloadJson,
-          ],
-        )
-        inserted += 1
-        saved += 1
-        continue
-      }
-
-      // Always refresh retrieved_at; rewrite field columns + payload when ADO values changed.
-      if (fieldsChanged) {
-        await client.query(
-          `
-          UPDATE uat_work_items SET
-            title = $2,
-            state = $3,
-            account = $4,
-            eou = $5,
-            area_field = $6,
-            milestone_reason = $7,
-            requestors = $8,
-            tpid = $9,
-            no_nai_sku_1 = $10,
-            no_nai_uom_1 = $11,
-            no_nai_quantity_1 = $12,
-            est_monthly_usages = $13,
-            requested_date = $14,
-            opportunity_id = $15,
-            milestone_id = $16,
-            azure_preferred_region = $17,
-            azure_capacity_type_multiline = $18,
-            primary_competitor = $19,
-            action_priority = $20,
-            no_nai_regional = $21,
-            no_nai_request_type = $22,
-            no_nai_subscription_id = $23,
-            no_nai_sr = $24,
-            work_item_type = $25,
-            html_url = $26,
-            changed_date = $27,
-            payload = $28::jsonb,
-            retrieved_at = NOW(),
-            updated_at = NOW()
-          WHERE work_item_id = $1
-          `,
-          [
-            workItemId,
-            item.title || null,
-            item.state || null,
-            item.account || null,
-            item.eou || null,
-            item.areaField || null,
-            item.milestoneReason || null,
-            item.requestors || null,
-            item.tpid || null,
-            item.noNaiSku1 || null,
-            item.noNaiUom1 || null,
-            item.noNaiQuantity1 || null,
-            item.estMonthlyUsages || null,
-            item.requestedDate || null,
-            item.opportunityId || null,
-            item.milestoneId || null,
-            item.azurePreferredRegion || null,
-            item.azureCapacityTypeMultiline || null,
-            item.primaryCompetitor || null,
-            item.actionPriority || null,
-            item.noNaiRegional || null,
-            item.noNaiRequestType || null,
-            item.noNaiSubscriptionId || null,
-            item.noNaiSr || null,
-            item.workItemType || null,
-            item.htmlUrl || null,
-            changedDateIso,
-            payloadJson,
-          ],
-        )
-        updated += 1
-      } else {
-        await client.query(
-          `UPDATE uat_work_items SET retrieved_at = NOW() WHERE work_item_id = $1`,
-          [workItemId],
-        )
-        unchanged += 1
-      }
-      saved += 1
-    }
+    const snapshotId = `uat-legacy-${randomId()}`
+    await client.query(
+      `
+      INSERT INTO uat_snapshots (
+        id, retrieved_at, source, item_count, queried_count, milestone_reason, meta
+      ) VALUES ($1, COALESCE($2::timestamptz, NOW()), 'legacy_migration', $3, $3, $4, $5::jsonb)
+      `,
+      [
+        snapshotId,
+        retrievedAt,
+        items.length,
+        process.env.ADO_MILESTONE_REASON_VALUE || 'Capacity/Service Availability',
+        JSON.stringify({ migratedFrom: 'uat_work_items' }),
+      ],
+    )
+    await insertUatSnapshotItems(client, snapshotId, items)
     await client.query('COMMIT')
   } catch (err) {
     await client.query('ROLLBACK')
@@ -1833,25 +1817,138 @@ export async function upsertUatWorkItems(items = []) {
   } finally {
     client.release()
   }
-  return { saved, inserted, updated, unchanged }
 }
 
-export async function listStoredUatWorkItems() {
+export async function listUatSnapshots() {
   const res = await pool.query(
     `
     SELECT *
-    FROM uat_work_items
-    ORDER BY changed_date DESC NULLS LAST, work_item_id DESC
+    FROM uat_snapshots
+    ORDER BY retrieved_at DESC, id DESC
     `,
   )
-  const items = res.rows.map(mapUatWorkItem)
-  let lastRetrievedAt = null
-  for (const item of items) {
-    if (!item.retrievedAt) continue
-    if (!lastRetrievedAt || item.retrievedAt > lastRetrievedAt) {
-      lastRetrievedAt = item.retrievedAt
+  return res.rows.map(mapUatSnapshot)
+}
+
+export async function getLatestUatSnapshot() {
+  const res = await pool.query(
+    `
+    SELECT *
+    FROM uat_snapshots
+    ORDER BY retrieved_at DESC, id DESC
+    LIMIT 1
+    `,
+  )
+  return res.rows[0] ? mapUatSnapshot(res.rows[0]) : null
+}
+
+export async function getUatSnapshot(snapshotId) {
+  if (!snapshotId) return getLatestUatSnapshot()
+  const res = await pool.query(`SELECT * FROM uat_snapshots WHERE id = $1`, [String(snapshotId)])
+  return res.rows[0] ? mapUatSnapshot(res.rows[0]) : null
+}
+
+/** Save a full ADO refresh as an immutable snapshot for analytics/history. */
+export async function saveUatSnapshot({
+  items = [],
+  queriedCount = null,
+  milestoneReason = null,
+  excludedAreaFields = [],
+  excludedPreferredRegions = [],
+  source = 'ado',
+  meta = {},
+} = {}) {
+  const snapshotId = `uat-${randomId()}`
+  const retrievedAt = new Date().toISOString()
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query(
+      `
+      INSERT INTO uat_snapshots (
+        id, retrieved_at, source, item_count, queried_count, milestone_reason,
+        excluded_area_fields, excluded_preferred_regions, meta
+      ) VALUES (
+        $1, $2::timestamptz, $3, $4, $5, $6,
+        $7::jsonb, $8::jsonb, $9::jsonb
+      )
+      `,
+      [
+        snapshotId,
+        retrievedAt,
+        source,
+        0,
+        Number.isFinite(Number(queriedCount)) ? Number(queriedCount) : items.length,
+        milestoneReason || process.env.ADO_MILESTONE_REASON_VALUE || 'Capacity/Service Availability',
+        JSON.stringify(excludedAreaFields || []),
+        JSON.stringify(excludedPreferredRegions || []),
+        JSON.stringify(meta || {}),
+      ],
+    )
+    const saved = await insertUatSnapshotItems(client, snapshotId, items)
+    await client.query(`UPDATE uat_snapshots SET item_count = $2 WHERE id = $1`, [
+      snapshotId,
+      saved,
+    ])
+    await client.query('COMMIT')
+    return {
+      snapshot: {
+        id: snapshotId,
+        retrievedAt,
+        source,
+        itemCount: saved,
+        queriedCount: Number.isFinite(Number(queriedCount)) ? Number(queriedCount) : saved,
+        milestoneReason:
+          milestoneReason ||
+          process.env.ADO_MILESTONE_REASON_VALUE ||
+          'Capacity/Service Availability',
+        excludedAreaFields: excludedAreaFields || [],
+        excludedPreferredRegions: excludedPreferredRegions || [],
+        meta: meta || {},
+      },
+      saved,
     }
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
   }
-  return { items, lastRetrievedAt }
+}
+
+export async function listStoredUatWorkItems(snapshotId = null) {
+  const snapshot = await getUatSnapshot(snapshotId)
+  if (!snapshot) {
+    return { items: [], lastRetrievedAt: null, snapshot: null, snapshots: await listUatSnapshots() }
+  }
+
+  const res = await pool.query(
+    `
+    SELECT *
+    FROM uat_snapshot_items
+    WHERE snapshot_id = $1
+    ORDER BY changed_date DESC NULLS LAST, work_item_id DESC
+    `,
+    [snapshot.id],
+  )
+  const items = res.rows.map((row) => mapUatWorkItem(row, snapshot.retrievedAt))
+  return {
+    items,
+    lastRetrievedAt: snapshot.retrievedAt,
+    snapshot,
+    snapshots: await listUatSnapshots(),
+  }
+}
+
+/** @deprecated Prefer saveUatSnapshot — kept for compatibility during transition. */
+export async function upsertUatWorkItems(items = []) {
+  const result = await saveUatSnapshot({ items, source: 'ado' })
+  return {
+    saved: result.saved,
+    inserted: result.saved,
+    updated: 0,
+    unchanged: 0,
+    snapshot: result.snapshot,
+  }
 }
 

@@ -42,6 +42,7 @@ export type UatWorkItem = {
 
 export type UatListItem = {
   id: number | null
+  snapshotId?: string | null
   title: string | null
   state: string | null
   account: string | null
@@ -68,6 +69,19 @@ export type UatListItem = {
   changedDate: string | null
   workItemType: string | null
   htmlUrl: string | null
+  retrievedAt?: string | null
+}
+
+export type UatSnapshot = {
+  id: string
+  retrievedAt: string | null
+  source: string
+  itemCount: number
+  queriedCount: number
+  milestoneReason: string | null
+  excludedAreaFields?: string[]
+  excludedPreferredRegions?: string[]
+  meta?: Record<string, unknown>
 }
 
 export type UatWorkItemFilters = {
@@ -76,6 +90,7 @@ export type UatWorkItemFilters = {
   id?: string
   eou?: string
   areaField?: string
+  snapshotId?: string
 }
 
 export type UatWorkItemList = {
@@ -87,12 +102,11 @@ export type UatWorkItemList = {
   queried: number
   included?: number
   saved?: number
-  inserted?: number
-  updated?: number
-  unchanged?: number
   source?: 'ado' | 'db'
   lastRetrievedAt?: string | null
-  filters?: Required<UatWorkItemFilters>
+  snapshot?: UatSnapshot | null
+  snapshots?: UatSnapshot[]
+  filters?: Required<Omit<UatWorkItemFilters, 'snapshotId'>>
   facets?: {
     state: string[]
     account: string[]
@@ -179,11 +193,16 @@ export function submitUatAccessToken(accessToken: string, expiresOn?: string | n
   })
 }
 
+export function fetchUatSnapshots() {
+  return api<{ snapshots: UatSnapshot[]; total: number }>('/api/uat/snapshots')
+}
+
 export function fetchUatWorkItemList(
   filters: UatWorkItemFilters & { source?: 'ado' | 'db' } = {},
 ) {
   const params = new URLSearchParams()
   if (filters.source) params.set('source', filters.source)
+  if (filters.snapshotId) params.set('snapshotId', filters.snapshotId)
   if (filters.state) params.set('state', filters.state)
   if (filters.account) params.set('account', filters.account)
   if (filters.id) params.set('id', filters.id)

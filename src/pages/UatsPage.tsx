@@ -29,6 +29,7 @@ import {
   type UatConfig,
   type UatConnection,
   type UatListItem,
+  type UatSnapshot,
   type UatWorkItemList,
 } from '../lib/uatApi'
 
@@ -90,10 +91,20 @@ function formatEstMonthlyUsages(value: string | number | null | undefined) {
   return num.toFixed(2)
 }
 
+function formatSnapshotLabel(snapshot: UatSnapshot) {
+  const when = snapshot.retrievedAt
+    ? new Date(snapshot.retrievedAt).toLocaleString()
+    : 'Unknown date'
+  const count = typeof snapshot.itemCount === 'number' ? ` · ${snapshot.itemCount} items` : ''
+  return `${when}${count}`
+}
+
 export function UatsPage() {
   const [config, setConfig] = useState<UatConfig | null>(null)
   const [connection, setConnection] = useState<UatConnection | null>(null)
   const [list, setList] = useState<UatWorkItemList | null>(null)
+  const [snapshots, setSnapshots] = useState<UatSnapshot[]>([])
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>('')
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -122,30 +133,47 @@ export function UatsPage() {
     connection?.authMode === 'pat' ||
     connection?.authMode === 'pasted_token'
 
-  const loadSavedList = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      setList(await fetchUatWorkItemList({ source: 'db' }))
-    } catch (err) {
-      setList(null)
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoading(false)
+  const applyListResponse = useCallback((next: UatWorkItemList) => {
+    setList(next)
+    if (Array.isArray(next.snapshots)) {
+      setSnapshots(next.snapshots)
     }
+    const nextId = next.snapshot?.id || ''
+    if (nextId) setSelectedSnapshotId(nextId)
   }, [])
+
+  const loadSavedList = useCallback(
+    async (snapshotId?: string) => {
+      setLoading(true)
+      setError(null)
+      try {
+        applyListResponse(
+          await fetchUatWorkItemList({
+            source: 'db',
+            ...(snapshotId ? { snapshotId } : {}),
+          }),
+        )
+      } catch (err) {
+        setList(null)
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setLoading(false)
+      }
+    },
+    [applyListResponse],
+  )
 
   const refreshFromAdo = useCallback(async () => {
     setRefreshing(true)
     setError(null)
     try {
-      setList(await fetchUatWorkItemList({ source: 'ado' }))
+      applyListResponse(await fetchUatWorkItemList({ source: 'ado' }))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setRefreshing(false)
     }
-  }, [])
+  }, [applyListResponse])
 
   const refreshStatus = useCallback(async () => {
     const [nextConfig, nextStatus] = await Promise.all([fetchUatConfig(), fetchUatStatus()])
@@ -323,11 +351,35 @@ export function UatsPage() {
           <p>
             Unified Action Tracker work items where MilestoneReason ={' '}
             <strong>Capacity/Service Availability</strong>
-            {config ? ` (${config.organization})` : ''}. Opens the last saved list from Postgres;
-            use Refresh to pull from Azure DevOps and upsert. Click a column name to filter values.
+            {config ? ` (${config.organization})` : ''}. Each Azure DevOps refresh is stored as an
+            immutable snapshot for history and analytics. Choose a snapshot date below, or refresh
+            to capture a new one.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.9rem' }}>
+            <span className="muted">Snapshot</span>
+            <select
+              value={selectedSnapshotId}
+              onChange={(e) => {
+                const id = e.target.value
+                setSelectedSnapshotId(id)
+                if (id) void loadSavedList(id)
+              }}
+              disabled={loading || refreshing || snapshots.length === 0}
+              style={{ minWidth: '16rem', maxWidth: '28rem' }}
+            >
+              {snapshots.length === 0 ? (
+                <option value="">No snapshots yet</option>
+              ) : (
+                snapshots.map((snapshot) => (
+                  <option key={snapshot.id} value={snapshot.id}>
+                    {formatSnapshotLabel(snapshot)}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
           <button
             type="button"
             className="btn btn-primary"
@@ -335,7 +387,7 @@ export function UatsPage() {
             disabled={refreshing || loading || !canQuery}
             title={
               canQuery
-                ? 'Refresh from Azure DevOps and save to Postgres'
+                ? 'Refresh from Azure DevOps and save a new snapshot'
                 : 'Sign in to Azure DevOps to refresh'
             }
           >
@@ -489,7 +541,8 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
       {canQuery ? null : (
         <section className="panel" style={{ marginBottom: '1rem' }}>
           <p className="muted" style={{ margin: 0 }}>
-            Showing the last saved list from Postgres. Sign in above to refresh from Azure DevOps.
+            Showing a saved snapshot from Postgres. Sign in above to refresh from Azure DevOps and
+            create a new snapshot.
           </p>
         </section>
       )}
@@ -531,19 +584,13 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
                         ? `${rows.length} of ${list.included ?? list.total} work items`
                         : 'No saved UAT work items yet'}
                   {typeof list?.saved === 'number' ? ` · saved ${list.saved}` : ''}
-                  {typeof list?.inserted === 'number' && list.source === 'ado'
-                    ? ` · inserted ${list.inserted}`
-                    : ''}
-                  {typeof list?.updated === 'number' && list.source === 'ado'
-                    ? ` · updated ${list.updated}`
-                    : ''}
-                  {typeof list?.unchanged === 'number' && list.source === 'ado'
-                    ? ` · unchanged ${list.unchanged}`
-                    : ''}
-                  {list?.lastRetrievedAt
-                    ? ` · last saved ${new Date(list.lastRetrievedAt).toLocaleString()}`
-                    : ''}
+                  {list?.snapshot?.retrievedAt
+                    ? ` · snapshot ${new Date(list.snapshot.retrievedAt).toLocaleString()}`
+                    : list?.lastRetrievedAt
+                      ? ` · last saved ${new Date(list.lastRetrievedAt).toLocaleString()}`
+                      : ''}
                   {list?.source ? ` · source: ${list.source}` : ''}
+                  {snapshots.length ? ` · ${snapshots.length} snapshot${snapshots.length === 1 ? '' : 's'}` : ''}
                   {list?.excludedAreaFields?.length
                     ? ` · excluded AreaFields: ${list.excludedAreaFields.join(', ')}`
                     : ''}
