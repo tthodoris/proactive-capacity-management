@@ -816,6 +816,29 @@ function isExcludedPreferredRegion(azurePreferredRegion) {
   )
 }
 
+function wiqlStringList(values) {
+  return values
+    .map((value) => `'${escapeWiqlString(value)}'`)
+    .join(', ')
+}
+
+/** Push AreaField / PreferredRegion exclusions into WIQL so $top applies after filtering. */
+function buildExclusionWiqlClauses(fieldMap) {
+  const clauses = []
+  const areas = excludedAreaFields()
+  if (areas.length && fieldMap.areaField) {
+    clauses.push(`[${fieldMap.areaField}] NOT IN (${wiqlStringList(areas)})`)
+  }
+  const regions = excludedPreferredRegions()
+  if (regions.length && fieldMap.azurePreferredRegion) {
+    // CONTAINS covers multi-value region fields (e.g. "Sweden Central; US East").
+    for (const region of regions) {
+      clauses.push(`NOT [${fieldMap.azurePreferredRegion}] CONTAINS '${escapeWiqlString(region)}'`)
+    }
+  }
+  return clauses
+}
+
 /** @type {null | Record<string, any>} */
 let cachedFieldMap = null
 
@@ -1230,6 +1253,8 @@ async function fetchWorkItemsByIds(ids, fieldMap) {
 
 /**
  * List UATs with MilestoneReason = Capacity/Service Availability.
+ * AreaField / PreferredRegion exclusions are applied in WIQL before $top so
+ * the ADO query stays light and relevant rows are not truncated by recency.
  * Optional filters: state/status, account, id, eou, areaField.
  */
 export async function listCapacityWorkItems(filters = {}) {
@@ -1240,6 +1265,7 @@ export async function listCapacityWorkItems(filters = {}) {
 
   const clauses = [
     `[${fieldMap.milestoneReason}] = '${escapeWiqlString(milestoneValue)}'`,
+    ...buildExclusionWiqlClauses(fieldMap),
   ]
 
   const state = String(filters.state || filters.status || '').trim()
@@ -1265,6 +1291,8 @@ export async function listCapacityWorkItems(filters = {}) {
     .map((item) => Number(item.id))
     .filter((value) => Number.isFinite(value) && value > 0)
 
+  // Keep a local safety net for path-style AreaFields / odd multi-value regions
+  // that WIQL NOT IN / CONTAINS may not fully cover.
   const allItems = (await fetchWorkItemsByIds(ids, fieldMap)).filter(
     (item) =>
       !isExcludedAreaField(item.areaField) &&
