@@ -87,6 +87,9 @@ export type UatWorkItemList = {
   queried: number
   included?: number
   saved?: number
+  inserted?: number
+  updated?: number
+  unchanged?: number
   source?: 'ado' | 'db'
   lastRetrievedAt?: string | null
   filters?: Required<UatWorkItemFilters>

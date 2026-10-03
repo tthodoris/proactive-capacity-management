@@ -531,6 +531,15 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
                         ? `${rows.length} of ${list.included ?? list.total} work items`
                         : 'No saved UAT work items yet'}
                   {typeof list?.saved === 'number' ? ` · saved ${list.saved}` : ''}
+                  {typeof list?.inserted === 'number' && list.source === 'ado'
+                    ? ` · inserted ${list.inserted}`
+                    : ''}
+                  {typeof list?.updated === 'number' && list.source === 'ado'
+                    ? ` · updated ${list.updated}`
+                    : ''}
+                  {typeof list?.unchanged === 'number' && list.source === 'ado'
+                    ? ` · unchanged ${list.unchanged}`
+                    : ''}
                   {list?.lastRetrievedAt
                     ? ` · last saved ${new Date(list.lastRetrievedAt).toLocaleString()}`
                     : ''}

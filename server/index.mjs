@@ -3803,6 +3803,9 @@ app.get('/api/uat/workitems', async (req, res) => {
       ...result,
       source: 'ado',
       saved: persist.saved,
+      inserted: persist.inserted,
+      updated: persist.updated,
+      unchanged: persist.unchanged,
       lastRetrievedAt,
     })
   } catch (err) {
