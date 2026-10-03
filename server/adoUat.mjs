@@ -1138,7 +1138,10 @@ function readRawFieldValue(fields, referenceName, candidates = []) {
 }
 
 export async function resolveAdoFieldMap(force = false) {
-  if (cachedFieldMap && !force) return cachedFieldMap
+  if (cachedFieldMap && !force) {
+    const missing = LIST_FIELD_DEFS.some((def) => !cachedFieldMap[def.key])
+    if (!missing) return cachedFieldMap
+  }
   const payload = await adoApi('/_apis/wit/fields', { query: { 'api-version': '7.1' } })
   const fields = Array.isArray(payload?.value) ? payload.value : []
   /** @type {Record<string, any>} */
@@ -1193,14 +1196,27 @@ async function fetchWorkItemsByIds(ids, fieldMap) {
   for (let i = 0; i < ids.length; i += 200) {
     chunks.push(ids.slice(i, i + 200))
   }
+  // Request System fields + every resolved list field ref explicitly so newer
+  // Custom.* columns (NoNAI_RequestType / SubscriptionID / SR) are always returned.
+  const fieldRefs = [
+    ...new Set(
+      [
+        'System.Id',
+        'System.Title',
+        'System.State',
+        'System.ChangedDate',
+        'System.WorkItemType',
+        ...LIST_FIELD_DEFS.map((def) => fieldMap[def.key]),
+        ...LIST_FIELD_DEFS.map((def) => def.fallback),
+      ].filter(Boolean),
+    ),
+  ]
   const items = []
   for (const chunk of chunks) {
-    // Omit `fields=` so ADO returns the full field bag. Selecting a wrong/empty
-    // Custom.* ref (e.g. Custom.ActionPriority vs Custom.ActionPriorityField)
-    // previously left the new columns blank even though the real values existed.
     const payload = await adoApi('/_apis/wit/workitems', {
       query: {
         ids: chunk.join(','),
+        fields: fieldRefs.join(','),
         errorPolicy: 'omit',
         'api-version': '7.1',
       },

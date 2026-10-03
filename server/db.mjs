@@ -282,11 +282,10 @@ export async function initDb() {
   await pool.query(`
     ALTER TABLE strategy_scenarios
       ADD COLUMN IF NOT EXISTS what_if_selection JSONB NOT NULL DEFAULT '{}'::jsonb;
-    ALTER TABLE uat_work_items
-      ADD COLUMN IF NOT EXISTS no_nai_request_type TEXT,
-      ADD COLUMN IF NOT EXISTS no_nai_subscription_id TEXT,
-      ADD COLUMN IF NOT EXISTS no_nai_sr TEXT;
   `)
+  for (const column of ['no_nai_request_type', 'no_nai_subscription_id', 'no_nai_sr']) {
+    await pool.query(`ALTER TABLE uat_work_items ADD COLUMN IF NOT EXISTS ${column} TEXT`)
+  }
 
   const { initDomainTables } = await import('./domain-db.mjs')
   await initDomainTables()
@@ -1611,9 +1610,10 @@ function mapUatWorkItem(row) {
     primaryCompetitor: row.primary_competitor ?? payload.primaryCompetitor ?? null,
     actionPriority: row.action_priority ?? payload.actionPriority ?? null,
     noNaiRegional: row.no_nai_regional ?? payload.noNaiRegional ?? null,
-    noNaiRequestType: row.no_nai_request_type ?? payload.noNaiRequestType ?? null,
-    noNaiSubscriptionId: row.no_nai_subscription_id ?? payload.noNaiSubscriptionId ?? null,
-    noNaiSr: row.no_nai_sr ?? payload.noNaiSr ?? null,
+    // Prefer payload so values survive even if column migration has not applied yet.
+    noNaiRequestType: payload.noNaiRequestType ?? row.no_nai_request_type ?? null,
+    noNaiSubscriptionId: payload.noNaiSubscriptionId ?? row.no_nai_subscription_id ?? null,
+    noNaiSr: payload.noNaiSr ?? row.no_nai_sr ?? null,
     changedDate: row.changed_date
       ? new Date(row.changed_date).toISOString()
       : payload.changedDate ?? null,
@@ -1645,17 +1645,15 @@ export async function upsertUatWorkItems(items = []) {
           requestors, tpid, no_nai_sku_1, no_nai_uom_1, no_nai_quantity_1,
           est_monthly_usages, requested_date, opportunity_id, milestone_id,
           azure_preferred_region, azure_capacity_type_multiline, primary_competitor,
-          action_priority, no_nai_regional, no_nai_request_type, no_nai_subscription_id,
-          no_nai_sr, work_item_type, html_url, changed_date,
+          action_priority, no_nai_regional, work_item_type, html_url, changed_date,
           payload, retrieved_at, updated_at
         ) VALUES (
           $1,$2,$3,$4,$5,$6,$7,
           $8,$9,$10,$11,$12,
           $13,$14,$15,$16,
           $17,$18,$19,
-          $20,$21,$22,$23,
-          $24,$25,$26,$27,
-          $28::jsonb, NOW(), NOW()
+          $20,$21,$22,$23,$24,
+          $25::jsonb, NOW(), NOW()
         )
         ON CONFLICT (work_item_id) DO UPDATE SET
           title = EXCLUDED.title,
@@ -1678,9 +1676,6 @@ export async function upsertUatWorkItems(items = []) {
           primary_competitor = EXCLUDED.primary_competitor,
           action_priority = EXCLUDED.action_priority,
           no_nai_regional = EXCLUDED.no_nai_regional,
-          no_nai_request_type = EXCLUDED.no_nai_request_type,
-          no_nai_subscription_id = EXCLUDED.no_nai_subscription_id,
-          no_nai_sr = EXCLUDED.no_nai_sr,
           work_item_type = EXCLUDED.work_item_type,
           html_url = EXCLUDED.html_url,
           changed_date = EXCLUDED.changed_date,
@@ -1710,12 +1705,10 @@ export async function upsertUatWorkItems(items = []) {
           item.primaryCompetitor || null,
           item.actionPriority || null,
           item.noNaiRegional || null,
-          item.noNaiRequestType || null,
-          item.noNaiSubscriptionId || null,
-          item.noNaiSr || null,
           item.workItemType || null,
           item.htmlUrl || null,
           changedDate && !Number.isNaN(changedDate.getTime()) ? changedDate.toISOString() : null,
+          // Full item (including NoNAI_RequestType / SubscriptionID / SR) lives in payload.
           JSON.stringify(item),
         ],
       )
