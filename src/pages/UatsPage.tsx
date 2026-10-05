@@ -72,11 +72,11 @@ const UAT_COLUMNS: Array<[UatSortKey, string]> = [
   ['noNaiRegional', 'NoNAI_Regional'],
   ['noNaiRequestType', 'NoNAI_RequestType'],
   ['noNaiSubscriptionId', 'NoNAI_SubscriptionID'],
-  ['noNaiSr', 'NoNAI_SR'],
   ['areaField', 'AreaField'],
   ['tpid', 'TPID'],
   ['requestedDate', 'Requested Date'],
   ['changedDate', 'Changed'],
+  ['noNaiSr', 'NoNAI_SR'],
 ]
 
 function valueOrDash(value: string | number | null | undefined) {
@@ -605,6 +605,7 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
               <table className="data">
                 <thead>
                   <tr>
+                    <th>Open</th>
                     {UAT_COLUMNS.map(([column, label]) => (
                       <FilterableTh
                         key={column}
@@ -618,12 +619,24 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
                         onFilterChange={(values) => setColumnFilter(column, values)}
                       />
                     ))}
-                    <th />
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((item) => (
                     <tr key={String(item.id)}>
+                      <td>
+                        {item.htmlUrl ? (
+                          <a
+                            className="btn btn-ghost"
+                            href={item.htmlUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <ExternalLink size={14} />
+                            Open
+                          </a>
+                        ) : null}
+                      </td>
                       {UAT_COLUMNS.map(([column]) => (
                         <td
                           key={column}
@@ -642,19 +655,6 @@ az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --qu
                           )}
                         </td>
                       ))}
-                      <td>
-                        {item.htmlUrl ? (
-                          <a
-                            className="btn btn-ghost"
-                            href={item.htmlUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            <ExternalLink size={14} />
-                            Open
-                          </a>
-                        ) : null}
-                      </td>
                     </tr>
                   ))}
                   {!loading && !refreshing && rows.length === 0 ? (
