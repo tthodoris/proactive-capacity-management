@@ -45,6 +45,7 @@ export type UatListItem = {
   snapshotId?: string | null
   title: string | null
   state: string | null
+  subState: string | null
   account: string | null
   eou: string | null
   areaField: string | null

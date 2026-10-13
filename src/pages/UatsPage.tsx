@@ -37,6 +37,7 @@ type UatSortKey =
   | 'id'
   | 'title'
   | 'state'
+  | 'subState'
   | 'account'
   | 'eou'
   | 'areaField'
@@ -63,6 +64,7 @@ const UAT_COLUMNS: Array<[UatSortKey, string]> = [
   ['id', 'Id'],
   ['title', 'Title'],
   ['state', 'Status'],
+  ['subState', 'Sub State'],
   ['account', 'Account'],
   ['estMonthlyUsages', 'Est Monthly Usages'],
   ['noNaiSku1', 'NoNAI_SKU_1'],

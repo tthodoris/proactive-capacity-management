@@ -1008,6 +1008,12 @@ const LIST_FIELD_DEFS = [
     env: 'ADO_FIELD_NONAI_SR',
     fallback: 'Custom.NoNAI_SR',
   },
+  {
+    key: 'subState',
+    candidates: ['Sub State', 'SubState', 'Substate', 'Custom.SubState'],
+    env: 'ADO_FIELD_SUB_STATE',
+    fallback: 'Custom.SubState',
+  },
 ]
 
 const LIST_ITEM_KEYS = [
@@ -1032,6 +1038,7 @@ const LIST_ITEM_KEYS = [
   'noNaiRequestType',
   'noNaiSubscriptionId',
   'noNaiSr',
+  'subState',
 ]
 
 async function adoApi(pathname, { method = 'GET', body, query } = {}) {

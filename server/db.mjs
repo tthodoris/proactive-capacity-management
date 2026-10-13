@@ -298,6 +298,7 @@ export async function initDb() {
       work_item_id BIGINT NOT NULL,
       title TEXT,
       state TEXT,
+      sub_state TEXT,
       account TEXT,
       eou TEXT,
       area_field TEXT,
@@ -340,9 +341,10 @@ export async function initDb() {
     ALTER TABLE strategy_scenarios
       ADD COLUMN IF NOT EXISTS what_if_selection JSONB NOT NULL DEFAULT '{}'::jsonb;
   `)
-  for (const column of ['no_nai_request_type', 'no_nai_subscription_id', 'no_nai_sr']) {
+  for (const column of ['no_nai_request_type', 'no_nai_subscription_id', 'no_nai_sr', 'sub_state']) {
     await pool.query(`ALTER TABLE uat_work_items ADD COLUMN IF NOT EXISTS ${column} TEXT`)
   }
+  await pool.query(`ALTER TABLE uat_snapshot_items ADD COLUMN IF NOT EXISTS sub_state TEXT`)
 
   await migrateLegacyUatWorkItemsToSnapshot()
 
@@ -1662,6 +1664,7 @@ function mapUatWorkItem(row, snapshotRetrievedAt = null) {
     snapshotId: row.snapshot_id || payload.snapshotId || null,
     title: coalesceUatField(row.title, payload.title),
     state: coalesceUatField(row.state, payload.state),
+    subState: coalesceUatField(row.sub_state, payload.subState),
     account: coalesceUatField(row.account, payload.account),
     eou: coalesceUatField(row.eou, payload.eou),
     areaField: coalesceUatField(row.area_field, payload.areaField),
@@ -1724,6 +1727,7 @@ async function insertUatSnapshotItems(client, snapshotId, items = []) {
       workItemId,
       title: item.title || null,
       state: item.state || null,
+      subState: item.subState || null,
       account: item.account || null,
       eou: item.eou || null,
       areaField: item.areaField || null,
@@ -1761,13 +1765,14 @@ async function insertUatSnapshotItems(client, snapshotId, items = []) {
     let p = 1
     for (const row of chunk) {
       values.push(
-        `($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++}::jsonb)`,
+        `($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++}::jsonb)`,
       )
       params.push(
         snapshotId,
         row.workItemId,
         row.title,
         row.state,
+        row.subState,
         row.account,
         row.eou,
         row.areaField,
@@ -1798,7 +1803,7 @@ async function insertUatSnapshotItems(client, snapshotId, items = []) {
     await client.query(
       `
       INSERT INTO uat_snapshot_items (
-        snapshot_id, work_item_id, title, state, account, eou, area_field, milestone_reason,
+        snapshot_id, work_item_id, title, state, sub_state, account, eou, area_field, milestone_reason,
         requestors, tpid, no_nai_sku_1, no_nai_uom_1, no_nai_quantity_1,
         est_monthly_usages, requested_date, opportunity_id, milestone_id,
         azure_preferred_region, azure_capacity_type_multiline, primary_competitor,
