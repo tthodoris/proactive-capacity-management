@@ -22,8 +22,8 @@ jobs:
           az group show -n "$RG" --query '{name:name,location:location}' -o json
           echo "=== container apps ==="
           az containerapp list -g "$RG" --query "[].{name:name,image:properties.template.containers[0].image,fqdn:properties.configuration.ingress.fqdn}" -o table
-          echo "=== pcm-api show (identity + containers) ==="
-          az containerapp show -n pcm-api -g "$RG" -o json > /tmp/api.json
+          echo "=== pcm-api-cont show (identity + containers) ==="
+          az containerapp show -n pcm-api-cont -g "$RG" -o json > /tmp/api.json
           python3 - <<'PY'
           import json
           d=json.load(open('/tmp/api.json'))
@@ -63,9 +63,20 @@ jobs:
           print('registries=', json.dumps(cfg.get('registries'), indent=2))
           PY
           echo "=== revisions ==="
-          az containerapp revision list -n pcm-api -g "$RG" --query "[].{name:name,active:properties.active,created:properties.createdTime,image:properties.template.containers[0].image,running:properties.runningState,traffic:properties.trafficWeight}" -o table
+          az containerapp revision list -n pcm-api-cont -g "$RG" --query "[].{name:name,active:properties.active,created:properties.createdTime,image:properties.template.containers[0].image,running:properties.runningState,traffic:properties.trafficWeight}" -o table
           echo "=== identities (detail) ==="
-          for id in $(az containerapp show -n pcm-api -g "$RG" --query "identity.userAssignedIdentities.keys(@)" -o tsv); do
+          for id in $(az containerapp show -n pcm-api-cont -g "$RG" --query "identity.userAssignedIdentities.keys(@)" -o tsv); do
             echo "---- $id"
             az identity show --ids "$id" --query "{name:name,clientId:clientId,principalId:principalId,tenantId:tenantId,location:location}" -o json || true
           done
+          echo "=== ACR latest pcm-api digest ==="
+          az acr repository show-tags -n acrpcmtt --repository pcm-api --orderby time_desc --top 5 -o table || true
+          echo "=== probe /api/prism/config via web FQDN ==="
+          WEB=$(az containerapp show -n pcm-web-cont -g "$RG" --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "WEB=$WEB"
+          curl -sS -o /tmp/prism-config.json -w "HTTP %{http_code}\n" "https://$WEB/api/prism/config" || true
+          cat /tmp/prism-config.json || true
+          echo
+          curl -sS -o /tmp/prism-ping.json -w "HTTP %{http_code}\n" "https://$WEB/api/prism/ping" || true
+          cat /tmp/prism-ping.json || true
+          echo
