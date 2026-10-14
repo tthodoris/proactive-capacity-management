@@ -18,6 +18,7 @@ import {
   ShieldAlert,
   Trophy,
   ClipboardList,
+  Database,
   Users,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -75,6 +76,7 @@ const nav: NavItem[] = [
   },
   { to: '/forecast', label: 'Capacity forecast', icon: MessageSquareText },
   { to: '/uats', label: 'UATs', icon: ClipboardList },
+  { to: '/prism', label: 'PRISM', icon: Database },
   { to: '/reports', label: 'Reports', icon: BarChart3 },
   { to: '/alerts', label: 'Alerts & Engagement', icon: Bell },
   { to: '/rewards', label: 'Rewards', icon: Trophy },
@@ -158,6 +160,11 @@ const titles: Record<string, { title: string; subtitle: string }> = {
     title: 'UATs',
     subtitle:
       'Capacity/Service Availability work items from Unified Action Tracker, with status and account filters.',
+  },
+  '/prism': {
+    title: 'PRISM',
+    subtitle:
+      'CapacityBank rows from the PRISM Azure Data Explorer cluster via the API managed identity.',
   },
   '/reports': {
     title: 'Reports',

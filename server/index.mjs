@@ -70,6 +70,10 @@ import {
   setAdoAccessToken,
   startAdoLogin,
 } from './adoUat.mjs'
+import {
+  getPrismPublicConfig,
+  queryPrismCapacityBank,
+} from './prismAdx.mjs'
 
 const app = express()
 const PORT = Number(process.env.PCM_API_PORT || 8787)
@@ -3681,6 +3685,31 @@ app.get('/api/agent/chats/:id', async (req, res) => {
     res.json(chat)
   } catch (err) {
     sendRouteError(res, 500, err, 'Failed to load agent chat')
+  }
+})
+
+app.get('/api/prism/config', (_req, res) => {
+  try {
+    res.json(getPrismPublicConfig())
+  } catch (err) {
+    sendRouteError(res, 500, err, 'Failed to load PRISM config')
+  }
+})
+
+app.get('/api/prism/capacity-bank', async (req, res) => {
+  try {
+    const take = req.query.take
+    const csl = req.query.csl ? String(req.query.csl) : undefined
+    const result = await queryPrismCapacityBank({ take, csl })
+    res.json(result)
+  } catch (err) {
+    const status = Number(err?.status) || 500
+    sendRouteError(
+      res,
+      status >= 400 && status < 600 ? status : 500,
+      err,
+      err?.hint || 'Failed to query PRISM Azure Data Explorer',
+    )
   }
 })
 
