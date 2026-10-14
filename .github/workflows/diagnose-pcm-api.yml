@@ -1,0 +1,71 @@
+name: Diagnose pcm-api
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Dump pcm-api identity, image, env
+        run: |
+          set -euo pipefail
+          RG="${{ secrets.AZURE_RESOURCE_GROUP }}"
+          echo "Subscription: $(az account show --query '{name:name,id:id,tenantId:tenantId}' -o json)"
+          echo "RG=$RG"
+          az group show -n "$RG" --query '{name:name,location:location}' -o json
+          echo "=== container apps ==="
+          az containerapp list -g "$RG" --query "[].{name:name,image:properties.template.containers[0].image,fqdn:properties.configuration.ingress.fqdn}" -o table
+          echo "=== pcm-api show (identity + containers) ==="
+          az containerapp show -n pcm-api -g "$RG" -o json > /tmp/api.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/api.json'))
+          props=d.get('properties',{})
+          cfg=props.get('configuration',{})
+          tmpl=props.get('template',{})
+          identity=d.get('identity',{})
+          print('identity.type=', identity.get('type'))
+          uai=identity.get('userAssignedIdentities') or {}
+          print('userAssignedIdentities count=', len(uai))
+          for k,v in uai.items():
+              print('UAMI resourceId=', k)
+              print('  clientId=', (v or {}).get('clientId'))
+              print('  principalId=', (v or {}).get('principalId'))
+          containers=tmpl.get('containers') or []
+          for c in containers:
+              print('container=', c.get('name'))
+              print('image=', c.get('image'))
+              envs=c.get('env') or []
+              interesting=('AZURE_CLIENT_ID','PRISM_','IDENTITY_','DATABASE','PCM_')
+              print('env count=', len(envs))
+              for e in envs:
+                  name=e.get('name') or ''
+                  if any(x in name for x in ('AZURE_CLIENT_ID','PRISM_','IDENTITY_','DATABASE','PCM_','CLIENT')) or name.startswith('AZURE_'):
+                      val=e.get('value')
+                      secret=e.get('secretRef')
+                      if secret:
+                          print(f'  {name}=<secret:{secret}>')
+                      elif name in ('AZURE_CLIENT_ID','PRISM_MANAGED_IDENTITY_CLIENT_ID') and val:
+                          print(f'  {name}={val}')
+                      elif val is not None:
+                          print(f'  {name}={val}')
+                      else:
+                          print(f'  {name}=')
+              print('ALL env names:', ', '.join(sorted(e.get('name') or '' for e in envs)))
+          print('activeRevisionsMode=', (cfg.get('activeRevisionsMode')))
+          print('registries=', json.dumps(cfg.get('registries'), indent=2))
+          PY
+          echo "=== revisions ==="
+          az containerapp revision list -n pcm-api -g "$RG" --query "[].{name:name,active:properties.active,created:properties.createdTime,image:properties.template.containers[0].image,running:properties.runningState,traffic:properties.trafficWeight}" -o table
+          echo "=== identities (detail) ==="
+          for id in $(az containerapp show -n pcm-api -g "$RG" --query "identity.userAssignedIdentities.keys(@)" -o tsv); do
+            echo "---- $id"
+            az identity show --ids "$id" --query "{name:name,clientId:clientId,principalId:principalId,tenantId:tenantId,location:location}" -o json || true
+          done
