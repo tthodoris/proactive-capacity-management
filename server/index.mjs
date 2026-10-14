@@ -72,6 +72,7 @@ import {
 } from './adoUat.mjs'
 import {
   getPrismPublicConfig,
+  pingPrismCluster,
   queryPrismCapacityBank,
 } from './prismAdx.mjs'
 
@@ -3693,6 +3694,20 @@ app.get('/api/prism/config', (_req, res) => {
     res.json(getPrismPublicConfig())
   } catch (err) {
     sendRouteError(res, 500, err, 'Failed to load PRISM config')
+  }
+})
+
+app.get('/api/prism/ping', async (_req, res) => {
+  try {
+    res.json(await pingPrismCluster())
+  } catch (err) {
+    const status = Number(err?.status) || 500
+    sendRouteError(
+      res,
+      status >= 400 && status < 600 ? status : 500,
+      err,
+      err?.hint || 'Failed to reach PRISM Azure Data Explorer',
+    )
   }
 })
 

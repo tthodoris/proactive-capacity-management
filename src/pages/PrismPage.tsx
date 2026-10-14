@@ -3,6 +3,7 @@ import { Database, ExternalLink, RefreshCw, Search, X } from 'lucide-react'
 import {
   fetchPrismCapacityBank,
   fetchPrismConfig,
+  fetchPrismPing,
   type PrismCapacityBankResult,
   type PrismConfig,
 } from '../lib/prismApi'
@@ -23,25 +24,55 @@ export function PrismPage() {
   const [config, setConfig] = useState<PrismConfig | null>(null)
   const [data, setData] = useState<PrismCapacityBankResult | null>(null)
   const [loading, setLoading] = useState(false)
+  const [pinging, setPinging] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pingNote, setPingNote] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+
+  const loadConfig = useCallback(async () => {
+    try {
+      setConfig(await fetchPrismConfig())
+    } catch {
+      // Config is best-effort; CapacityBank error is primary.
+    }
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setPingNote(null)
     try {
-      const [nextConfig, nextData] = await Promise.all([
-        fetchPrismConfig(),
-        fetchPrismCapacityBank({ take: 1000 }),
-      ])
-      setConfig(nextConfig)
+      await loadConfig()
+      const nextData = await fetchPrismCapacityBank({ take: 1000 })
       setData(nextData)
     } catch (err) {
+      setData(null)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [loadConfig])
+
+  const runPing = useCallback(async () => {
+    setPinging(true)
+    setPingNote(null)
+    try {
+      await loadConfig()
+      const result = await fetchPrismPing()
+      const names = (result.databases || [])
+        .map((row) => String(row.DatabaseName || row.Name || Object.values(row)[0] || ''))
+        .filter(Boolean)
+      setPingNote(
+        `Ping OK via ${result.authSource} · token ${result.tokenResource} · ${names.length} database(s)${
+          names.length ? `: ${names.slice(0, 8).join(', ')}` : ''
+        }`,
+      )
+    } catch (err) {
+      setPingNote(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPinging(false)
+    }
+  }, [loadConfig])
 
   useEffect(() => {
     void load()
@@ -68,6 +99,16 @@ export function PrismPage() {
             {config ? ` / database ${config.database}` : ''}. Queried with the API container
             user-assigned managed identity ({`CapacityBank | take 1000`}).
           </p>
+          {config ? (
+            <p className="muted" style={{ marginTop: '0.45rem' }}>
+              Token audience: <code>{config.tokenResource}</code>
+              {' · '}
+              UAMI client id:{' '}
+              {config.managedIdentityClientIdConfigured
+                ? `…${config.managedIdentityClientIdSuffix}`
+                : 'not set (AZURE_CLIENT_ID / PRISM_MANAGED_IDENTITY_CLIENT_ID)'}
+            </p>
+          ) : null}
         </div>
         <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
           {config?.explorerUrl ? (
@@ -81,6 +122,14 @@ export function PrismPage() {
               Open ADX
             </a>
           ) : null}
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => void runPing()}
+            disabled={pinging || loading}
+          >
+            {pinging ? 'Pinging…' : 'Ping cluster'}
+          </button>
           <button
             type="button"
             className="btn btn-primary"
@@ -99,9 +148,20 @@ export function PrismPage() {
             <strong>Could not load PRISM CapacityBank</strong>
             <p style={{ marginTop: '0.55rem' }}>{error}</p>
             <p className="muted" style={{ marginTop: '0.55rem' }}>
-              Confirm the container user-assigned identity is authorized on the PRISM ADX cluster
-              and that AZURE_CLIENT_ID / PRISM_MANAGED_IDENTITY_CLIENT_ID is set to that identity.
+              ADX 404 usually means wrong Cluster URI or database name. 401/403 means the
+              user-assigned identity is not authorized (also check PRISM{' '}
+              <code>trustedExternalTenants</code> for cross-tenant). Token audience must be{' '}
+              <code>https://kusto.kusto.windows.net</code>, not the cluster URI.
             </p>
+          </div>
+        </section>
+      ) : null}
+
+      {pingNote ? (
+        <section className="panel">
+          <div className="panel-body">
+            <strong>Cluster ping</strong>
+            <p style={{ marginTop: '0.55rem' }}>{pingNote}</p>
           </div>
         </section>
       ) : null}

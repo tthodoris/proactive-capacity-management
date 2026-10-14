@@ -5,6 +5,10 @@
  * Cluster example: https://azprism.westus2.kusto.windows.net
  * Database: prod
  * Table: CapacityBank
+ *
+ * Token audience for ADX is normally the first-party app:
+ *   https://kusto.kusto.windows.net
+ * (not the cluster URI). Override with PRISM_ADX_TOKEN_RESOURCE if needed.
  */
 
 import { spawn } from 'node:child_process'
@@ -12,6 +16,7 @@ import { spawn } from 'node:child_process'
 const DEFAULT_CLUSTER = 'https://azprism.westus2.kusto.windows.net'
 const DEFAULT_DATABASE = 'prod'
 const DEFAULT_TAKE = 1000
+const DEFAULT_TOKEN_RESOURCE = 'https://kusto.kusto.windows.net'
 
 function prismConfig() {
   const cluster = String(process.env.PRISM_ADX_CLUSTER || DEFAULT_CLUSTER)
@@ -21,11 +26,14 @@ function prismConfig() {
   const clientId =
     String(process.env.PRISM_MANAGED_IDENTITY_CLIENT_ID || process.env.AZURE_CLIENT_ID || '').trim() ||
     null
+  const tokenResource =
+    String(process.env.PRISM_ADX_TOKEN_RESOURCE || DEFAULT_TOKEN_RESOURCE).trim() ||
+    DEFAULT_TOKEN_RESOURCE
   return {
     cluster,
     database,
     clientId,
-    resource: cluster,
+    tokenResource,
   }
 }
 
@@ -56,18 +64,54 @@ function runCommand(command, args, { timeoutMs = 45_000 } = {}) {
   })
 }
 
+function extractAdxErrorMessage(payload, text, status) {
+  if (payload && typeof payload === 'object') {
+    const nested =
+      payload?.error?.['@message'] ||
+      payload?.error?.message ||
+      payload?.error?.Message ||
+      (typeof payload.error === 'string' ? payload.error : null) ||
+      payload?.Message ||
+      payload?.message
+    if (nested) return String(nested)
+  }
+  if (text && String(text).trim()) return String(text).trim().slice(0, 800)
+  return `ADX request failed (${status})`
+}
+
+function hintForAdxStatus(status, cfg) {
+  if (status === 401 || status === 403) {
+    return (
+      'ADX rejected the managed-identity token. Confirm AZURE_CLIENT_ID / PRISM_MANAGED_IDENTITY_CLIENT_ID ' +
+      'is the authorized UAMI, the identity has database Viewer (or higher) on ' +
+      `${cfg.database}, and the PRISM cluster trustedExternalTenants includes your identity tenant (or "*").`
+    )
+  }
+  if (status === 404) {
+    return (
+      `ADX returned Not Found for ${cfg.cluster} / database "${cfg.database}". ` +
+      'Verify PRISM_ADX_CLUSTER is the Cluster URI (not the ingestion URI), PRISM_ADX_DATABASE is correct, ' +
+      'and the database exists on that cluster.'
+    )
+  }
+  return (
+    'Ensure the API container user-assigned identity can reach PRISM ADX and that ' +
+    'PRISM_MANAGED_IDENTITY_CLIENT_ID / AZURE_CLIENT_ID matches that identity.'
+  )
+}
+
 /**
  * Acquire an ADX audience token via ACA/App Service identity endpoint, IMDS, or az CLI.
  */
 export async function getPrismAccessToken() {
-  const { resource, clientId } = prismConfig()
+  const { tokenResource, clientId } = prismConfig()
 
   const identityEndpoint = process.env.IDENTITY_ENDPOINT
   const identityHeader = process.env.IDENTITY_HEADER
   if (identityEndpoint) {
     const url = new URL(identityEndpoint)
     url.searchParams.set('api-version', process.env.IDENTITY_API_VERSION || '2019-08-01')
-    url.searchParams.set('resource', resource)
+    url.searchParams.set('resource', tokenResource)
     if (clientId) url.searchParams.set('client_id', clientId)
     const headers = {}
     if (identityHeader) headers['X-IDENTITY-HEADER'] = identityHeader
@@ -76,13 +120,16 @@ export async function getPrismAccessToken() {
     if (!res.ok || !body?.access_token) {
       const detail = body?.error_description || body?.message || res.statusText
       const err = new Error(`Managed identity token failed (${res.status}): ${detail}`)
-      err.status = res.status
+      err.status = res.status >= 400 && res.status < 600 ? res.status : 502
+      err.hint =
+        'IDENTITY_ENDPOINT responded without an access token. Confirm the container has a user-assigned identity and AZURE_CLIENT_ID is set to that identity client id.'
       throw err
     }
     return {
       accessToken: String(body.access_token),
       expiresOn: body.expires_on || null,
       source: 'managed_identity',
+      tokenResource,
     }
   }
 
@@ -90,7 +137,7 @@ export async function getPrismAccessToken() {
   try {
     const imds = new URL('http://169.254.169.254/metadata/identity/oauth2/token')
     imds.searchParams.set('api-version', '2018-02-01')
-    imds.searchParams.set('resource', resource)
+    imds.searchParams.set('resource', tokenResource)
     if (clientId) imds.searchParams.set('client_id', clientId)
     const res = await fetch(imds, {
       headers: { Metadata: 'true' },
@@ -102,6 +149,7 @@ export async function getPrismAccessToken() {
         accessToken: String(body.access_token),
         expiresOn: body.expires_on || null,
         source: 'imds',
+        tokenResource,
       }
     }
   } catch {
@@ -112,7 +160,7 @@ export async function getPrismAccessToken() {
     'account',
     'get-access-token',
     '--resource',
-    resource,
+    tokenResource,
     '-o',
     'json',
   ])
@@ -124,6 +172,7 @@ export async function getPrismAccessToken() {
     accessToken: String(parsed.accessToken),
     expiresOn: parsed.expiresOn || parsed.expires_on || null,
     source: 'azure_cli',
+    tokenResource,
   }
 }
 
@@ -149,15 +198,9 @@ function normalizeKustoPrimaryResult(payload) {
 
   // v2 frames format
   if (Array.isArray(payload)) {
-    const primary = payload.find(
-      (frame) =>
-        frame?.FrameType === 'DataSet' ||
-        frame?.FrameType === 'DataTable' ||
-        String(frame?.TableKind || '').toLowerCase() === 'primaryresult',
-    )
     const table =
       payload.find((frame) => String(frame?.TableKind || '').toLowerCase() === 'primaryresult') ||
-      primary
+      payload.find((frame) => frame?.FrameType === 'DataTable')
     if (table?.Columns && table?.Rows) {
       const columns = table.Columns.map((col) => ({
         name: col.ColumnName || col.columnName || String(col.name || 'column'),
@@ -177,6 +220,30 @@ function normalizeKustoPrimaryResult(payload) {
   return { columns: [], rows: [] }
 }
 
+async function adxPost(pathname, body) {
+  const cfg = prismConfig()
+  const token = await getPrismAccessToken()
+  const url = `${cfg.cluster}${pathname.startsWith('/') ? '' : '/'}${pathname}`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token.accessToken}`,
+      'Content-Type': 'application/json; charset=utf-8',
+      Accept: 'application/json',
+      'x-ms-client-request-id': `pcm-prism-${Date.now()}`,
+    },
+    body: JSON.stringify(body),
+  })
+  const text = await res.text()
+  let payload
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = { message: text }
+  }
+  return { cfg, token, url, res, text, payload }
+}
+
 export function getPrismPublicConfig() {
   const cfg = prismConfig()
   return {
@@ -184,8 +251,38 @@ export function getPrismPublicConfig() {
     database: cfg.database,
     table: 'CapacityBank',
     defaultTake: DEFAULT_TAKE,
+    tokenResource: cfg.tokenResource,
     managedIdentityClientIdConfigured: Boolean(cfg.clientId),
+    managedIdentityClientIdSuffix: cfg.clientId ? cfg.clientId.slice(-8) : null,
     explorerUrl: `https://dataexplorer.azure.com/clusters/azprism.westus2/databases/${encodeURIComponent(cfg.database)}`,
+  }
+}
+
+/**
+ * Lightweight connectivity check: list databases on the PRISM cluster.
+ */
+export async function pingPrismCluster() {
+  const { cfg, token, url, res, text, payload } = await adxPost('/v1/rest/mgmt', {
+    db: cfg.database,
+    csl: '.show databases',
+  })
+  if (!res.ok) {
+    const message = extractAdxErrorMessage(payload, text, res.status)
+    const err = new Error(`${message} [POST ${url}]`)
+    err.status = res.status >= 400 && res.status < 600 ? res.status : 502
+    err.hint = hintForAdxStatus(res.status, cfg)
+    throw err
+  }
+  const { columns, rows } = normalizeKustoPrimaryResult(payload)
+  return {
+    ok: true,
+    cluster: cfg.cluster,
+    database: cfg.database,
+    authSource: token.source,
+    tokenResource: token.tokenResource,
+    databases: rows,
+    columns,
+    retrievedAt: new Date().toISOString(),
   }
 }
 
@@ -194,7 +291,6 @@ export function getPrismPublicConfig() {
  * @param {{ csl?: string, take?: number }} [options]
  */
 export async function queryPrismCapacityBank(options = {}) {
-  const cfg = prismConfig()
   const take = Math.min(
     Math.max(Number(options.take) || DEFAULT_TAKE, 1),
     Number(process.env.PRISM_ADX_MAX_TAKE) || 5000,
@@ -203,40 +299,16 @@ export async function queryPrismCapacityBank(options = {}) {
     String(options.csl || '').trim() ||
     `CapacityBank | take ${take}`
 
-  const token = await getPrismAccessToken()
-  const url = `${cfg.cluster}/v1/rest/query`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token.accessToken}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({
-      db: cfg.database,
-      csl,
-    }),
+  const { cfg, token, url, res, text, payload } = await adxPost('/v1/rest/query', {
+    db: cfg.database,
+    csl,
   })
 
-  const text = await res.text()
-  let payload
-  try {
-    payload = text ? JSON.parse(text) : null
-  } catch {
-    payload = { message: text }
-  }
-
   if (!res.ok) {
-    const message =
-      payload?.error?.message ||
-      payload?.Message ||
-      payload?.message ||
-      text.slice(0, 500) ||
-      `ADX query failed (${res.status})`
-    const err = new Error(message)
+    const message = extractAdxErrorMessage(payload, text, res.status)
+    const err = new Error(`${message} [POST ${url} db=${cfg.database}]`)
     err.status = res.status >= 400 && res.status < 600 ? res.status : 502
-    err.hint =
-      'Ensure the API container user-assigned identity is granted viewer (or higher) on the PRISM ADX cluster/database, and PRISM_MANAGED_IDENTITY_CLIENT_ID / AZURE_CLIENT_ID matches that identity.'
+    err.hint = hintForAdxStatus(res.status, cfg)
     throw err
   }
 
@@ -247,6 +319,7 @@ export async function queryPrismCapacityBank(options = {}) {
     csl,
     take,
     authSource: token.source,
+    tokenResource: token.tokenResource,
     retrievedAt: new Date().toISOString(),
     total: rows.length,
     columns,

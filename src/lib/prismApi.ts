@@ -10,7 +10,9 @@ export type PrismConfig = {
   database: string
   table: string
   defaultTake: number
+  tokenResource: string
   managedIdentityClientIdConfigured: boolean
+  managedIdentityClientIdSuffix: string | null
   explorerUrl: string
 }
 
@@ -20,10 +22,22 @@ export type PrismCapacityBankResult = {
   csl: string
   take: number
   authSource: string
+  tokenResource?: string
   retrievedAt: string
   total: number
   columns: PrismColumn[]
   rows: Array<Record<string, unknown>>
+}
+
+export type PrismPingResult = {
+  ok: boolean
+  cluster: string
+  database: string
+  authSource: string
+  tokenResource: string
+  databases: Array<Record<string, unknown>>
+  columns: PrismColumn[]
+  retrievedAt: string
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -40,6 +54,10 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function fetchPrismConfig() {
   return api<PrismConfig>('/api/prism/config')
+}
+
+export function fetchPrismPing() {
+  return api<PrismPingResult>('/api/prism/ping')
 }
 
 export function fetchPrismCapacityBank(options: { take?: number; csl?: string } = {}) {
