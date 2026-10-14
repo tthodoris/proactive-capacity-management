@@ -262,7 +262,8 @@ export function getPrismPublicConfig() {
  * Lightweight connectivity check: list databases on the PRISM cluster.
  */
 export async function pingPrismCluster() {
-  const { cfg, token, url, res, text, payload } = await adxPost('/v1/rest/mgmt', {
+  const cfg = prismConfig()
+  const { token, url, res, text, payload } = await adxPost('/v1/rest/mgmt', {
     db: cfg.database,
     csl: '.show databases',
   })
@@ -299,7 +300,8 @@ export async function queryPrismCapacityBank(options = {}) {
     String(options.csl || '').trim() ||
     `CapacityBank | take ${take}`
 
-  const { cfg, token, url, res, text, payload } = await adxPost('/v1/rest/query', {
+  const cfg = prismConfig()
+  const { token, url, res, text, payload } = await adxPost('/v1/rest/query', {
     db: cfg.database,
     csl,
   })
