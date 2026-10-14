@@ -1,6 +1,11 @@
 name: Diagnose pcm-api
 on:
   workflow_dispatch:
+    inputs:
+      fix_revision:
+        description: 'If true, update pcm-api-cont + pcm-web-cont to current :latest digests'
+        required: false
+        default: 'false'
 permissions:
   id-token: write
   contents: read
@@ -13,70 +18,43 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Dump pcm-api identity, image, env
+      - name: Inspect failed revision and optionally redeploy
         run: |
           set -euo pipefail
           RG="${{ secrets.AZURE_RESOURCE_GROUP }}"
-          echo "Subscription: $(az account show --query '{name:name,id:id,tenantId:tenantId}' -o json)"
-          echo "RG=$RG"
-          az group show -n "$RG" --query '{name:name,location:location}' -o json
-          echo "=== container apps ==="
-          az containerapp list -g "$RG" --query "[].{name:name,image:properties.template.containers[0].image,fqdn:properties.configuration.ingress.fqdn}" -o table
-          echo "=== pcm-api-cont show (identity + containers) ==="
-          az containerapp show -n pcm-api-cont -g "$RG" -o json > /tmp/api.json
+          echo "=== revision details ==="
+          az containerapp revision list -n pcm-api-cont -g "$RG" -o json > /tmp/revs.json
           python3 - <<'PY'
           import json
-          d=json.load(open('/tmp/api.json'))
-          props=d.get('properties',{})
-          cfg=props.get('configuration',{})
-          tmpl=props.get('template',{})
-          identity=d.get('identity',{})
-          print('identity.type=', identity.get('type'))
-          uai=identity.get('userAssignedIdentities') or {}
-          print('userAssignedIdentities count=', len(uai))
-          for k,v in uai.items():
-              print('UAMI resourceId=', k)
-              print('  clientId=', (v or {}).get('clientId'))
-              print('  principalId=', (v or {}).get('principalId'))
-          containers=tmpl.get('containers') or []
-          for c in containers:
-              print('container=', c.get('name'))
-              print('image=', c.get('image'))
-              envs=c.get('env') or []
-              interesting=('AZURE_CLIENT_ID','PRISM_','IDENTITY_','DATABASE','PCM_')
-              print('env count=', len(envs))
-              for e in envs:
-                  name=e.get('name') or ''
-                  if any(x in name for x in ('AZURE_CLIENT_ID','PRISM_','IDENTITY_','DATABASE','PCM_','CLIENT')) or name.startswith('AZURE_'):
-                      val=e.get('value')
-                      secret=e.get('secretRef')
-                      if secret:
-                          print(f'  {name}=<secret:{secret}>')
-                      elif name in ('AZURE_CLIENT_ID','PRISM_MANAGED_IDENTITY_CLIENT_ID') and val:
-                          print(f'  {name}={val}')
-                      elif val is not None:
-                          print(f'  {name}={val}')
-                      else:
-                          print(f'  {name}=')
-              print('ALL env names:', ', '.join(sorted(e.get('name') or '' for e in envs)))
-          print('activeRevisionsMode=', (cfg.get('activeRevisionsMode')))
-          print('registries=', json.dumps(cfg.get('registries'), indent=2))
+          revs=json.load(open('/tmp/revs.json'))
+          for r in revs:
+            p=r.get('properties') or {}
+            print('---', r.get('name'))
+            print(' active=', p.get('active'), 'runningState=', p.get('runningState'), 'healthState=', p.get('healthState'), 'traffic=', p.get('trafficWeight'))
+            print(' created=', p.get('createdTime'), 'image=', ((p.get('template') or {}).get('containers') or [{}])[0].get('image'))
+            print(' provisioning=', p.get('provisioningState'), 'replicas=', p.get('replicas'))
+            err=p.get('runningStateDetails') or p.get('healthStateDetails') or p.get('provisioningError')
+            if err: print(' details=', err)
           PY
-          echo "=== revisions ==="
-          az containerapp revision list -n pcm-api-cont -g "$RG" --query "[].{name:name,active:properties.active,created:properties.createdTime,image:properties.template.containers[0].image,running:properties.runningState,traffic:properties.trafficWeight}" -o table
-          echo "=== identities (detail) ==="
-          for id in $(az containerapp show -n pcm-api-cont -g "$RG" --query "identity.userAssignedIdentities.keys(@)" -o tsv); do
-            echo "---- $id"
-            az identity show --ids "$id" --query "{name:name,clientId:clientId,principalId:principalId,tenantId:tenantId,location:location}" -o json || true
-          done
-          echo "=== ACR latest pcm-api digest ==="
-          az acr repository show-tags -n acrpcmtt --repository pcm-api --orderby time_desc --top 5 -o table || true
-          echo "=== probe /api/prism/config via web FQDN ==="
-          WEB=$(az containerapp show -n pcm-web-cont -g "$RG" --query "properties.configuration.ingress.fqdn" -o tsv)
-          echo "WEB=$WEB"
-          curl -sS -o /tmp/prism-config.json -w "HTTP %{http_code}\n" "https://$WEB/api/prism/config" || true
-          cat /tmp/prism-config.json || true
-          echo
-          curl -sS -o /tmp/prism-ping.json -w "HTTP %{http_code}\n" "https://$WEB/api/prism/ping" || true
-          cat /tmp/prism-ping.json || true
-          echo
+          echo "=== system logs (activation) ==="
+          az containerapp logs show -n pcm-api-cont -g "$RG" --type system --tail 80 2>&1 || true
+          echo "=== console logs ==="
+          az containerapp logs show -n pcm-api-cont -g "$RG" --tail 80 2>&1 || true
+          if [ "${{ github.event.inputs.fix_revision }}" = "true" ]; then
+            echo "=== forcing new revision from :latest ==="
+            # digest-pin latest so ACA actually creates a new revision even if tag string unchanged
+            DIGEST=$(az acr manifest show-metadata -r acrpcmtt -n pcm-api:latest --query digest -o tsv)
+            WEB_DIGEST=$(az acr manifest show-metadata -r acrpcmtt -n pcm-web:latest --query digest -o tsv)
+            echo "api digest=$DIGEST"
+            echo "web digest=$WEB_DIGEST"
+            az containerapp update -n pcm-api-cont -g "$RG" --image "acrpcmtt.azurecr.io/pcm-api@${DIGEST}" -o table
+            az containerapp update -n pcm-web-cont -g "$RG" --image "acrpcmtt.azurecr.io/pcm-web@${WEB_DIGEST}" -o table
+            sleep 20
+            az containerapp revision list -n pcm-api-cont -g "$RG" --query "[].{name:name,active:properties.active,running:properties.runningState,traffic:properties.trafficWeight,image:properties.template.containers[0].image}" -o table
+            WEB=$(az containerapp show -n pcm-web-cont -g "$RG" --query "properties.configuration.ingress.fqdn" -o tsv)
+            echo "WEB=$WEB"
+            curl -sS -o /tmp/prism-config.json -w "config HTTP %{http_code}\n" "https://$WEB/api/prism/config" || true
+            cat /tmp/prism-config.json; echo
+            curl -sS -o /tmp/prism-ping.json -w "ping HTTP %{http_code}\n" "https://$WEB/api/prism/ping" || true
+            cat /tmp/prism-ping.json; echo
+          fi
