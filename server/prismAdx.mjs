@@ -79,12 +79,39 @@ function extractAdxErrorMessage(payload, text, status) {
   return `ADX request failed (${status})`
 }
 
-function hintForAdxStatus(status, cfg) {
+/** Decode JWT payload claims without verifying signature (diagnostics only). */
+function decodeJwtClaims(accessToken) {
+  try {
+    const parts = String(accessToken || '').split('.')
+    if (parts.length < 2) return null
+    const json = Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString(
+      'utf8',
+    )
+    const payload = JSON.parse(json)
+    return {
+      aud: payload.aud ?? null,
+      appid: payload.appid || payload.azp || null,
+      oid: payload.oid ?? null,
+      tid: payload.tid ?? null,
+      iss: payload.iss ?? null,
+      idtyp: payload.idtyp ?? null,
+    }
+  } catch {
+    return null
+  }
+}
+
+function hintForAdxStatus(status, cfg, claims = null) {
   if (status === 401 || status === 403) {
+    const principal =
+      claims?.appid && claims?.tid
+        ? ` Grant in ADX: .add database ${cfg.database} viewers ('aadapp=${claims.appid};${claims.tid}').`
+        : ''
     return (
-      'ADX rejected the managed-identity token. Confirm AZURE_CLIENT_ID / PRISM_MANAGED_IDENTITY_CLIENT_ID ' +
-      'is the authorized UAMI, the identity has database Viewer (or higher) on ' +
-      `${cfg.database}, and the PRISM cluster trustedExternalTenants includes your identity tenant (or "*").`
+      'ADX rejected the managed-identity token. On the PRISM cluster: (1) trustedExternalTenants must ' +
+      `include the identity tenant${claims?.tid ? ` (${claims.tid})` : ''} or "*"; ` +
+      `(2) add the UAMI as Viewer (or higher) on database ${cfg.database}.` +
+      principal
     )
   }
   if (status === 404) {
@@ -125,11 +152,13 @@ export async function getPrismAccessToken() {
         'IDENTITY_ENDPOINT responded without an access token. Confirm the container has a user-assigned identity and AZURE_CLIENT_ID is set to that identity client id.'
       throw err
     }
+    const accessToken = String(body.access_token)
     return {
-      accessToken: String(body.access_token),
+      accessToken,
       expiresOn: body.expires_on || null,
       source: 'managed_identity',
       tokenResource,
+      claims: decodeJwtClaims(accessToken),
     }
   }
 
@@ -145,11 +174,13 @@ export async function getPrismAccessToken() {
     })
     const body = await res.json().catch(() => ({}))
     if (res.ok && body?.access_token) {
+      const accessToken = String(body.access_token)
       return {
-        accessToken: String(body.access_token),
+        accessToken,
         expiresOn: body.expires_on || null,
         source: 'imds',
         tokenResource,
+        claims: decodeJwtClaims(accessToken),
       }
     }
   } catch {
@@ -168,11 +199,13 @@ export async function getPrismAccessToken() {
   if (!parsed?.accessToken) {
     throw new Error('Azure CLI did not return a PRISM / ADX access token')
   }
+  const accessToken = String(parsed.accessToken)
   return {
-    accessToken: String(parsed.accessToken),
+    accessToken,
     expiresOn: parsed.expiresOn || parsed.expires_on || null,
     source: 'azure_cli',
     tokenResource,
+    claims: decodeJwtClaims(accessToken),
   }
 }
 
@@ -244,6 +277,16 @@ async function adxPost(pathname, body) {
   return { cfg, token, url, res, text, payload }
 }
 
+function attachTokenDiagnostics(err, token, cfg) {
+  const claims = token?.claims || null
+  err.claims = claims
+  err.hint = hintForAdxStatus(err.status, cfg, claims)
+  if (claims?.appid && claims?.tid) {
+    err.adxPrincipal = `aadapp=${claims.appid};${claims.tid}`
+  }
+  return err
+}
+
 export function getPrismPublicConfig() {
   const cfg = prismConfig()
   return {
@@ -253,8 +296,12 @@ export function getPrismPublicConfig() {
     defaultTake: DEFAULT_TAKE,
     tokenResource: cfg.tokenResource,
     managedIdentityClientIdConfigured: Boolean(cfg.clientId),
+    managedIdentityClientId: cfg.clientId,
     managedIdentityClientIdSuffix: cfg.clientId ? cfg.clientId.slice(-8) : null,
     explorerUrl: `https://dataexplorer.azure.com/clusters/azprism.westus2/databases/${encodeURIComponent(cfg.database)}`,
+    adxGrantHint: cfg.clientId
+      ? `.add database ${cfg.database} viewers ('aadapp=${cfg.clientId};<identity-tenant-id>')`
+      : null,
   }
 }
 
@@ -271,8 +318,7 @@ export async function pingPrismCluster() {
     const message = extractAdxErrorMessage(payload, text, res.status)
     const err = new Error(`${message} [POST ${url}]`)
     err.status = res.status >= 400 && res.status < 600 ? res.status : 502
-    err.hint = hintForAdxStatus(res.status, cfg)
-    throw err
+    throw attachTokenDiagnostics(err, token, cfg)
   }
   const { columns, rows } = normalizeKustoPrimaryResult(payload)
   return {
@@ -281,6 +327,7 @@ export async function pingPrismCluster() {
     database: cfg.database,
     authSource: token.source,
     tokenResource: token.tokenResource,
+    claims: token.claims,
     databases: rows,
     columns,
     retrievedAt: new Date().toISOString(),
@@ -310,8 +357,7 @@ export async function queryPrismCapacityBank(options = {}) {
     const message = extractAdxErrorMessage(payload, text, res.status)
     const err = new Error(`${message} [POST ${url} db=${cfg.database}]`)
     err.status = res.status >= 400 && res.status < 600 ? res.status : 502
-    err.hint = hintForAdxStatus(res.status, cfg)
-    throw err
+    throw attachTokenDiagnostics(err, token, cfg)
   }
 
   const { columns, rows } = normalizeKustoPrimaryResult(payload)
@@ -322,6 +368,7 @@ export async function queryPrismCapacityBank(options = {}) {
     take,
     authSource: token.source,
     tokenResource: token.tokenResource,
+    claims: token.claims,
     retrievedAt: new Date().toISOString(),
     total: rows.length,
     columns,

@@ -3702,12 +3702,13 @@ app.get('/api/prism/ping', async (_req, res) => {
     res.json(await pingPrismCluster())
   } catch (err) {
     const status = Number(err?.status) || 500
-    sendRouteError(
-      res,
-      status >= 400 && status < 600 ? status : 500,
-      err,
-      err?.hint || 'Failed to reach PRISM Azure Data Explorer',
-    )
+    const bodyHint = err?.hint || 'Failed to reach PRISM Azure Data Explorer'
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      error: err instanceof Error ? err.message : String(err),
+      hint: bodyHint,
+      ...(err?.claims ? { claims: err.claims } : {}),
+      ...(err?.adxPrincipal ? { adxPrincipal: err.adxPrincipal } : {}),
+    })
   }
 })
 
@@ -3719,12 +3720,13 @@ app.get('/api/prism/capacity-bank', async (req, res) => {
     res.json(result)
   } catch (err) {
     const status = Number(err?.status) || 500
-    sendRouteError(
-      res,
-      status >= 400 && status < 600 ? status : 500,
-      err,
-      err?.hint || 'Failed to query PRISM Azure Data Explorer',
-    )
+    const bodyHint = err?.hint || 'Failed to query PRISM Azure Data Explorer'
+    res.status(status >= 400 && status < 600 ? status : 500).json({
+      error: err instanceof Error ? err.message : String(err),
+      hint: bodyHint,
+      ...(err?.claims ? { claims: err.claims } : {}),
+      ...(err?.adxPrincipal ? { adxPrincipal: err.adxPrincipal } : {}),
+    })
   }
 })
 

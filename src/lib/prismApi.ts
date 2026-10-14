@@ -47,7 +47,17 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
-    throw apiErrorFromResponse(res, data)
+    const err = apiErrorFromResponse(res, data)
+    const principal = typeof data?.adxPrincipal === 'string' ? data.adxPrincipal : ''
+    const claims =
+      data?.claims && typeof data.claims === 'object'
+        ? `claims aud=${(data.claims as { aud?: string }).aud || '?'} tid=${(data.claims as { tid?: string }).tid || '?'} appid=${(data.claims as { appid?: string }).appid || '?'}`
+        : ''
+    const extras = [principal && `ADX principal ${principal}`, claims].filter(Boolean)
+    if (extras.length) {
+      err.message = `${err.message} — ${extras.join(' · ')}`
+    }
+    throw err
   }
   return data as T
 }
