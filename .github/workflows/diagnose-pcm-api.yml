@@ -6,6 +6,10 @@ on:
         description: 'If true, update pcm-api-cont + pcm-web-cont to current :latest digests'
         required: false
         default: 'false'
+      adx_probe:
+        description: 'If true, exec into running API revision and probe ADX with fresh MI token'
+        required: false
+        default: 'true'
 permissions:
   id-token: write
   contents: read
@@ -18,7 +22,7 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Inspect failed revision and optionally redeploy
+      - name: Inspect revisions / optional redeploy / ADX probe
         run: |
           set -euo pipefail
           RG="${{ secrets.AZURE_RESOURCE_GROUP }}"
@@ -36,20 +40,136 @@ jobs:
             err=p.get('runningStateDetails') or p.get('healthStateDetails') or p.get('provisioningError')
             if err: print(' details=', err)
           PY
-          echo "=== system logs (activation) ==="
-          az containerapp logs show -n pcm-api-cont -g "$RG" --type system --tail 80 2>&1 || true
-          echo "=== console logs ==="
-          az containerapp logs show -n pcm-api-cont -g "$RG" --tail 80 2>&1 || true
+
+          if [ "${{ github.event.inputs.adx_probe }}" = "true" ]; then
+            echo "=== ADX probe via container exec (fresh MI token) ==="
+            # Write probe script, base64 it, decode+run inside the running container.
+            cat > /tmp/adx-probe.mjs <<'JS'
+          const endpoint = process.env.IDENTITY_ENDPOINT
+          const identityHeader = process.env.IDENTITY_HEADER
+          const clientId = process.env.AZURE_CLIENT_ID || process.env.PRISM_MANAGED_IDENTITY_CLIENT_ID
+          const resource = (process.env.PRISM_ADX_TOKEN_RESOURCE || 'https://kusto.kusto.windows.net').replace(/\/\.default$/i, '').replace(/\/$/, '')
+          const cluster = (process.env.PRISM_ADX_CLUSTER || 'https://azprism.westus2.kusto.windows.net').replace(/\/$/, '')
+          const database = process.env.PRISM_ADX_DATABASE || 'prod'
+          if (!endpoint) {
+            console.log(JSON.stringify({ error: 'IDENTITY_ENDPOINT missing' }))
+            process.exit(1)
+          }
+          const tokUrl = new URL(endpoint)
+          tokUrl.searchParams.set('api-version', process.env.IDENTITY_API_VERSION || '2019-08-01')
+          tokUrl.searchParams.set('resource', resource)
+          if (clientId) tokUrl.searchParams.set('client_id', clientId)
+          const headers = {}
+          if (identityHeader) headers['X-IDENTITY-HEADER'] = identityHeader
+          const tokRes = await fetch(tokUrl, { headers })
+          const tokBody = await tokRes.json().catch(() => ({}))
+          if (!tokRes.ok || !tokBody.access_token) {
+            console.log(JSON.stringify({
+              error: 'token_acquisition_failed',
+              status: tokRes.status,
+              body: tokBody,
+              resource,
+              tokenScope: resource + '/.default',
+              clientId,
+            }, null, 2))
+            process.exit(1)
+          }
+          const accessToken = String(tokBody.access_token)
+          const payload = JSON.parse(Buffer.from(accessToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'))
+          const claims = {
+            aud: payload.aud ?? null,
+            appid: payload.appid || payload.azp || null,
+            oid: payload.oid ?? null,
+            tid: payload.tid ?? null,
+            iss: payload.iss ?? null,
+            idtyp: payload.idtyp ?? null,
+            scp: payload.scp ?? null,
+            roles: payload.roles ?? null,
+          }
+          const clientRequestId = `pcm-prism-diag-${Date.now()}`
+          const requestedAtUtc = new Date().toISOString()
+          const adxRes = await fetch(`${cluster}/v1/rest/query`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json; charset=utf-8',
+              Accept: 'application/json',
+              'x-ms-client-request-id': clientRequestId,
+              'x-ms-app': 'pcm-api-diag',
+            },
+            body: JSON.stringify({ db: database, csl: 'CapacityBank | take 1' }),
+          })
+          const respondedAtUtc = new Date().toISOString()
+          const responseHeaders = {}
+          adxRes.headers.forEach((v, k) => { responseHeaders[k] = v })
+          const text = await adxRes.text()
+          let sanitizedErrorBody = null
+          try { sanitizedErrorBody = text ? JSON.parse(text) : null } catch { sanitizedErrorBody = { message: text.slice(0, 2000) } }
+          console.log(JSON.stringify({
+            ok: adxRes.ok,
+            httpStatus: adxRes.status,
+            utcTimestamp: respondedAtUtc,
+            requestedAtUtc,
+            respondedAtUtc,
+            url: `${cluster}/v1/rest/query`,
+            database,
+            csl: 'CapacityBank | take 1',
+            tokenResource: resource,
+            tokenScope: `${resource}/.default`,
+            authSource: 'managed_identity',
+            clientIdConfigured: clientId || null,
+            claims,
+            adxPrincipal: claims.appid && claims.tid ? `aadapp=${claims.appid};${claims.tid}` : null,
+            clientRequestId,
+            wwwAuthenticate: responseHeaders['www-authenticate'] || null,
+            activityId: responseHeaders['x-ms-activity-id'] || responseHeaders['x-ms-request-id'] || null,
+            correlationId: responseHeaders['x-ms-correlation-request-id'] || responseHeaders['request-id'] || null,
+            responseHeaders,
+            sanitizedErrorBody,
+          }, null, 2))
+          JS
+            B64=$(base64 -w0 /tmp/adx-probe.mjs)
+            # Prefer the Running revision if traffic is on a failing one
+            REV=$(python3 - <<'PY'
+          import json
+          revs=json.load(open('/tmp/revs.json'))
+          running=[r for r in revs if (r.get('properties') or {}).get('runningState')=='Running']
+          chosen=running[0] if running else (revs[0] if revs else None)
+          print((chosen or {}).get('name') or '')
+          PY
+            )
+            echo "exec revision=$REV"
+            az containerapp exec \
+              -n pcm-api-cont \
+              -g "$RG" \
+              ${REV:+--revision "$REV"} \
+              --command "node -e \"$(printf 'require(\"fs\").writeFileSync(\"/tmp/adx-probe.mjs\", Buffer.from(\"%s\",\"base64\"));' "$B64")\"" \
+              2>&1 || true
+            # Second exec to run the script (exec sessions are one-shot)
+            az containerapp exec \
+              -n pcm-api-cont \
+              -g "$RG" \
+              ${REV:+--revision "$REV"} \
+              --command "node /tmp/adx-probe.mjs" \
+              2>&1 || true
+            # Fallback: single-command inline via node --input-type=module and stdin is hard; try combined
+            az containerapp exec \
+              -n pcm-api-cont \
+              -g "$RG" \
+              ${REV:+--revision "$REV"} \
+              --command "bash -lc 'echo $B64 | base64 -d > /tmp/adx-probe.mjs && node /tmp/adx-probe.mjs'" \
+              2>&1 || true
+          fi
+
           if [ "${{ github.event.inputs.fix_revision }}" = "true" ]; then
             echo "=== forcing new revision from :latest ==="
-            # digest-pin latest so ACA actually creates a new revision even if tag string unchanged
             DIGEST=$(az acr manifest show-metadata -r acrpcmtt -n pcm-api:latest --query digest -o tsv)
             WEB_DIGEST=$(az acr manifest show-metadata -r acrpcmtt -n pcm-web:latest --query digest -o tsv)
             echo "api digest=$DIGEST"
             echo "web digest=$WEB_DIGEST"
             az containerapp update -n pcm-api-cont -g "$RG" --image "acrpcmtt.azurecr.io/pcm-api@${DIGEST}" -o table
             az containerapp update -n pcm-web-cont -g "$RG" --image "acrpcmtt.azurecr.io/pcm-web@${WEB_DIGEST}" -o table
-            sleep 20
+            sleep 45
             az containerapp revision list -n pcm-api-cont -g "$RG" --query "[].{name:name,active:properties.active,running:properties.runningState,traffic:properties.trafficWeight,image:properties.template.containers[0].image}" -o table
             WEB=$(az containerapp show -n pcm-web-cont -g "$RG" --query "properties.configuration.ingress.fqdn" -o tsv)
             echo "WEB=$WEB"

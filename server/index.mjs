@@ -3917,6 +3917,9 @@ app.post('/api/agent/reset', async (req, res) => {
 })
 
 async function start() {
+  const allowStartWithoutDb =
+    String(process.env.PCM_ALLOW_START_WITHOUT_DB || '').toLowerCase() === 'true' ||
+    String(process.env.PCM_ALLOW_START_WITHOUT_DB || '') === '1'
   try {
     await initDb()
     const seeded = await seedIfEmpty()
@@ -3928,7 +3931,12 @@ async function start() {
     )
   } catch (err) {
     console.error('Failed to initialize PostgreSQL:', err)
-    process.exit(1)
+    if (!allowStartWithoutDb) {
+      process.exit(1)
+    }
+    console.error(
+      'Continuing without PostgreSQL because PCM_ALLOW_START_WITHOUT_DB is set (PRISM routes still available).',
+    )
   }
 
   const host = process.env.PCM_API_HOST || '0.0.0.0'
