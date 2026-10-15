@@ -3708,6 +3708,7 @@ app.get('/api/prism/ping', async (_req, res) => {
       hint: bodyHint,
       ...(err?.claims ? { claims: err.claims } : {}),
       ...(err?.adxPrincipal ? { adxPrincipal: err.adxPrincipal } : {}),
+      ...(err?.adxDiagnostics ? { adxDiagnostics: err.adxDiagnostics } : {}),
     })
   }
 })
@@ -3726,6 +3727,7 @@ app.get('/api/prism/capacity-bank', async (req, res) => {
       hint: bodyHint,
       ...(err?.claims ? { claims: err.claims } : {}),
       ...(err?.adxPrincipal ? { adxPrincipal: err.adxPrincipal } : {}),
+      ...(err?.adxDiagnostics ? { adxDiagnostics: err.adxDiagnostics } : {}),
     })
   }
 })

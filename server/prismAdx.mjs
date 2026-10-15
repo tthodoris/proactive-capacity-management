@@ -18,6 +18,15 @@ const DEFAULT_DATABASE = 'prod'
 const DEFAULT_TAKE = 1000
 const DEFAULT_TOKEN_RESOURCE = 'https://kusto.kusto.windows.net'
 
+/** MI / IMDS use `resource`; MSAL uses `scope` with `/.default`. Normalize both. */
+function normalizeTokenResource(raw) {
+  const value =
+    String(raw || DEFAULT_TOKEN_RESOURCE)
+      .trim()
+      .replace(/\/$/, '') || DEFAULT_TOKEN_RESOURCE
+  return value.replace(/\/\.default$/i, '')
+}
+
 function prismConfig() {
   const cluster = String(process.env.PRISM_ADX_CLUSTER || DEFAULT_CLUSTER)
     .trim()
@@ -26,14 +35,15 @@ function prismConfig() {
   const clientId =
     String(process.env.PRISM_MANAGED_IDENTITY_CLIENT_ID || process.env.AZURE_CLIENT_ID || '').trim() ||
     null
-  const tokenResource =
-    String(process.env.PRISM_ADX_TOKEN_RESOURCE || DEFAULT_TOKEN_RESOURCE).trim() ||
-    DEFAULT_TOKEN_RESOURCE
+  const tokenResource = normalizeTokenResource(
+    process.env.PRISM_ADX_TOKEN_RESOURCE || DEFAULT_TOKEN_RESOURCE,
+  )
   return {
     cluster,
     database,
     clientId,
     tokenResource,
+    tokenScope: `${tokenResource}/.default`,
   }
 }
 
@@ -95,10 +105,44 @@ function decodeJwtClaims(accessToken) {
       tid: payload.tid ?? null,
       iss: payload.iss ?? null,
       idtyp: payload.idtyp ?? null,
+      scp: payload.scp ?? null,
+      roles: payload.roles ?? null,
+      ver: payload.ver ?? null,
     }
   } catch {
     return null
   }
+}
+
+function pickResponseHeaders(res) {
+  const names = [
+    'www-authenticate',
+    'x-ms-client-request-id',
+    'x-ms-activity-id',
+    'x-ms-request-id',
+    'x-ms-correlation-request-id',
+    'x-ms-error-code',
+    'request-id',
+    'date',
+  ]
+  const out = {}
+  for (const name of names) {
+    const value = res.headers.get(name)
+    if (value) out[name] = value
+  }
+  return out
+}
+
+function sanitizeAdxBody(payload, text) {
+  if (payload && typeof payload === 'object') {
+    try {
+      return JSON.parse(JSON.stringify(payload))
+    } catch {
+      /* fall through */
+    }
+  }
+  if (text && String(text).trim()) return { message: String(text).trim().slice(0, 2000) }
+  return null
 }
 
 function hintForAdxStatus(status, cfg, claims = null) {
@@ -153,11 +197,13 @@ export async function getPrismAccessToken() {
       throw err
     }
     const accessToken = String(body.access_token)
+    const { tokenScope } = prismConfig()
     return {
       accessToken,
       expiresOn: body.expires_on || null,
       source: 'managed_identity',
       tokenResource,
+      tokenScope,
       claims: decodeJwtClaims(accessToken),
     }
   }
@@ -175,11 +221,13 @@ export async function getPrismAccessToken() {
     const body = await res.json().catch(() => ({}))
     if (res.ok && body?.access_token) {
       const accessToken = String(body.access_token)
+      const { tokenScope } = prismConfig()
       return {
         accessToken,
         expiresOn: body.expires_on || null,
         source: 'imds',
         tokenResource,
+        tokenScope,
         claims: decodeJwtClaims(accessToken),
       }
     }
@@ -187,15 +235,30 @@ export async function getPrismAccessToken() {
     // Local / non-MI environments fall through to az CLI.
   }
 
-  const { stdout } = await runCommand('az', [
-    'account',
-    'get-access-token',
-    '--resource',
-    tokenResource,
-    '-o',
-    'json',
-  ])
-  const parsed = JSON.parse(stdout)
+  const { tokenScope } = prismConfig()
+  // Prefer scope=.../.default when using Azure CLI (MSAL).
+  let parsed
+  try {
+    const { stdout } = await runCommand('az', [
+      'account',
+      'get-access-token',
+      '--scope',
+      tokenScope,
+      '-o',
+      'json',
+    ])
+    parsed = JSON.parse(stdout)
+  } catch {
+    const { stdout } = await runCommand('az', [
+      'account',
+      'get-access-token',
+      '--resource',
+      tokenResource,
+      '-o',
+      'json',
+    ])
+    parsed = JSON.parse(stdout)
+  }
   if (!parsed?.accessToken) {
     throw new Error('Azure CLI did not return a PRISM / ADX access token')
   }
@@ -205,6 +268,7 @@ export async function getPrismAccessToken() {
     expiresOn: parsed.expiresOn || parsed.expires_on || null,
     source: 'azure_cli',
     tokenResource,
+    tokenScope,
     claims: decodeJwtClaims(accessToken),
   }
 }
@@ -257,16 +321,22 @@ async function adxPost(pathname, body) {
   const cfg = prismConfig()
   const token = await getPrismAccessToken()
   const url = `${cfg.cluster}${pathname.startsWith('/') ? '' : '/'}${pathname}`
+  const clientRequestId = `pcm-prism-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
+  const requestedAtUtc = new Date().toISOString()
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token.accessToken}`,
       'Content-Type': 'application/json; charset=utf-8',
       Accept: 'application/json',
-      'x-ms-client-request-id': `pcm-prism-${Date.now()}`,
+      'x-ms-client-request-id': clientRequestId,
+      'x-ms-app': 'pcm-api',
     },
     body: JSON.stringify(body),
+    cache: 'no-store',
   })
+  const respondedAtUtc = new Date().toISOString()
+  const responseHeaders = pickResponseHeaders(res)
   const text = await res.text()
   let payload
   try {
@@ -274,15 +344,48 @@ async function adxPost(pathname, body) {
   } catch {
     payload = { message: text }
   }
-  return { cfg, token, url, res, text, payload }
+  return {
+    cfg,
+    token,
+    url,
+    res,
+    text,
+    payload,
+    clientRequestId,
+    requestedAtUtc,
+    respondedAtUtc,
+    responseHeaders,
+  }
 }
 
-function attachTokenDiagnostics(err, token, cfg) {
+function attachTokenDiagnostics(err, token, cfg, extras = {}) {
   const claims = token?.claims || null
   err.claims = claims
   err.hint = hintForAdxStatus(err.status, cfg, claims)
   if (claims?.appid && claims?.tid) {
     err.adxPrincipal = `aadapp=${claims.appid};${claims.tid}`
+  }
+  err.adxDiagnostics = {
+    utcTimestamp: extras.respondedAtUtc || new Date().toISOString(),
+    requestedAtUtc: extras.requestedAtUtc || null,
+    respondedAtUtc: extras.respondedAtUtc || null,
+    url: extras.url || null,
+    httpStatus: err.status,
+    clientRequestId: extras.clientRequestId || null,
+    wwwAuthenticate: extras.responseHeaders?.['www-authenticate'] || null,
+    responseHeaders: extras.responseHeaders || {},
+    activityId:
+      extras.responseHeaders?.['x-ms-activity-id'] ||
+      extras.responseHeaders?.['x-ms-request-id'] ||
+      null,
+    correlationId:
+      extras.responseHeaders?.['x-ms-correlation-request-id'] ||
+      extras.responseHeaders?.['request-id'] ||
+      null,
+    tokenResource: token?.tokenResource || cfg.tokenResource,
+    tokenScope: token?.tokenScope || cfg.tokenScope,
+    authSource: token?.source || null,
+    sanitizedErrorBody: sanitizeAdxBody(extras.payload, extras.text),
   }
   return err
 }
@@ -295,6 +398,7 @@ export function getPrismPublicConfig() {
     table: 'CapacityBank',
     defaultTake: DEFAULT_TAKE,
     tokenResource: cfg.tokenResource,
+    tokenScope: cfg.tokenScope,
     managedIdentityClientIdConfigured: Boolean(cfg.clientId),
     managedIdentityClientId: cfg.clientId,
     managedIdentityClientIdSuffix: cfg.clientId ? cfg.clientId.slice(-8) : null,
@@ -310,7 +414,17 @@ export function getPrismPublicConfig() {
  */
 export async function pingPrismCluster() {
   const cfg = prismConfig()
-  const { token, url, res, text, payload } = await adxPost('/v1/rest/mgmt', {
+  const {
+    token,
+    url,
+    res,
+    text,
+    payload,
+    clientRequestId,
+    requestedAtUtc,
+    respondedAtUtc,
+    responseHeaders,
+  } = await adxPost('/v1/rest/mgmt', {
     db: cfg.database,
     csl: '.show databases',
   })
@@ -318,7 +432,15 @@ export async function pingPrismCluster() {
     const message = extractAdxErrorMessage(payload, text, res.status)
     const err = new Error(`${message} [POST ${url}]`)
     err.status = res.status >= 400 && res.status < 600 ? res.status : 502
-    throw attachTokenDiagnostics(err, token, cfg)
+    throw attachTokenDiagnostics(err, token, cfg, {
+      url,
+      text,
+      payload,
+      clientRequestId,
+      requestedAtUtc,
+      respondedAtUtc,
+      responseHeaders,
+    })
   }
   const { columns, rows } = normalizeKustoPrimaryResult(payload)
   return {
@@ -327,10 +449,12 @@ export async function pingPrismCluster() {
     database: cfg.database,
     authSource: token.source,
     tokenResource: token.tokenResource,
+    tokenScope: token.tokenScope,
     claims: token.claims,
     databases: rows,
     columns,
     retrievedAt: new Date().toISOString(),
+    clientRequestId,
   }
 }
 
@@ -348,7 +472,17 @@ export async function queryPrismCapacityBank(options = {}) {
     `CapacityBank | take ${take}`
 
   const cfg = prismConfig()
-  const { token, url, res, text, payload } = await adxPost('/v1/rest/query', {
+  const {
+    token,
+    url,
+    res,
+    text,
+    payload,
+    clientRequestId,
+    requestedAtUtc,
+    respondedAtUtc,
+    responseHeaders,
+  } = await adxPost('/v1/rest/query', {
     db: cfg.database,
     csl,
   })
@@ -357,7 +491,15 @@ export async function queryPrismCapacityBank(options = {}) {
     const message = extractAdxErrorMessage(payload, text, res.status)
     const err = new Error(`${message} [POST ${url} db=${cfg.database}]`)
     err.status = res.status >= 400 && res.status < 600 ? res.status : 502
-    throw attachTokenDiagnostics(err, token, cfg)
+    throw attachTokenDiagnostics(err, token, cfg, {
+      url,
+      text,
+      payload,
+      clientRequestId,
+      requestedAtUtc,
+      respondedAtUtc,
+      responseHeaders,
+    })
   }
 
   const { columns, rows } = normalizeKustoPrimaryResult(payload)
@@ -368,8 +510,10 @@ export async function queryPrismCapacityBank(options = {}) {
     take,
     authSource: token.source,
     tokenResource: token.tokenResource,
+    tokenScope: token.tokenScope,
     claims: token.claims,
     retrievedAt: new Date().toISOString(),
+    clientRequestId,
     total: rows.length,
     columns,
     rows,
