@@ -3706,6 +3706,7 @@ app.get('/api/prism/ping', async (_req, res) => {
     res.status(status >= 400 && status < 600 ? status : 500).json({
       error: err instanceof Error ? err.message : String(err),
       hint: bodyHint,
+      ...(err?.clusterError ? { clusterError: err.clusterError } : {}),
       ...(err?.claims ? { claims: err.claims } : {}),
       ...(err?.adxPrincipal ? { adxPrincipal: err.adxPrincipal } : {}),
       ...(err?.adxDiagnostics ? { adxDiagnostics: err.adxDiagnostics } : {}),
@@ -3725,6 +3726,7 @@ app.get('/api/prism/capacity-bank', async (req, res) => {
     res.status(status >= 400 && status < 600 ? status : 500).json({
       error: err instanceof Error ? err.message : String(err),
       hint: bodyHint,
+      ...(err?.clusterError ? { clusterError: err.clusterError } : {}),
       ...(err?.claims ? { claims: err.claims } : {}),
       ...(err?.adxPrincipal ? { adxPrincipal: err.adxPrincipal } : {}),
       ...(err?.adxDiagnostics ? { adxDiagnostics: err.adxDiagnostics } : {}),

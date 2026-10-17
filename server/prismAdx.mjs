@@ -75,18 +75,67 @@ function runCommand(command, args, { timeoutMs = 45_000 } = {}) {
 }
 
 function extractAdxErrorMessage(payload, text, status) {
+  const details = extractAdxErrorDetails(payload, text, status)
+  return details.message
+}
+
+/** Pull the destination cluster's original error fields for UI / diagnostics. */
+function extractAdxErrorDetails(payload, text, status) {
+  const rawText = text != null ? String(text) : ''
+  let code = null
+  let message = null
+  let type = null
+  let inner = null
+
   if (payload && typeof payload === 'object') {
-    const nested =
-      payload?.error?.['@message'] ||
-      payload?.error?.message ||
-      payload?.error?.Message ||
+    const errObj = payload.error && typeof payload.error === 'object' ? payload.error : null
+    code =
+      errObj?.code ||
+      errObj?.Code ||
+      payload?.code ||
+      payload?.errorCode ||
+      null
+    type = errObj?.['@type'] || errObj?.type || null
+    message =
+      errObj?.['@message'] ||
+      errObj?.message ||
+      errObj?.Message ||
       (typeof payload.error === 'string' ? payload.error : null) ||
       payload?.Message ||
-      payload?.message
-    if (nested) return String(nested)
+      payload?.message ||
+      null
+    if (errObj?.innererror) {
+      try {
+        inner = JSON.parse(JSON.stringify(errObj.innererror))
+      } catch {
+        inner = errObj.innererror
+      }
+    }
+    if (!message && inner) {
+      message =
+        inner['@message'] ||
+        inner.message ||
+        inner.Message ||
+        (typeof inner === 'string' ? inner : null)
+    }
   }
-  if (text && String(text).trim()) return String(text).trim().slice(0, 800)
-  return `ADX request failed (${status})`
+
+  if (!message && rawText.trim()) {
+    message = rawText.trim().slice(0, 2000)
+  }
+  if (!message) {
+    message = `ADX request failed (${status}) with empty response body`
+  }
+
+  return {
+    httpStatus: status,
+    code: code != null ? String(code) : null,
+    type: type != null ? String(type) : null,
+    message: String(message),
+    innererror: inner,
+    rawBody: sanitizeAdxBody(payload, rawText),
+    rawText: rawText.trim() ? rawText.trim().slice(0, 4000) : null,
+  }
 }
 
 /** Decode JWT payload claims without verifying signature (diagnostics only). */
@@ -360,8 +409,20 @@ async function adxPost(pathname, body) {
 
 function attachTokenDiagnostics(err, token, cfg, extras = {}) {
   const claims = token?.claims || null
+  const clusterError = extractAdxErrorDetails(extras.payload, extras.text, err.status)
   err.claims = claims
   err.hint = hintForAdxStatus(err.status, cfg, claims)
+  err.clusterError = {
+    ...clusterError,
+    url: extras.url || null,
+    wwwAuthenticate: extras.responseHeaders?.['www-authenticate'] || null,
+    activityId:
+      extras.responseHeaders?.['x-ms-activity-id'] ||
+      extras.responseHeaders?.['x-ms-request-id'] ||
+      null,
+    clientRequestId: extras.clientRequestId || null,
+    respondedAtUtc: extras.respondedAtUtc || null,
+  }
   if (claims?.appid && claims?.tid) {
     err.adxPrincipal = `aadapp=${claims.appid};${claims.tid}`
   }
@@ -385,7 +446,8 @@ function attachTokenDiagnostics(err, token, cfg, extras = {}) {
     tokenResource: token?.tokenResource || cfg.tokenResource,
     tokenScope: token?.tokenScope || cfg.tokenScope,
     authSource: token?.source || null,
-    sanitizedErrorBody: sanitizeAdxBody(extras.payload, extras.text),
+    sanitizedErrorBody: clusterError.rawBody,
+    clusterError,
   }
   return err
 }

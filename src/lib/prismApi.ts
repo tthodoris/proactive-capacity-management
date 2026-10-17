@@ -40,6 +40,46 @@ export type PrismPingResult = {
   retrievedAt: string
 }
 
+/** Original error payload returned by the destination ADX cluster. */
+export type PrismClusterError = {
+  httpStatus?: number | null
+  code?: string | null
+  type?: string | null
+  message?: string | null
+  innererror?: unknown
+  rawBody?: unknown
+  rawText?: string | null
+  url?: string | null
+  wwwAuthenticate?: string | null
+  activityId?: string | null
+  clientRequestId?: string | null
+  respondedAtUtc?: string | null
+}
+
+export class PrismApiError extends Error {
+  clusterError: PrismClusterError | null
+  claims: Record<string, unknown> | null
+  adxPrincipal: string | null
+  hint: string | null
+
+  constructor(
+    message: string,
+    extras: {
+      clusterError?: PrismClusterError | null
+      claims?: Record<string, unknown> | null
+      adxPrincipal?: string | null
+      hint?: string | null
+    } = {},
+  ) {
+    super(message)
+    this.name = 'PrismApiError'
+    this.clusterError = extras.clusterError || null
+    this.claims = extras.claims || null
+    this.adxPrincipal = extras.adxPrincipal || null
+    this.hint = extras.hint || null
+  }
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
@@ -47,17 +87,25 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
-    const err = apiErrorFromResponse(res, data)
-    const principal = typeof data?.adxPrincipal === 'string' ? data.adxPrincipal : ''
+    const base = apiErrorFromResponse(res, data)
+    const clusterError =
+      data?.clusterError && typeof data.clusterError === 'object'
+        ? (data.clusterError as PrismClusterError)
+        : data?.adxDiagnostics?.clusterError && typeof data.adxDiagnostics.clusterError === 'object'
+          ? (data.adxDiagnostics.clusterError as PrismClusterError)
+          : null
+    const hint = typeof data?.hint === 'string' ? data.hint : null
+    const principal = typeof data?.adxPrincipal === 'string' ? data.adxPrincipal : null
     const claims =
       data?.claims && typeof data.claims === 'object'
-        ? `claims aud=${(data.claims as { aud?: string }).aud || '?'} tid=${(data.claims as { tid?: string }).tid || '?'} appid=${(data.claims as { appid?: string }).appid || '?'}`
-        : ''
-    const extras = [principal && `ADX principal ${principal}`, claims].filter(Boolean)
-    if (extras.length) {
-      err.message = `${err.message} — ${extras.join(' · ')}`
-    }
-    throw err
+        ? (data.claims as Record<string, unknown>)
+        : null
+    throw new PrismApiError(base.message, {
+      clusterError,
+      claims,
+      adxPrincipal: principal,
+      hint,
+    })
   }
   return data as T
 }

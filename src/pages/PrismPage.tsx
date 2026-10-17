@@ -4,7 +4,9 @@ import {
   fetchPrismCapacityBank,
   fetchPrismConfig,
   fetchPrismPing,
+  PrismApiError,
   type PrismCapacityBankResult,
+  type PrismClusterError,
   type PrismConfig,
 } from '../lib/prismApi'
 
@@ -20,13 +22,126 @@ function cellValue(value: unknown) {
   return String(value)
 }
 
+function formatClusterError(clusterError: PrismClusterError | null | undefined) {
+  if (!clusterError) return null
+  const parts: string[] = []
+  if (clusterError.httpStatus != null) parts.push(`HTTP ${clusterError.httpStatus}`)
+  if (clusterError.code) parts.push(`code ${clusterError.code}`)
+  if (clusterError.type) parts.push(`type ${clusterError.type}`)
+  if (clusterError.message) parts.push(clusterError.message)
+  return parts.join(' — ') || null
+}
+
+function ClusterErrorDetails({
+  title,
+  summary,
+  clusterError,
+  hint,
+}: {
+  title: string
+  summary: string
+  clusterError: PrismClusterError | null
+  hint?: string | null
+}) {
+  const clusterSummary = formatClusterError(clusterError)
+  const raw =
+    clusterError?.rawText ||
+    (clusterError?.rawBody != null
+      ? JSON.stringify(clusterError.rawBody, null, 2)
+      : null)
+  return (
+    <section className="panel">
+      <div className="panel-body">
+        <strong>{title}</strong>
+        <p style={{ marginTop: '0.55rem' }}>{summary}</p>
+        {clusterSummary ? (
+          <div style={{ marginTop: '0.85rem' }}>
+            <strong>Original cluster error</strong>
+            <pre
+              style={{
+                marginTop: '0.45rem',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                fontSize: '0.85rem',
+              }}
+            >
+              {clusterSummary}
+            </pre>
+          </div>
+        ) : null}
+        {clusterError ? (
+          <p className="muted" style={{ marginTop: '0.45rem' }}>
+            {clusterError.url ? (
+              <>
+                URL: <code>{clusterError.url}</code>
+                <br />
+              </>
+            ) : null}
+            {clusterError.wwwAuthenticate ? (
+              <>
+                WWW-Authenticate: <code>{clusterError.wwwAuthenticate}</code>
+                <br />
+              </>
+            ) : null}
+            {clusterError.activityId ? (
+              <>
+                Activity ID: <code>{clusterError.activityId}</code>
+                <br />
+              </>
+            ) : null}
+            {clusterError.clientRequestId ? (
+              <>
+                Client request ID: <code>{clusterError.clientRequestId}</code>
+                <br />
+              </>
+            ) : null}
+            {clusterError.respondedAtUtc ? (
+              <>
+                UTC: <code>{clusterError.respondedAtUtc}</code>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        {raw ? (
+          <details style={{ marginTop: '0.75rem' }}>
+            <summary>Raw cluster response body</summary>
+            <pre
+              style={{
+                marginTop: '0.45rem',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                fontSize: '0.8rem',
+              }}
+            >
+              {raw}
+            </pre>
+          </details>
+        ) : (
+          <p className="muted" style={{ marginTop: '0.55rem' }}>
+            Cluster returned an empty response body.
+          </p>
+        )}
+        {hint ? (
+          <p className="muted" style={{ marginTop: '0.55rem' }}>
+            {hint}
+          </p>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
 export function PrismPage() {
   const [config, setConfig] = useState<PrismConfig | null>(null)
   const [data, setData] = useState<PrismCapacityBankResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [pinging, setPinging] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [clusterError, setClusterError] = useState<PrismClusterError | null>(null)
+  const [errorHint, setErrorHint] = useState<string | null>(null)
   const [pingNote, setPingNote] = useState<string | null>(null)
+  const [pingClusterError, setPingClusterError] = useState<PrismClusterError | null>(null)
+  const [pingHint, setPingHint] = useState<string | null>(null)
   const [query, setQuery] = useState('')
 
   const loadConfig = useCallback(async () => {
@@ -40,14 +155,24 @@ export function PrismPage() {
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setClusterError(null)
+    setErrorHint(null)
     setPingNote(null)
+    setPingClusterError(null)
+    setPingHint(null)
     try {
       await loadConfig()
       const nextData = await fetchPrismCapacityBank({ take: 1000 })
       setData(nextData)
     } catch (err) {
       setData(null)
-      setError(err instanceof Error ? err.message : String(err))
+      if (err instanceof PrismApiError) {
+        setError(err.message)
+        setClusterError(err.clusterError)
+        setErrorHint(err.hint)
+      } else {
+        setError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
       setLoading(false)
     }
@@ -56,6 +181,8 @@ export function PrismPage() {
   const runPing = useCallback(async () => {
     setPinging(true)
     setPingNote(null)
+    setPingClusterError(null)
+    setPingHint(null)
     try {
       await loadConfig()
       const result = await fetchPrismPing()
@@ -68,7 +195,13 @@ export function PrismPage() {
         }`,
       )
     } catch (err) {
-      setPingNote(err instanceof Error ? err.message : String(err))
+      if (err instanceof PrismApiError) {
+        setPingNote(err.message)
+        setPingClusterError(err.clusterError)
+        setPingHint(err.hint)
+      } else {
+        setPingNote(err instanceof Error ? err.message : String(err))
+      }
     } finally {
       setPinging(false)
     }
@@ -143,27 +276,33 @@ export function PrismPage() {
       </div>
 
       {error ? (
-        <section className="panel">
-          <div className="panel-body">
-            <strong>Could not load PRISM CapacityBank</strong>
-            <p style={{ marginTop: '0.55rem' }}>{error}</p>
-            <p className="muted" style={{ marginTop: '0.55rem' }}>
-              ADX 404 usually means wrong Cluster URI or database name. 401/403 means the
-              user-assigned identity is not authorized (also check PRISM{' '}
-              <code>trustedExternalTenants</code> for cross-tenant). Token audience must be{' '}
-              <code>https://kusto.kusto.windows.net</code>, not the cluster URI.
-            </p>
-          </div>
-        </section>
+        <ClusterErrorDetails
+          title="Could not load PRISM CapacityBank"
+          summary={error}
+          clusterError={clusterError}
+          hint={
+            errorHint ||
+            'ADX 404 usually means wrong Cluster URI or database name. 401/403 means the user-assigned identity is not authorized (also check PRISM trustedExternalTenants for cross-tenant). Token audience must be https://kusto.kusto.windows.net, not the cluster URI.'
+          }
+        />
       ) : null}
 
       {pingNote ? (
-        <section className="panel">
-          <div className="panel-body">
-            <strong>Cluster ping</strong>
-            <p style={{ marginTop: '0.55rem' }}>{pingNote}</p>
-          </div>
-        </section>
+        pingClusterError ? (
+          <ClusterErrorDetails
+            title="Cluster ping failed"
+            summary={pingNote}
+            clusterError={pingClusterError}
+            hint={pingHint}
+          />
+        ) : (
+          <section className="panel">
+            <div className="panel-body">
+              <strong>Cluster ping</strong>
+              <p style={{ marginTop: '0.55rem' }}>{pingNote}</p>
+            </div>
+          </section>
+        )
       ) : null}
 
       <div className="filters" style={{ alignItems: 'center' }}>
